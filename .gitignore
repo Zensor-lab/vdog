@@ -1,0 +1,15 @@
+.DS_Store
+.env
+.worktrees/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Local Graphify indexes, reports, caches and exports (all worktree subdirectories)
+graphify-out/
+/.opencode
+opencode.jsonc
+/.agent
