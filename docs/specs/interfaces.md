@@ -35,7 +35,26 @@ ingest identity is `(device_id,clip_id)` and returns 409 if bytes differ.
 
 ## 2. Local device authentication and provisioning
 
-During factory/development USB provisioning generate per-device TLS key/cert,
+Wi-Fi is off by default during SD recording. A qualified physical control opens
+a local-access session; the phone cannot remotely wake/discover an off radio.
+Proposed limits are 300s authenticated inactivity and a 15min absolute cap.
+Existing owners use their token; the separate 120s claim window governs new
+ownership only. At session end close streams and switch off Wi-Fi, maintaining
+recording; checkpoint and physically reopen to resume. In-progress OTA first
+completes or safely cancels through its bounded state machine. Status
+`network.mode` is `off`, `ap` or `sta`; stored network settings select the next
+session, not always-on access. Initially support one TLS connection total;
+pause preview before control/download/update needs it. Concurrency expansion
+requires resource qualification without lowering recording or auth criteria.
+
+With the initial one-connection limit, clients serialize status/lease/control
+requests and use bounded download ranges (initially ≤1MiB, target ≤30s each).
+Renew leases and refresh status between ranges over the same connection or
+once it is released; pause polling/preview while a response owns the slot.
+A full-file request must not require a second TLS connection to renew a lease.
+Resume after timeout/expiry through existing Range/ETag rules.
+
+During factory/development USB-UART provisioning generate per-device TLS key/cert,
 32-byte random setup secret, unique ≥16-character WPA2 SoftAP password and stable
 device ID. QR payload is versioned JSON with `v`, `device_id`, `ap_ssid`,
 `ap_password`, `cert_sha256` (SHA-256 of DER certificate), and `setup_secret`
@@ -85,7 +104,9 @@ requires physical re-pairing, not remote trust-on-first-use.
 `NO_CARD`, `UNSUPPORTED_FS`, `SD_IO`, `CAMERA_INIT`, `NO_EVICTABLE_SPACE`,
 `LOW_POWER`, `RECOVERY_REQUIRED` are defined. `battery_mv` and `external_power`
 are null if not measurable; do not derive a battery percentage from voltage
-without characterization. `retained_duration_s` is sum of valid unprotected
+without characterization. V1 charges the unplugged pack externally;
+`external_power` describes a measurable supply state only and does not mean
+battery charging is occurring. `retained_duration_s` is sum of valid unprotected
 recorded durations, not newest-minus-oldest UTC. `recording.clip_id` is null when
 inactive. Storage totals are zero only for measured zero, otherwise null when
 unmounted. Optional UI state never implies recording is healthy.

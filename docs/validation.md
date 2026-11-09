@@ -26,20 +26,20 @@ hashes, failures and limits. Do not publish secrets or private raw imagery.
 | T-03 capture/storage | PR-03; HWR-03,04 | Mixed-scene 640×480/800×600 ×10/15FPS matrix; size, rate, stalls, memory, gaps and quality |
 | T-04 media contracts | PR-05,15; FW-03 | Shared valid/invalid fixtures in C++/Dart/Rust/tools; identical CRC/hash/duration interpretation |
 | T-05 partial writes | PR-05; FW-03 | Fault before/after append/sync/rename/catalog steps; valid prefix/quarantine and next recording |
-| T-06 power loss | PR-05; HWR-09 | ≥30 controlled cuts across writer/finalize/prune under approved bench setup; report earlier corruption too |
+| T-06 power loss | PR-05,18; HWR-09 | ≥30 controlled cuts including pack-unplug across writer/finalize/prune; automatic recording after reconnect; report earlier corruption too |
 | T-07 retention | PR-03; FW-04 | ≥72h powered capture plus multiple evictions on real 128GB card; inspect/play samples across window |
 | T-08 card faults | PR-10,14 | Full/pinned/leased/removal/exFAT/readonly/slow faults; truthful status, no autoformat/overwritten pin |
 | T-09 clock/reset | PR-05,10 | Unknown UTC, corrections both directions, reboot/bad clock; increasing frame timestamps and distinct IDs |
 | T-10 pairing | PR-07,12 | Android+iOS: denied permissions, internetless AP, stale QR, wrong pin/secret, closed window, already owned, reset |
 | T-11 download | PR-07,15 | Interrupt/restart, lease expiry/prune, ETag mismatch, corrupt local bytes; verified hashes and bounded resume |
 | T-12 playback | PR-07 | Short/large/gapped clips, seek/pause/background/memory pressure; bounded decoding and correct timing |
-| T-13 priority | PR-01,07 | Recording+preview/download and later sync; recording metrics stay within qualified envelope |
+| T-13 priority | PR-01,07,17 | Radio-off default and physical timed access; no remote wake, separate claim/session timers; recording+one TLS preview/download/sync; resource shedding and expiry preserve capture |
 | T-14 OTA | PR-08 | Good/bad signature/hardware/length/version, interrupted staging/power, failed boot/rollback; recording resumes |
 | T-15 ingest | PR-09,15 | Repeated chunks/wrong offset/hash, expiry, restart at DB/blob steps, collision/quota; exact originals preserved |
 | T-16 worker | PR-09,12 | Malformed media/decode limit/params/path, quota, timeout/cancel/restart; no orphan child/network/public files |
 | T-17 EIS | PR-09,15 | 20–30 representative clips; paired original/derivative evaluation, crop/distortion/detail/time measured |
-| T-18 bench | PR-11; HWR-05 | Power transitions, pack/runtime/mass/thermal/charging/enclosure; limits documented before wear |
-| T-19 wear | PR-11; HWR-06 | Only after T-18/procedure approval: fit, occlusion, ground view, movement/comfort; no universal suitability claim |
+| T-18 bench | PR-11,16,18; HWR-05 | Selected protected 1000mAh pack, proposed ≥1h/2h target; peaks/cutoff/regulation, keyed connector/disconnect/reconnect/strain relief, isolated bench power, actual-housing heat/mass/runtime; separate disconnected-pack charger compatibility, no in-camera charging |
+| T-19 wear | PR-11,19; HWR-06 | After T-18/approved procedure: actual below-8kg dog, measured chest/harness and basic case; dry-use fit/leg clearance/occlusion/ground view/comfort; no all-small-dog, larger-dog or weather-rating claim |
 | T-20 cost/release | PR-04,13; HWR-02,10 | Complete fitted BOM/assembly/test/loss/contingency quotes, editable design and reproducible build manifest |
 | T-21 restore | PR-09,12 | Restore DB+blobs on clean host; verify originals/events/token policy/job recovery |
 
@@ -70,9 +70,9 @@ These are **future command contracts**, not runnable checks in today's starter.
 Package 0.2 creates/verifies them and updates exact versions/environments.
 
 ```sh
-pio run -d firmware -e vdog_s3_proto
+pio run -d firmware -e vdog_esp32cam_proto
 pio test -d firmware -e native
-pio test -d firmware -e vdog_s3_proto --without-uploading --without-testing
+pio test -d firmware -e vdog_esp32cam_proto --without-uploading --without-testing
 python3 tools/validate_contracts.py
 flutter analyze --fatal-infos
 flutter test
@@ -95,5 +95,5 @@ and local DBs out of Git; use small synthetic fixtures and sanitized metrics.
 
 Independent review checks exact handoff diffs/claims. Test engineer runs checks
 without fixes; lead resolves missing evidence using AGENTS.md's isolated final
-review workflow for implementation. Documentation delivery itself has no
-implementation handoff commit, push, PR, device run or deployment.
+review workflow for implementation. A documentation commit/PR is not application,
+device or deployment evidence.

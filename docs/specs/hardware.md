@@ -1,379 +1,484 @@
 # Hardware specification
 
-Status: proposed engineering baseline, 2026-11-07. No circuit, PCB, camera,
-battery, SD card, enclosure, supplier price, or wearable assembly has been
-validated by this documentation task. The user selected ESP32-S3 and 128GB
-storage as the first priority and requested Chinese procurement pricing and a
-hardware cost below CNY150 excluding the SD card and harness. Other component
-choices below are proposals to make that goal testable. See [references](../references.md)
-for the source conversation and primary technical sources.
+Status: proposed engineering baseline, updated 2026-11-09. The user now selects
+**classic AI-Thinker ESP32-CAM + OV2640**, a **nominal 3.7V 1000mAh single-cell
+battery**, approximately **1–2 hours per charge**, and **recording mainly with
+Wi-Fi enabled only when needed**. This replaces the earlier ESP32-S3/N16R8
+priority. The 128GB card, 72-hour retained-recording goal, China procurement and
+hardware BOM below CNY150 excluding SD and harness remain. No board, pack,
+circuit, runtime, price or wearable assembly has been validated by these docs.
 
-## 1. Product boundary
+Exact genuine PCB revision and battery SKU remain selection gates. A product
+sold as “ESP32-CAM” is not thereby an S3 or electrically identical to another
+seller's board. Sources and legacy-document limits are in [references](../references.md).
 
-The device records a forward/downward view from a harness mount to removable
-microSD. Recording starts automatically when power is available and a supported
-card is mounted. Network loss must not stop recording. Wi-Fi enables nearby
-configuration, preview, download, updates, and later optional backend sync.
-There is no cellular modem or SIM requirement in this baseline.
+The first wearable targets **the owner's dog, reported under 8kg, chest-mounted
+on a harness in dry weather**. This is an initial fit subject, not a claimed
+compatibility range for all dogs from 0–8kg. The owner removes the complete
+camera from the harness, disconnects
+the battery and charges that pack separately outside the camera. Recording
+while charging and an onboard charger are outside this baseline. Larger-dog
+fit and a later weather-protective version require separate qualification.
 
-The 72-hour requirement describes the amount of recorded footage retained on
-the card. It does **not** describe battery endurance, uninterrupted wear time,
-or recording while the device is switched off. A three-day retention claim
-requires a measured recording profile and the software retention tests.
+## 1. Product boundary and proposed acceptance
 
-| ID | Requirement | Verification before claiming support |
+The harness-mounted device records a forward/downward view to microSD and starts
+automatically when powered with a supported card. **Recording-only with the
+Wi-Fi radio off is the default.** A deliberate physical local-access action
+opens a time-bounded Wi-Fi session for setup, preview, download or updates;
+recording continues during ordinary local access. On idle/expiry the radio
+returns off. Firmware must specify the exact controls, timeout and update pause
+behavior; an unreachable network must never block recording. There is no LTE,
+SIM, microphone or mandatory IMU requirement.
+
+The proposed interpretation of the user's “1–2 hours” is **at least one hour
+of useful recording per charge as minimum acceptance, with two hours as the
+engineering target** on the selected 1000mAh pack. Freeze recording profile,
+network workload, ambient conditions and shutdown threshold before testing.
+This is a proposed acceptance criterion, not measured endurance. Measure
+record-only and Wi-Fi-access workloads separately.
+
+The 72-hour requirement is footage retained **across powered sessions on the
+card**. It is not 72h on one charge, continuous wear, or wall-clock coverage
+while switched off. Every unpowered interval is a gap.
+
+| ID | Requirement | Evidence before claiming support |
 | --- | --- | --- |
-| HWR-01 | Prioritize ESP32-S3 with 128GB microSD | Bring-up report identifies exact module, board revision, card model, and usable bytes |
-| HWR-02 | Production hardware allocation below CNY150, excluding card and harness | Complete dated CN BOM, assembly/test/loss allowances, quantity, and supplier quotes |
-| HWR-03 | Camera supports JPEG capture through a supported driver | Identified sensor/module revision produces decodable frames under sustained recording |
-| HWR-04 | SD path withstands capture and qualified network workloads | Throughput, write-stall, removal, full-card, and power-cut tests |
-| HWR-05 | Battery, regulation, protection, charging, and thermal design are reviewed together | Reviewed schematic and instrumented bench evidence, before wear trials |
-| HWR-06 | Mount holds camera direction and permits normal movement | Recorded fit and supervised movement observations after bench acceptance |
-| HWR-07 | Physical control and visible recording/error indication | Firmware and assembly tests cover startup, recording, SD error, and pairing |
-| HWR-08 | Mechanical damping is baseline; IMU is optional | Mount comparison; firmware works without an IMU populated |
-| HWR-09 | SD contents survive foreseeable interruption as specified by firmware recovery | Power-cut corpus and file-recovery results; filesystem corruption limitations recorded |
-| HWR-10 | Public build package is reproducible | Schematics, PCB sources, BOM, assembly drawings, enclosure sources, and revision-specific pin map |
+| HWR-01 | Classic AI-Thinker ESP32-CAM + OV2640; 128GB priority | Board/sensor/card identities, chip revision and detected memory, usable card bytes |
+| HWR-02 | Hardware BOM below CNY150 excluding SD and harness; external charger/accessory basis explicit | Dated CN quotes, complete kit scope, assembly/test/loss allowance, quantity and variant |
+| HWR-03 | Useful sustained JPEG recording at a qualified profile | Motion readability, achieved FPS/gaps and JPEG-size distribution |
+| HWR-04 | 128GB storage path withstands the qualified workload | FAT32 mount, full-capacity addressing, stalls, removal, interruption and rollover |
+| HWR-05 | Protected 1S pack, keyed disconnect, reviewed switch/shutdown/5V regulation and compatible external charging | Camera power schematic, charger/pack limits, separate bench/charging tests before wear |
+| HWR-06 | Chest harness mount for the owner's dog reported under 8kg, useful view and basic dry-weather protective housing | Exact dog weight/chest/harness dimensions before CAD fit; assembly measurements and approved supervised fit/movement evidence |
+| HWR-07 | Physical local-access/ownership control and truthful indication | Board-specific circuit/gesture; no camera/SD/strap conflict; radio-off default verified |
+| HWR-08 | Mechanical damping; optional sensors do not block recording | Mount comparison; no IMU dependency or assumed spare GPIO |
+| HWR-09 | Recovery follows the firmware/media interruption contract | Controlled cuts and recovery results including earlier filesystem corruption |
+| HWR-10 | Reproducible assembly/design and separate-charging package | Board/carrier/wiring, pack/charger compatibility, BOM, basic housing and service procedure |
+| HWR-11 | Nominal 3.7V 1000mAh pack; proposed ≥1h minimum/2h target | Useful recording runtime to approved shutdown with pack/load/ambient identity |
 
-## 2. Reference architecture and procurement stages
+## 2. Selected board class, memory and build gates
 
-### 2.1 Candidate module
+### 2.1 Classic board identity
 
-Use **ESP32-S3-WROOM-1-N16R8** as the module candidate for the custom board.
-This is a module ordering code, not the name of a bare MCU or a complete camera
-board. Espressif lists 16MB Quad SPI flash and 8MB Octal SPI PSRAM for this
-variant; the module includes the RF antenna and related circuitry. The module
-requires a regulated 3.3V supply within its specified range. GPIO35, GPIO36,
-and GPIO37 are used by its Octal PSRAM and are unavailable for peripherals.
-These facts do not establish recording speed or battery life.
-([H1: module datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-s3-wroom-1_wroom-1u_datasheet_en.pdf))
+The legacy AI-Thinker specification describes an ESP32-CAM with 32Mbit flash
+(4MB), external 4M PSRAM, camera connector, SD socket and 5V input. This is a
+historical V1.0 document, not proof of components on a current listing.
+PlatformIO's `esp32cam` definition also identifies original ESP32 and 4MB flash.
+Require actual chip/flash/PSRAM identification and a boot report; do not carry
+forward the S3's 16MB flash/8MB PSRAM assumptions. Seller claims of other PSRAM
+sizes need their own evidence.
+([H1: manufacturer specification, archived copy](https://lemariva.com/storage/app/media/uploaded-files/ESP32-CAM%20Product%20Specification.pdf),
+[H3: PlatformIO board](https://docs.platformio.org/en/latest/boards/espressif32/esp32cam.html))
 
-Do not substitute N16, N16R2, R16V, WROOM-2, or a look-alike module without
-repeating the memory, voltage, pin, and firmware-configuration review.
+Record listing/SKU, maker/PCB revision, photographs of both sides, module and
+memory markings, OV2640/flex identity/orientation, schematic match, detected
+chip revision/flash/usable PSRAM, and programming adapter. A working camera
+demo does not qualify recording, secure networking, OTA or 128GB retention.
 
-### 2.2 Bench prototype
+### 2.2 Bench assembly and firmware
 
-Candidate assembly:
+Start with the ready-made ESP32-CAM and verified OV2640, qualified card,
+appropriate programming adapter and current-limited bench power. The original
+board uses UART programming, not S3 native USB recovery. Identify an ESP32-CAM-MB
+base or USB-equipped variant separately; a USB connector does not establish a
+charger. Use 3.3V UART logic and a reviewed power supply rather than assuming a
+USB-UART adapter can supply camera/SD/radio peaks.
+Programming or sustained bench power is a separate service mode, with the pack
+disconnected or an explicitly reviewed isolation arrangement; it must not
+back-feed the battery. It is not a camera battery-charging interface.
 
-1. DevKitC-1-form-factor board carrying the actual N16R8 module.
-2. OV2640 DVP camera **module/breakout** with documented connector orientation,
-   supply requirements, signal voltage, and lens; not an unidentified bare sensor.
-3. 3.3V-compatible microSD socket/breakout exposing SDMMC signals, card-detect
-   where available, and documented pull-ups.
-4. Current-limited bench supply or the board's documented USB power input.
-5. Logic analyzer/oscilloscope access, power measurement, and USB serial logs.
+Keep **PlatformIO + ESP-IDF C++** as the firmware proposal. Planned environments
+are `vdog_esp32cam_proto` and `native`, created and pinned at package 0.2. Pin
+platform, ESP-IDF, compiler, camera component, memory settings, board definition
+and partition table. Do not switch to Arduino because a demonstration uses it.
+No project/toolchain was created by this update.
 
-The exact N16R8 board supplier and revision remain an acquisition gate. The
-official DevKitC-1 family has multiple memory variants, and a board sold under
-that name may be a third-party layout. Photograph both sides, capture its
-schematic, and check module marking before selecting firmware settings. The
-official v1.0 board drives its RGB LED on GPIO48; v1.1 moves it to GPIO38.
-([H2: v1.0 guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.0.html),
-[H3: v1.1 guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.1.html))
-
-Do not connect a Li-ion cell directly to the module's 3V3 pin, a board's 5V pin,
-or USB power. Battery operation requires the reviewed power assembly in section
-5. USB and battery paths must not back-feed each other.
-
-### 2.3 Prototype versus production
-
-The CNY150 limit is a production engineering target, not a claimed price for a
-one-off DevKit, retail breakout boards, tools, or engineering services. Validate
-the S3 recording profile before committing to PCB layout or tooling. A custom
-board must retain the prototype's working interfaces while replacing unnecessary
-development-board components. P4, H.264 hardware, larger cards, and LTE remain
-alternatives requiring an explicit product decision if the S3 feasibility gate
-fails; they are not silent substitutions.
-
-## 3. Camera and signal allocation
-
-### 3.1 Capture baseline
-
-OV2640 is the low-cost candidate. Espressif's camera driver supports both S3 and
-OV2640, provides JPEG capture, and documents the memory pressure of RGB/YUV
-capture and multiple frame buffers. This specification therefore starts with
-sensor JPEG output and PSRAM enabled. Sensor maximum resolution does not imply
-the device can record at that resolution and a useful frame rate while writing
-SD and serving Wi-Fi.
+Espressif's driver supports original ESP32 and OV2640. Above small JPEG modes
+it requires PSRAM; more frame buffers increase memory/CPU pressure. Its PSRAM
+DMA option is for S2/S3, not original ESP32. Measure this recorder's actual
+internal heap, usable PSRAM, capture buffers and transfer buffers.
 ([H4: esp32-camera](https://github.com/espressif/esp32-camera))
 
-Start the characterization matrix at 640×480 and 15fps requested rate; also
-measure 800×600 at 10fps and 15fps. Report actual delivered frame rate, JPEG size
-distribution, dropped frames, exposure/blur, and object visibility. This is a
-test matrix, not three promised supported modes. The selected default belongs
-in the approved recording profile after the capacity and image-quality gate.
-Lens angle and camera tilt are selected through ground-object tests at the
-actual mounting height, not from an assumed universal field of view.
+### 2.3 Flash, TLS and signed OTA feasibility
 
-### 3.2 Bench-only candidate GPIO assignment
+Plan against verified flash size, ordinarily 4MB for this class, rather than the
+superseded 16MB layout. Build the actual recorder plus HTTPS, authorization,
+settings and signed OTA. Derive two application slots, OTA data, NVS/key/config
+and diagnostics from measured binary sizes/alignment with update headroom. If
+two qualified images do not fit, report the failure; do not silently remove
+rollback or TLS.
 
-The following is a **design proposal, not verified wiring**. No hardware has
-been inspected or energized against it. The hardware owner must reconcile every
-row with the acquired board schematic, module pin table, camera connector,
-camera rails, SD breakout, LED revision, and firmware driver before approving
-`hardware/<revision>/pin-map.csv`. A code agent must not turn this table into
-wiring instructions without that review.
+PlatformIO's `esp32cam` manifest names `huge_app.csv` under its **Arduino**
+configuration. That upstream table has one 3MiB application slot, so it is not
+a dual-slot rollback shortcut for the required ESP-IDF design.
+([H12: board manifest](https://raw.githubusercontent.com/platformio/platform-espressif32/develop/boards/esp32cam.json),
+[H13: huge_app table](https://raw.githubusercontent.com/espressif/arduino-esp32/master/tools/partitions/huge_app.csv),
+[H9: ESP-IDF OTA](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/ota.html))
 
-| Function | Proposed S3 GPIO | Notes to resolve in the board review |
+HTTPS and signed OTA are supported on original ESP32; the board's age alone
+does not rule them out. ESP-IDF documents roughly 40KB RAM per SSL socket and a
+potentially multi-second handshake. Qualify a small bounded connection count
+against camera/SD operation. Identify chip revision before selecting the
+signing/provisioning path: Secure Boot v2 on original ESP32 starts at revision
+3.0. Signed update verification without hardware Secure Boot is a separate SDK
+path. No eFuse changes are implied.
+([H10: HTTPS server](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/protocols/esp_https_server.html),
+[H11: ESP32 Secure Boot v2](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/security/secure-boot-v2.html),
+[H9: signed OTA](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/ota.html#secure-ota-updates-without-secure-boot))
+
+S3 is a **fallback requiring a recorded decision** if flash, useful image quality,
+simultaneous load or runtime fails. It is not the active board/pin map/memory
+configuration and must not be substituted automatically.
+
+## 3. Camera, SD and physical controls
+
+### 3.1 Capture characterization
+
+Use sensor JPEG and enabled PSRAM. Start with 640×480 at requested 15fps;
+compare 640×480 and 800×600 at 10/15fps. These are test points, not guaranteed
+modes. Record actual FPS/gaps/drops, exposure/blur, JPEG sizes, power and object
+readability. Maximum sensor resolution does not establish recording speed.
+Keep quality/resolution/FPS fixed inside a segment and record the profile.
+
+Select lens/flex and mounting angle through harmless ground-object scenes at
+the actual height. Damping and later off-device EIS cannot restore missing
+source detail or an obstructed view.
+
+### 3.2 Classic reference connections
+
+This summarizes the classic V1.6 design and Espressif's
+`CAMERA_MODEL_AI_THINKER` mapping. It is **not approved wiring** for an
+uninspected board. Confirm PCB/schematic, connector orientation, supplies,
+reset states and attached circuitry. Never reuse the earlier S3 candidate map.
+([H2: V1.6 schematic, archived copy](https://www.olimex.com/Products/IoT/ESP32/ESP32-CAM/resources/ESP32_CAM_V1.6.pdf),
+[H5: Espressif camera map](https://raw.githubusercontent.com/espressif/arduino-esp32/master/libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h))
+
+| Function | Classic reference GPIO | Constraint |
 | --- | --- | --- |
-| Camera D0–D7 | 4, 5, 6, 7, 8, 9, 10, 11 | Match sensor Y2–Y9/data-bit naming and connector orientation |
-| Camera XCLK | 12 | Configure clock through the camera driver; verify signal integrity |
-| Camera PCLK | 13 | Camera output; validate clock routing and capture |
-| Camera VSYNC / HREF | 14 / 15 | Inputs; do not swap frame/line sync |
-| Camera SCCB SDA / SCL | 16 / 17 | Verify module pull-ups and driver bus ownership |
-| Camera PWDN / RESET | 18 / 21 | Only if exposed; documented fixed levels may permit NC settings |
-| SDMMC CLK / CMD / D0 | 39 / 40 / 41 | Baseline 1-bit bus; repurposes these external JTAG pins |
-| SD card detect | 42 | Optional socket switch; otherwise detect I/O failure in software |
-| Battery voltage sense | 1 | Divider, filtering, and calibrated ADC range reviewed separately |
-| Optional IMU SDA / SCL | 2 / 47 | Separate proposed bus; no assumed sharing with SCCB |
-| Recording/error indicator | Board LED on 38 **or** 48 | Select exact board revision, not both |
-| User control | Unused one of 38/48, external switch | Confirm board circuitry; if unavailable revise allocation |
-| Native USB D− / D+ | Reserve 19 / 20 | Preserve the approved programming/recovery path |
-| UART0 TX / RX | Reserve 43 / 44 | Preserve serial logs and recovery during bring-up |
-| Boot/strapping | Reserve 0, 3, 45, 46 | Do not let peripheral pull states change startup configuration |
-| Module memory | Do not use 26–37 | Module-internal/unexposed memory pins; especially 35–37 on N16R8 |
+| Camera D0–D7 | 5, 18, 19, 21, 36, 39, 34, 35 | Match sensor order; several pins are input-only |
+| Camera XCLK | 0 | Also boot strap; not a runtime pairing button |
+| Camera PCLK / VSYNC / HREF | 22 / 25 / 23 | Camera timing inputs |
+| Camera SCCB SDA / SCL | 26 / 27 | Camera control; no assumed general shared I²C bus |
+| Camera power control | 32 | Reference power switching; verify driver PWDN behavior |
+| Camera RESET | No GPIO in reference map (`-1`) | Do not invent a spare reset net |
+| SD slot 1 CLK / CMD / D0 | 14 / 15 / 2 | Baseline explicitly selects 1-bit SDMMC |
+| SD D1 / D2 / D3 | 4 / 12 / 13 | Still physically connected to socket in 1-bit mode |
+| White flash LED | 4 | Shared SD D1; baseline lamp disabled |
+| Small status LED | 33 | Verify polarity, accessibility and PCB |
+| UART0 TX / RX | 1 / 3 | Preserve programming/logging/recovery; 3.3V logic |
+| External PSRAM | 16 / 17 plus memory bus | Do not assume GPIO16/17 are free |
+| Battery ADC / IMU / user button | No approved assignment | Complete conflict/pull/strap review required |
 
-Using 39–42 prevents use of the ordinary external JTAG pin set for another
-purpose at the same time. Native USB Serial/JTAG or UART must remain a tested
-recovery path. An optional IMU interrupt has no allocated pin in this proposal;
-polling/FIFO is the initial investigation. A required interrupt or 4-bit SD bus
-forces a new allocation review.
+Original ESP32 SDMMC uses fixed data/clock/command pins per slot, unlike S3's
+GPIO-matrix bus. Slot 1 uses 14/15/2/4/12/13 as above. Explicit 1-bit mode avoids
+using D1/flash LED for data, but does not disconnect the socket, remove required
+pulls, or make unused lines automatically safe for other devices. Start at a
+qualified default clock; higher speed needs actual signal/load evidence.
+([H6: ESP32 SDMMC host](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/sdmmc_host.html))
 
-The ESP32-S3 SDMMC host supports GPIO-matrix routing and 1-bit operation. Set
-the bus width explicitly rather than relying on a default that attempts a wider
-bus. Begin at the supported default-speed configuration; any higher clock is a
-measured board qualification step.
-([H5: SDMMC host](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/sdmmc_host.html))
+Review GPIO12 flash-voltage strapping and GPIO2 download-mode requirements
+against the actual card/pulls. GPIO0 goes low at reset for UART download and
+must be released for normal boot/camera clock. The reference reset switch
+resets the chip rather than providing an independent readable app button.
+Physical local-access, pairing and ownership-reset gestures/circuits therefore
+need a board-specific design. Do not attach them to GPIO0 during capture or
+burn eFuses to resolve ordinary bring-up conflicts.
+([H7: SD pull-ups/straps](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/sd_pullup_requirements.html),
+[H14: boot selection](https://docs.espressif.com/projects/esptool/en/latest/esp32/advanced-topics/boot-mode-selection.html))
 
-### 3.3 Electrical review deliverables
+### 3.3 Required electrical/control review
 
-Before first power, produce one revision-specific table with module pad, GPIO,
-board header, peripheral net, direction, voltage, reset state, pull-up/down,
-and connector pin. Check for duplicate nets and reserved pins. Verify camera
-and SD pull-ups against their electrical requirements, including the inactive
-SD data lines in 1-bit mode; do not rely on MCU internal pull-ups as a substitute
-for the reviewed SD circuit.
-([H6: SD pull-up requirements](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/sd_pullup_requirements.html))
+Produce `hardware/prototype-a/pin-map.csv` with pad/header/GPIO/net/direction,
+voltage, reset state, pulls and connector pin. Audit memory/straps/camera/SD,
+LEDs, recovery and controls. Confirm actual board pull-ups rather than blindly
+adding resistors to the old schematic. Distinguish recording, fault and timed
+Wi-Fi states without enabling the high-current lamp.
 
-Acceptance evidence must include schematic review, continuity/short checks,
-current-limited first power, measured rails, camera identification, SD
-identification, and simultaneous camera/SD operation. A firmware build is not
-evidence that a pin map or power circuit works.
+Physical local-access and ownership controls remain mandatory workflow gates;
+a specific external circuit or intentional reset/power gesture must be reviewed
+for recording/recovery impact. Battery telemetry may remain unavailable until
+a suitable measurement path exists. No extra button, ADC or IMU is assigned
+merely because a pin is exposed. Optional IMU expansion is not a baseline need.
 
-## 4. Storage and retention feasibility
+Before power: schematic match, continuity/short checks, approved input/current
+limit, connector orientation and recovery. Then measure rails and identify
+camera/card/memory before simultaneous tests. A build proves none of these
+physical facts. With no local-access action, verify the radio remains off
+through boot/recovery/recording and there is no waiting for a router or phone.
 
-### 4.1 Card and filesystem contract
+## 4. 128GB storage and 72-hour retention
 
-Use a genuine 128GB high-endurance microSD as the priority test card. Record
-manufacturer, model, capacity, card identity where available, acquisition
-channel, filesystem, allocation unit, mount options, and firmware revision.
-Qualify at least two actual card models before claiming broad compatibility.
-Speed-class labeling alone does not establish latency under this workload.
+### 4.1 Filesystem and capacity
 
-A 128GB card is SDXC, whose standard filesystem is exFAT. ESP-IDF's FatFs
-integration does not enable exFAT by default; current documentation describes
-manual configuration rather than a standard menuconfig enablement path. The
-initial baseline is therefore an **explicitly user-prepared and tested FAT32
-card**, accepting that this differs from the SDXC default. The exact host
-preparation procedure and its compatibility must be validated at Stage 0.
-Factory exFAT cards must produce an unsupported-filesystem error until a
-separately reviewed exFAT build is qualified.
-([H7: SD capacity formats](https://www.sdcard.org/developers/sd-standard-overview/capacity-sd-sdhc-sdxc-sduc/),
-[H8: ESP-IDF FatFs](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/storage/fatfs.html))
+Use genuine 128GB high-endurance microSD first. Record model/acquisition,
+filesystem/allocation unit, usable bytes and firmware. Qualify at least two
+actual models before broad compatibility claims. Branding/speed class does not
+establish write-stall latency.
 
-Never automatically format on mount failure. Card preparation is an explicit
-destructive owner action on an identified removable device. Do not publish an
-unguarded formatting command with an assumed disk name. Segmented recording
-keeps files well below FAT32's single-file limit. Firmware must use 64-bit
-capacity and cumulative-byte counters even though individual segments are small.
+The legacy manufacturer's smaller TF-card claim is **not evidence of 128GB
+support**, nor proof that larger cards cannot work through a modern driver.
+Qualify this board/firmware/card with mount, full-capacity addressing, sustained
+recording, rollover and recovery before advertising 128GB. Selecting classic
+ESP32-CAM does not implicitly reduce the card requirement.
+([H1: legacy qualification](https://lemariva.com/storage/app/media/uploaded-files/ESP32-CAM%20Product%20Specification.pdf))
 
-### 4.2 Capacity arithmetic
+128GB is SDXC, standardized with exFAT. The baseline remains explicitly
+user-prepared/tested FAT32 because ESP-IDF does not enable exFAT by default;
+current docs describe manual FatFs configuration without a standard menuconfig
+path. FAT32 preparation differs from the SDXC default. Package 0.7 qualifies
+the host procedure/allocation. Factory exFAT produces an unsupported-filesystem
+error until a separate exFAT build is qualified. **Never autoformat on failure.**
+([H15: SD capacity formats](https://www.sdcard.org/developers/sd-standard-overview/capacity-sd-sdhc-sdxc-sduc/),
+[H8: ESP32 FatFs](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/storage/fatfs.html))
 
-Use decimal GB for card advertising and bytes for implementation. A nominal
-128GB card with a planning reserve of 15% leaves 108,800,000,000 bytes before
-further protected-event allocations. For 72 hours:
+Preparation is an explicit destructive owner action after backup on an
+identified removable device, not a command with an assumed host disk name.
+Segments stay below FAT32's single-file limit. Use 64-bit capacity/cumulative
+accounting even though individual segments are small.
 
-```text
-duration_seconds = 72 × 3600 = 259200
-maximum_all_recording_bps = 108800000000 × 8 / 259200
-                          ≈ 3358024.69 bit/s
-maximum_all_recording_bytes_per_second ≈ 419753.09
-```
-
-At 15fps this is approximately 27,984 bytes per frame **including each frame's
-share of indexes, manifests, filesystem allocation overhead, and other recorded
-data**. It is not a JPEG payload allowance alone. Use measured allocatable
-capacity and the software storage budget for the release calculation. A 3Mbps
-planning profile consumes 97.2GB over 72 hours before any overhead not already
-included in that bitrate. MJPEG is scene dependent; average size from a static
-bench scene cannot prove walking/running retention.
-
-When event protection uses part of the card, recalculate the rolling-recording
-budget. For example, reserving another 8GB from the above pool leaves 100.8GB,
-or about 3.111Mbps for all rolling-recording data over 72 hours. Protected data
-must not be counted twice as free rolling capacity.
-
-### 4.3 Storage qualification
-
-Measure camera output and SD writes together for the approved modes. Record
-mean and p95/p99 JPEG size, write latency, longest write stall, queue high-water
-mark, dropped frames, total bytes per hour, free-space floor, and oldest/newest
-recoverable recordings. Run a representative 72-hour powered recording test
-plus enough additional recording to force rollover. Use mixed scenes including
-high texture, low light, walking, and running footage or an approved bench
-equivalent. Keep raw footage private unless explicitly approved for sharing.
-
-Repeated full-card writes, removal, restart, power interruption, and worn/slow
-card tests must follow the firmware recovery specification. FAT32 is not a
-journaling filesystem: application commit ordering reduces some losses but
-cannot guarantee immunity to filesystem or SD-controller corruption. Report
-corruption honestly and preserve suspect media for diagnosis.
-
-## 5. Power, battery, charging, and thermal design
-
-### 5.1 Power architecture
-
-The custom-board candidate uses a protected single-cell rechargeable pack,
-charger with appropriate charge control and temperature monitoring, a defined
-USB/battery power path, and regulation that maintains the approved rails across
-the pack's operating range. Exact pack, charger, regulator, connectors, fuse or
-current-limiting approach, current limits, and protection thresholds are not
-selected yet. Select them as one reviewed circuit, not a collection of cheap
-breakout modules with unknown power-path behavior.
-
-Espressif recommends a 3.3V supply capable of at least 500mA for the S3 chip
-design. That value does not include a qualified margin for the whole camera,
-card, radios, regulator losses, or charging system. Size the actual system from
-measured simultaneous peak load and transient behavior, with its own design
-margin and decoupling review.
-([H9: schematic checklist](https://docs.espressif.com/projects/esp-hardware-design-guidelines/en/latest/esp32s3/schematic-checklist.html))
-
-Required bench cases are camera+SD recording, Wi-Fi transmit/download, boot,
-SD write bursts, low pack voltage, USB attach/detach, charging while the system
-is powered, and restart after low-voltage shutdown. Verify rail minima,
-overshoot, current, regulator/charger/pack temperatures, protection behavior,
-and absence of back-feed. A power-fail indication may permit an orderly flush,
-but no assumed capacitor or battery reserve guarantees the final write.
-
-### 5.2 Runtime and capacity selection
-
-Begin with a supplier-documented pack capacity appropriate to the measured load
-and wearable mass. The prior discussion mentioned larger packs as examples;
-it did not establish an approved capacity. Avoid choosing 3000–5000mAh solely
-to repeat that example.
+### 4.2 Arithmetic and qualification
 
 ```text
-runtime_hours ≈ nominal_voltage_V × rated_capacity_Ah
-                × usable_energy_fraction × conversion_efficiency
-                / measured_average_system_power_W
+nominal_card_bytes = 128000000000
+planning_pool_bytes = nominal_card_bytes × 0.85 = 108800000000
+72h_seconds = 259200
+maximum_all_recording_bps = 108800000000 × 8 / 259200 ≈ 3358024.69
+at 15fps: ≈27984 bytes/frame including its share of all recording overhead
 ```
 
-Record all terms and then verify runtime to the approved shutdown threshold.
-Report runtime separately for recording-only and Wi-Fi-heavy usage. State
-charging duration, usable recording time, added mass, and whether recording
-continues through USB transitions. Do not infer battery percentage linearly
-from a single voltage reading.
+This is arithmetic, not measured capacity or a JPEG-only allowance. Account
+allocated media/index/manifest/catalog/active bytes and complete-bundle
+headroom using actual capacity. A 3.0Mbps **total allocated recording-growth**
+target consumes 97.2GB/72h. Stage 3's 8GB protection comes from inside the pool:
+the nominal 100.8GB rolling remainder allows about 3.111Mbps before additional
+headroom. Never count protected footage as free rolling capacity.
 
-### 5.3 Bench and wear gates
+Measure mixed scenes/high texture/low light and controlled walking/running
+motion or approved bench equivalent. Report JPEG mean/p95/p99, actual FPS/gaps,
+SD latency/longest stall, queue/heap/PSRAM, allocated bytes/hour and recoverable
+coverage. A static bench scene cannot prove useful 72-hour retention.
 
-No wear trial begins before the electrical design, enclosure, mounting,
-temperature measurement method, ambient conditions, and supervised trial
-procedure are reviewed. The project has no validated dog-contact temperature
-or universal mass limit. Establish appropriate acceptance limits with qualified
-input and record them before trials; the MCU's component temperature rating is
-not a wearable-contact limit.
+A qualified external bench supply may run the ≥72h soak plus rollover. That
+proves storage behavior, not 1000mAh endurance. Also test multiple battery
+sessions and recharge/off gaps. Follow media/firmware interruption tests; FAT32
+and card-controller behavior mean fsync/rename cannot guarantee damage is
+limited to the last second. Preserve suspect data and report earlier corruption.
 
-Do not charge a prototype while attached to an animal. Stop a trial for damaged
-enclosure, loose mount, rubbing, abnormal warmth, wet charging contacts, exposed
-battery, or signs of discomfort. These operating conditions belong in the
-eventual assembly/user guide as well as the test procedure.
+## 5. 3.7V 1000mAh pack and power system
 
-## 6. Mechanical and optional sensor requirements
+### 5.1 Proposed topology
 
-The enclosure must isolate the pack from screw tips and edges, restrain wiring,
-retain the card, recess exposed connectors, and allow safe service access. It
-must prevent direct rubbing of rigid or hot components against the wearer.
-Keep the antenna clear of metal, battery shielding, and the mounting plate;
-check RF performance with the completed assembly and body proximity.
+Use nominal **1S 3.7V 1000mAh rechargeable pack**. Verify chemistry, full-charge/
+cutoff limits, protection, continuous/peak discharge, connector polarity,
+dimensions/mass and temperature sensing from the exact supplier datasheet.
+Capacity does not specify safe peak current; not every “3.7V” pack has identical
+charging limits.
 
-The camera mount attaches to a harness; the harness purchase is excluded from
-the CNY150 target, while the camera's own attachment bracket and damping pieces
-are included. Test tilt adjustment, lens occlusion by fur/straps, ground view,
-retention, vibration, and snag behavior. Any breakaway or retention design is a
-documented mechanical decision requiring assessment of the actual assembly.
-Do not claim an ingress-protection or drop rating without the applicable test.
+The classic V1.6 schematic shows **5V input → AMS1117 → 3.3V**, plus camera
+rails, and no battery charger. Verify actual-board regulator substitutions.
+The prototype uses the protected pack through a keyed service connector and
+reviewed switch/shutdown/boost-converter arrangement to the board's regulated
+5V input. Charging occurs only after the pack is disconnected and removed
+from the camera, using a compatible external charger. This topology does not
+specify approved wiring, a converter, a connector or a charger SKU.
+([H2: power schematic](https://www.olimex.com/Products/IoT/ESP32/ESP32-CAM/resources/ESP32_CAM_V1.6.pdf))
 
-Baseline stabilization is mechanical damping plus optional later software
-processing. Do not promise that adding an IMU stabilizes recorded video.
-Reserve an unpopulated footprint or documented expansion interface if it fits
-the cost and space budget. LSM6DS3TR-C is a candidate 6-axis accelerometer/gyro
-with I²C/SPI interfaces; verify the chosen part and electrical design before
-population. Gyro-based stabilization additionally needs camera/IMU timing,
-orientation, lens calibration, and a supported processing pipeline.
-([H10: ST LSM6DS3TR-C](https://www.st.com/en/mems-and-sensors/lsm6ds3tr-c.html))
+```text
+Recording, pack installed:
+protected 1S 3.7V 1000mAh pack -> keyed service connector
+    -> reviewed switch/shutdown + 5V regulation -> ESP32-CAM 5V input
 
-## 7. Cost control and manufacturing package
+Charging, camera removed from harness and pack disconnected/removed:
+approved supply -> compatible external 1S charger -> protected pack
 
-### 7.1 Engineering allocation
+Programming/bench power is a separate reviewed mode, not a charging path.
+```
 
-The following CNY allocations are deliberately chosen design ceilings, **not
-supplier quotations, current market prices, or evidence of a manufacturable
-CNY149 product**. The quantity assumption is 1,000 assembled units purchased
-through the mainland China supply chain. Prototype costs and one-time design,
-tooling, certification, logistics, taxes, warranty, and margin are tracked
-separately. A production quote must explicitly identify which of those items
-are included or excluded.
+Define converter/current limits, undervoltage shutdown, pack protection,
+connector polarity/keying/retention, contact exposure, switch placement,
+temperature qualification and fault handling. Review the separate charger's
+chemistry, voltage/current and temperature/protection requirements against the
+exact pack. No onboard charging circuit, USB charge input or concurrent
+charge/load-sharing function is required.
 
-| Allocation | CNY per unit ceiling | Included scope |
+Service procedure: remove the complete camera from the harness, use its
+approved shutdown/power-off procedure, unplug the pack by its keyed connector,
+then remove and charge the pack separately outside the camera. Power off before
+unplugging; this reduces avoidable interruption but does not guarantee the last
+write survives. Reconnect only after charging is complete and the charger is
+disconnected. Pack restraint and connector access must support this procedure
+without pulling cell wires or exposing contacts to a short.
+
+Keep programming/bench power separate from charging. Disconnect the pack before
+using an external camera supply unless a specific isolation arrangement is
+reviewed and tested. Do not tie USB/bench and pack sources together or assume
+the board regulates reverse current into the pack. Abrupt unplug, switch cut
+and protection cutoff remain firmware/media recovery test cases.
+
+**Do not connect the cell directly to 3V3, 5V or USB.** Its nominal 3.7V is not
+regulated 3.3V/5V and its voltage changes over a cycle. Feeding the 5V/LDO path
+directly also does not guarantee maintained rails through discharge. Regulated
+3.3V input or regulator bypass would be a separately reviewed redesign.
+
+### 5.2 Energy estimate and acceptance
+
+Use energy rather than comparing battery mAh with current at another voltage.
+This illustration uses **hypothetical** 80% usable pack energy and 85%
+conversion efficiency to board input; neither is measured:
+
+```text
+nominal_energy = 3.7V × 1.0Ah = 3.7Wh
+example_energy_at_board_input = 3.7Wh × 0.80 × 0.85 = 2.516Wh
+example_runtime_hours = 2.516Wh / average_board_input_power_W
+```
+
+| Hypothetical average board-input power | Calculated example runtime |
+| --- | ---: |
+| 1.0W | 2.52h |
+| 1.5W | 1.68h |
+| 2.0W | 1.26h |
+
+These are scenarios, **not ESP32-CAM load measurements or a runtime guarantee**.
+Under these assumptions two hours requires about ≤1.26W average at board input.
+Efficiency, aging, cutoff reserve, radio duty, SD, regulator loss and temperature
+change the result. If measuring battery-side power, do not apply converter loss
+a second time.
+
+Size parts for measured simultaneous peaks at boot, camera/SD bursts, radio
+transmit/download and TLS handshake. Verify droop/overshoot, pack/converter
+currents, shutdown/restart and temperature. The white flash lamp stays off;
+illumination requires a separate load/runtime/image-quality review. Record-only
+measurements must verify Wi-Fi is actually off; short access sessions are a
+separate workload, not grounds to promise continuous Wi-Fi runtime.
+
+Charge the disconnected pack with its approved external charger, install it
+after charger disconnection, run the qualified profile to controlled
+shutdown and verify the files/useful recording duration. Repeat representative
+record-only and timed-Wi-Fi workloads. Report charge duration, measured energy
+if tested, shutdown reserve, mass, ambient and achieved runtime. Proposed
+minimum is ≥1h; 2h remains a target until demonstrated. A miss requires a
+reported tradeoff, not an invisible reduction of image quality/FPS.
+
+### 5.3 Thermal, transitions and wear
+
+Camera bench cases include boot, recording, Wi-Fi/TLS/download, SD bursts,
+low-voltage/converter shutdown and restart, orderly pack disconnection and
+controlled abrupt unplug. Test programming/bench supply only with the pack
+disconnected or qualified isolation, verifying no back-feed. Qualify external
+charger/pack compatibility, temperatures and completion separately; there is no
+simultaneous charging/recording test requirement. Verify truthful power status.
+Low-voltage warning permits best-effort flush only; abrupt pack cutoff still
+requires interruption recovery.
+
+Before wear, qualified review approves pack/circuit/basic housing/chest mount,
+ambient, temperature method and contact/mass limits for the actual small dog.
+Mass, dimensions, clearance and chest geometry remain measured decision inputs;
+these docs invent no numeric limits. Component ratings are not contact limits.
+Never charge while worn or with the pack inside the camera. Stop for abnormal
+warmth, damage, rubbing, exposed pack, wet contacts, loose mount or discomfort.
+
+## 6. Mechanical design, production approach and expansion
+
+Use the ready-made board first. A reviewed carrier/power board may add the pack
+system, service connectors and physical controls. A custom ESP32 camera PCB is
+optional after feasibility/cost justify it; a custom S3 PCB is not required.
+Define compatibility for each purchased board/carrier revision.
+
+**A basic non-weather-rated protective housing is required before any wear
+trial**, even though a weather-protective enclosure is deferred. It restrains
+pack/wires, prevents screw/edge contact with the cell, retains SD, recesses
+connectors and permits safe pack removal for separate charging. Separate
+rigid/hot parts from wearer contact. Preserve antenna clearance and test the
+enclosed assembly near the body. Do not wear exposed electronics or an
+unrestrained pack while waiting for the later enclosure version.
+
+The first fit target is the owner's dog reported **under 8kg**. Record its exact
+weight, chest dimensions and harness dimensions before CAD fit decisions; do
+not treat the reported upper bound as a universal 0–8kg compatibility claim.
+Measure the complete assembly's mass, dimensions, chest clearance, mount
+position, tilt and movement against that actual harness/dog before acceptance;
+target limits are pending those measurements and qualified review. Larger-dog compatibility is future
+work requiring its own harness geometry, view and movement checks, not an
+automatic inference from the first mount.
+
+Camera bracket/damping count in the BOM; the separately purchased harness does
+not. Check tilt/ground view/fur/strap occlusion, movement, rubbing, retention
+and snag behavior. Initial use is **dry weather only**. A later protective
+weather version requires separate ingress/thermal/RF/mount qualification; do
+not claim rain, water, IP/drop/breakaway or universal-size suitability from
+the first housing.
+
+Damping and off-device optical processing are baseline. A manufactured ESP32-CAM
+board has no required new IMU footprint. Optional IMU/ADC/button expansion needs
+pin/pull/power/timing/cost review and must not block recording if absent. A gyro
+alone does not stabilize footage: timing, lens calibration, orientation and a
+supported processing pipeline would still be required.
+
+## 7. Cost and release artifacts
+
+### 7.1 Unquoted engineering allocation
+
+These are **design ceilings**, not current CN prices or proof of a CNY149
+product. State procurement quantity (planning reference: 1,000 assemblies),
+quote prototypes separately, and track engineering/tooling/certification/
+logistics/taxes/packaging/warranty/margin outside this base allocation with
+explicit quote inclusions.
+
+| Allocation | CNY/unit ceiling | Scope / avoid double counting |
 | --- | ---: | --- |
-| ESP32-S3-WROOM-1-N16R8 module | 33 | Module with its memory and antenna |
-| Camera module and lens | 18 | Identified sensor, lens, connector/flex as needed |
-| PCB and SMT assembly | 22 | Fabrication and placement, not components counted elsewhere |
-| Power, charging, regulation, protection | 14 | All required ICs/passives and temperature sensing |
-| Battery pack | 20 | Supplier-documented protected pack; avoid double-counting protection |
-| SD socket, USB, controls, ESD, connectors | 10 | Required interfaces and protection |
-| Enclosure, device mount, damping, fasteners | 12 | Camera hardware; excludes separately purchased harness |
-| Factory test and expected loss allowance | 8 | Per-unit test labor and stated yield allowance |
-| Unallocated contingency | 12 | Reserved for quote gaps and substitutions |
-| **Total ceiling** | **149** | **Excludes microSD and harness** |
+| Complete ESP32-CAM + verified OV2640 | 40 | MCU/memory/socket/onboard regulator/camera connector/LEDs included |
+| Protected 1S 3.7V 1000mAh pack | 20 | Identify included protection and temperature sensing |
+| Compatible external charger and pack service parts | 18 | Initial kit includes charger allocation, keyed disconnect and required pack-service/protection additions not already counted |
+| 5V regulation and supporting components | 10 | Qualified converter/decoupling/enable/shutdown |
+| Carrier/wiring/service/controls/ESD additions | 13 | Needed off-board interfaces/PCB/assembly, no onboard charger or duplicate SD/regulator |
+| Basic protective housing, chest bracket, damping and fasteners | 16 | Dry-weather device hardware and pack restraint, excludes harness purchase |
+| Assembly, factory test and yield allowance | 12 | Whole assembly labor/test; no duplicate fitted-carrier labor |
+| Unallocated contingency | 20 | Quote gaps/substitutions/revision allowance |
+| **Total ceiling** | **149** | **Excludes SD and harness** |
 
-The optional IMU is not populated in this allocation. If added, it must fit
-within contingency or another justified reallocation while remaining below
-CNY150; removing battery protection or required tests is not an acceptable
-cost reduction. If quotes exceed the ceiling, report the variance and revise
-the design or obtain a product decision before claiming the target is met.
+Programming tools/instruments are development costs. If a programmer base stays
+in the wearable, include per-unit cost/mass/power; otherwise document recovery
+access. Optional sensors need reviewed reallocation. Do not remove pack
+protection or required tests to meet a price target.
 
-### 7.2 BOM evidence and release files
+The initial CNY149 allocation retains an external-charger allowance; moving
+charging outside the camera is **not a claimed price saving**. If sold or built
+as a kit, identify the compatible charger and include its per-kit cost. A future
+owner-supplied/reused or separately sold charger requires an explicit accessory
+and total-cost basis; do not silently exclude it from the sub-CNY150 comparison.
+Count connector/protection/service parts once across the pack/charger/carrier
+lines. A future weather enclosure has its own cost revision, not a current rating.
 
-For every fitted item record reference designators, manufacturer part number,
-value/package, approved alternative, quantity, supplier, dated unit price,
-price-break quantity, currency, minimum order, availability, tax/freight basis,
-and link or quotation identifier. Keep quotes and purchasing personal data out
-of public files where necessary; publish a redacted cost summary and assumptions.
+### 7.2 Cost evidence and public package
 
-Before a hardware release, provide editable schematic and PCB sources,
-ERC/DRC reports, board stack-up, Gerbers/drill files, BOM, placement data,
-assembly/polarity drawings, programming/test points, revision labels, pin map,
-enclosure CAD sources and printable outputs, firmware compatibility, assembly
-guide, factory test procedure, and measured acceptance evidence. Exact CAD
-tools and open-hardware license remain decisions to record before release.
-Do not represent this specification as an existing fabrication package.
+Record part number/variant, quantity, maker, alternatives, supplier, quote date,
+price break/minimum order, currency, tax/freight basis, availability and quote
+identifier. The complete purchased board is one line with included parts, not
+also a camera/SD/regulator charged again. Redact personal purchasing data and
+secret provisioning materials.
 
-## 8. Hardware decision gates and evidence
+Release actual board identity/schematic reference, approved wiring/pin map,
+editable carrier sources if any, BOM/cost evidence, carrier ERC/DRC/fabrication/
+placement where applicable, housing CAD/printable outputs, pack/connector
+polarity, separate external-charger compatibility and charging/removal guide,
+small-dog chest-mount fit record, dry-weather limits, programming/recovery,
+factory test, firmware compatibility and limitations.
+Check vendor-design redistribution rights. A carrier does not establish that
+the purchased board's internal design is an open-hardware release artifact.
+
+## 8. Hardware gates
 
 | Gate | Required output | Blocks |
 | --- | --- | --- |
-| HW-G0: parts and build identity | Actual board/module/camera/card identities; locked toolchain; reviewed memory setup | Any approved wiring or hardware-supported build claim |
-| HW-G1: electrical bring-up | Signed-off schematic/pin map, current-limited power evidence, rails and camera/SD identification | Sustained capture tests |
-| HW-G2: recording feasibility | Useful motion footage, sustainable frame rate, capacity calculation, 72-hour retention and rollover evidence | Custom-board commitment and 72-hour claim |
-| HW-G3: power and enclosure | Pack/power design, runtime, thermal and transition tests, assembled mass and mount review | Any supervised wear trial |
-| HW-G4: wearable prototype | Supervised fit/movement report, ground view, retention and comfort observations | General-user prototype distribution |
-| HW-G5: production readiness | Quoted BOM below CNY150, complete design package, factory test/yield evidence, product obligations assessed | Production cost or ready-to-manufacture claim |
+| HW-G0: identity/resource budget | Actual PCB/OV2640/card/pack, pinned ESP-IDF build, detected chip/memory; two-slot/TLS feasibility | Supported-board/security/wiring claims |
+| HW-G1: electrical bring-up | Reviewed power/control map, current-limited rails, camera/card/UART evidence | Sustained hardware capture |
+| HW-G2: recording/storage | Useful motion profile/rate/gap/power; 128GB addressing, actual 72h/rollover | 128GB/72h claim and production commitment |
+| HW-G3: battery/housing | Reviewed protected 1000mAh disconnect/switch/5V path and separate charger; ≥1h proposed minimum/2h target; unplug/recovery/thermal; basic housing/pack restraint and measured small-dog chest fit | Supervised dry-weather wear |
+| HW-G4: wearable prototype | Approved actual-assembly small-dog chest fit/movement/view/comfort report, dry-weather use only | General-user distribution within that tested scope; no larger-dog/weather claim |
+| HW-G5: production | Quoted BOM <CNY150 with explicit charger/kit basis, applicable design package, pilot test/yield and product obligations | Production-cost/manufacturing-ready claim |
 
-The Stage 0 toolchain check must account for PlatformIO's documented
-`esp32-s3-devkitc-1` definition being an N8 board without PSRAM, rather than
-assuming it configures N16R8 correctly. Use reviewed overrides or a project
-board definition; verify detected flash capacity and PSRAM on the actual unit.
-Pin the PlatformIO platform, ESP-IDF, camera component, compiler, and board
-definition in the implementation handoff. A move to native ESP-IDF needs a
-recorded compatibility decision if the proposed PlatformIO combination fails.
-([H11: PlatformIO board definition](https://docs.platformio.org/en/latest/boards/espressif32/esp32-s3-devkitc-1.html))
+HOST/build work may precede a physical unit but cannot pass detection or DEVICE/
+FIELD criteria. Board revision, protected pack/compatible external charger,
+keyed disconnect/switch/converter, physical control and measured chest-mount
+limits remain concrete package 0.2–0.7/4.1 decisions. If a gate fails, report
+measurements and obtain an explicit scope decision.

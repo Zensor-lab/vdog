@@ -1,6 +1,9 @@
 # Firmware specification
 
-Status: proposed ESP32-S3 recorder design. Follow the exact board/toolchain and
+Status: classic AI-Thinker ESP32-CAM + OV2640 baseline, revised 2026-11-09.
+Power target is nominal 3.7V 1000mAh and about 1–2h per charge, with Wi-Fi off
+until local access. See [decision review](../hardware-decision-review.md).
+Follow the exact board/toolchain and
 pin gates in [hardware](hardware.md). This task has not created a PlatformIO
 project or authorized flashing, provisioning, formatting, erasing or eFuse writes.
 
@@ -11,6 +14,11 @@ ESP-IDF C API boundaries in small adapters; portable recorder logic should build
 on the host. Do not add Arduino or a custom platform fork without a recorded
 decision. Framework/platform/driver/compiler versions, `sdkconfig`, flash mode,
 PSRAM mode, board revision and partition table are release inputs.
+
+Target original ESP32, not S3. Detect actual flash/PSRAM; documented classic 4MB
+flash is not the old N16R8 configuration. Do not enable S2/S3-only camera
+PSRAM-DMA settings. Use classic pins/UART recovery without assuming native USB
+or a spare GPIO0 button: GPIO0 is camera XCLK after boot.
 
 | Planned component | Owns | Must not own |
 | --- | --- | --- |
@@ -130,6 +138,12 @@ is required in v1; rolling pruning and explicit card maintenance cover that scop
 
 ## 6. Power, settings and time
 
+V1 has no onboard battery charging. The owner removes the camera from the
+harness and unplugs the pack to charge separately. Battery removal can be an
+abrupt power loss: test recovery and automatic recording on reconnection; do
+not require a charger-connected state machine. Use the approved shutdown action
+if available, but never assume unplugging will allow a final flush.
+
 Shutdown/low-power indications trigger best-effort close/sync and an explicit
 state. A hardware power switch may remove power abruptly, so recovery remains
 required. Firmware thresholds derive from the approved power circuit and battery,
@@ -151,10 +165,22 @@ is recorded and the app must not imply a reliable timeline when UTC is absent.
 ## 7. Networking and local ownership, Stage 2
 
 Implement [interfaces](interfaces.md) after the core recorder passes its gate.
-Station mode uses owner-configured Wi-Fi; a deliberate physical action opens a
-120s setup/pairing window and the unique-credential SoftAP. SoftAP shuts down
-after pairing/idle timeout; record its state visibly. Do not leave a universal
-setup AP running. No BLE stack is needed for v1 provisioning.
+Start with Wi-Fi off and record to SD. A deliberate physical action on a
+qualified control opens local access using the unique-credential SoftAP or a
+previously configured station network. No remote wake/discovery is possible
+while off. GPIO0 must not serve as a live pairing button during capture.
+
+Proposed local-access limits are 300s since last authenticated activity and a
+15min absolute cap. Accepted authenticated traffic, including an active transfer,
+resets only the idle timer. Expiry closes streams/handles, turns off Wi-Fi and
+keeps recording; reopening requires physical action. Checkpoint/resume transfers.
+An in-progress OTA must complete its bounded validation/reboot path or safely
+cancel/resume recording before radio shutdown; never abandon an update state.
+
+An unowned device also opens a separate 120s ownership-claim window. Existing
+owners use their stored token without reclaiming. Pairing success does not end
+an active local-access session. Record states visibly; no universal setup AP or
+BLE provisioning is required.
 
 Limit HTTPS sessions, body sizes, timeouts and allocations. Limit preview to
 one client and 2FPS, copy/release a frame promptly, and stop preview under writer
@@ -162,6 +188,11 @@ pressure. Downloads read finalized files in bounded chunks through the storage
 scheduler. A five-minute lease prevents prune races; deny renewal when necessary
 and return the documented lease/eviction errors. Wi-Fi reconnect backoff yields
 to capture; app reconnection does not reset the recorder.
+
+Initially allow one TLS connection total, shared between control, preview,
+transfer or update. Pause preview before another action needs that slot.
+Qualify later concurrency with camera+SD measurements; never remove TLS/auth
+silently to fit memory or reduce power.
 
 Provisioning fixtures use fake secrets only. Factory identity and certificate
 generation requires an explicit identified device/provisioning assignment.
@@ -171,9 +202,16 @@ not encrypt removable SD originals.
 
 ## 8. OTA and optional Stage 3 extensions
 
-Plan dual OTA app slots plus OTA data, NVS and recovery needs within verified
-16MB flash. Derive slot sizes from actual build size with headroom; never copy
-a partition table for a different module. Implement the gated envelope and SDK
+Plan dual OTA app slots plus OTA data, NVS and recovery needs within detected
+flash (classic baseline documented as 4MB). Prove signed-image slot fit with
+headroom using the actual build before advertising OTA. A single large app
+partition does not meet dual-slot rollback requirements. If it cannot fit,
+report a blocked gate and obtain a scope/board decision rather than removing
+signatures, TLS or rollback. Never copy an N16R8 partition table.
+OTA uses a suitably charged qualified pack or separately reviewed isolated
+bench power, not an assumed in-camera charging supply. Do not invent charge
+percentage telemetry; retain interruption/rollback tests for pack loss.
+Implement the gated envelope and SDK
 signature verification, staged update, first-boot self-test and rollback from
 the API spec. Failed update must preserve camera settings, identity and SD data.
 

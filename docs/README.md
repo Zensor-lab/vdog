@@ -1,6 +1,9 @@
 # vdog documentation
 
-This is the implementation baseline prepared on 2026-11-07. The repository is
+This baseline was prepared on 2026-11-07 and revised on 2026-11-09 for
+ESP32-CAM/OV2640, a 3.7V 1000mAh pack and on-demand Wi-Fi. Read the
+[hardware decision review](hardware-decision-review.md) for the change.
+The repository is
 currently a documentation and agent-configuration starter: no camera firmware,
 mobile application, backend, PCB, or application checks have been implemented.
 

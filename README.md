@@ -16,7 +16,18 @@ that harm will be detected or prevented.
 enclosure have not been built or tested. Cost, 72-hour retention, image quality,
 battery runtime and wearable suitability remain engineering gates.
 
-The first priority is **ESP32-S3 + 128GB microSD**, with Chinese procurement and
+The prototype direction is **classic AI-Thinker ESP32-CAM + OV2640**, a **3.7V
+1000mAh battery**, and approximately **1–2 hours of recording per charge**.
+Record mainly to SD and enable Wi-Fi when needed. These targets await bench
+validation; the earlier S3 prototype proposal has been superseded.
+
+The first version targets a **small dog's chest harness** (the owner's dog is
+**below 8kg**), in **dry weather**. Remove the camera from the harness and unplug the battery for charging
+with a separate compatible charger; there is no onboard charging requirement.
+A basic protective housing is still required before wear. Weather protection is
+later work and larger-dog fit needs separate checks.
+
+The **128GB microSD** priority remains, with Chinese procurement and
 a **production hardware BOM below CNY150**, excluding the SD card and harness.
 This is a design target, not a quoted retail price or the cost of a one-off
 development prototype.
@@ -54,6 +65,7 @@ for electrical, thermal and mounting acceptance.
 
 | Document | Contents |
 | --- | --- |
+| [Hardware decision review](docs/hardware-decision-review.md) | ESP32-CAM/battery tradeoffs, runtime calculations and remaining decisions |
 | [Detailed implementation plan](docs/plans/implementation-plan.md) | Numbered work packages, dependencies, outputs, tests and agent handoffs |
 | [Hardware specification](docs/specs/hardware.md) | Candidate parts/pins, power, card compatibility, cost allocation and production gates |
 | [Firmware specification](docs/specs/firmware.md) | Capture, recovery, retention, networking and OTA |

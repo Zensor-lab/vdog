@@ -1,6 +1,6 @@
 # Product requirements
 
-Status: proposed implementation baseline, 2026-11-07. Requirement IDs below are
+Status: implementation baseline revised 2026-11-09. Requirement IDs below are
 stable; acceptance requires recorded evidence under [validation](../validation.md).
 
 ## 1. Purpose and motivation
@@ -24,16 +24,28 @@ The connected reader returned five recent user/assistant turns, with no older
 cursor and no attachments. Earlier requirements referenced inside those replies
 were unavailable. They are not silently reconstructed here.
 
+The owner's 2026-11-09 follow-up selected classic AI-Thinker ESP32-CAM + OV2640,
+nominal 3.7V 1000mAh battery, about 1–2h per charge and mainly SD recording with
+Wi-Fi when needed. This supersedes the S3 direction. See the
+[hardware decision review](../hardware-decision-review.md) for evidence and gates.
+The same-day follow-up confirms separate charging of the unplugged battery after
+removing the whole camera, chest mounting for the owner's small dog reported
+below 8kg, and dry-weather-first use. A later weather-protective enclosure is a separate revision.
+
 | Classification | Decision | Treatment |
 | --- | --- | --- |
 | Explicit user direction | Develop/procure in China; use Chinese prices | CNY is the cost unit; obtain supplier quotes in Stage 0 |
 | Explicit user direction | Price below 150 excluding SD card and harness | Interpret as production hardware BOM < CNY150, as the discussion did; retail price is not validated |
-| Explicit user direction | ESP32-S3 + 128GB SD first priority | First feasibility prototype; no unapproved substitution |
+| Latest explicit user direction | Classic AI-Thinker ESP32-CAM + OV2640, nominal 3.7V 1000mAh, about 1–2h per charge | Exact board/pack and measured runtime remain gated |
+| Continuing user priority | 128GB SD first priority | Card qualification and retention target remain unchanged |
+| Latest explicit user direction | Mainly SD recording; Wi-Fi when needed | Radio off by default; physical local-access session |
+| Latest explicit user direction | Remove camera and unplug pack for external charging | No onboard charging/load-sharing or record-while-charging requirement |
+| Latest explicit user direction | Small dog first, chest harness mount, dry weather | Actual fit measured before wear; basic housing required; weather sealing later |
 | User question / assistant proposal | Wi-Fi only, no SIM | v1 engineering baseline; cellular excluded from current implementation |
-| Assistant proposal | S3-WROOM-1-N16R8, OV2640, optional IMU | Candidate parts; verify compatibility and quotes before purchase/PCB release |
+| Superseded baseline | S3-WROOM-1-N16R8 prototype | Alternative only; its pins/memory settings do not apply to ESP32-CAM |
 | Assistant proposal | Automatic recording, 72h rolling retention | Primary engineering acceptance target, subject to image-quality/capacity gate |
 | Assistant proposal | Flutter app then Rust backend | Proposed software architecture used in these specifications |
-| Latest assistant proposal | Mechanical damping; off-device EIS; IMU optional | Baseline; no real-time EIS on S3 |
+| Assistant proposal retained | Mechanical damping; off-device EIS; IMU optional | Baseline; no real-time onboard EIS |
 | Superseded proposals | P4 first, 256GB first, mandatory IMU, cellular in Stage 3, higher BOM | Not v1 requirements; alternatives need a recorded decision |
 
 ## 3. Users and principal journeys
@@ -52,9 +64,9 @@ were unavailable. They are not silently reconstructed here.
 | ID | Requirement | Acceptance anchor |
 | --- | --- | --- |
 | PR-01 | Start recording automatically with a valid card, independent of Wi-Fi/app/backend | Bench boot and offline tests |
-| PR-02 | Prefer ESP32-S3 and a genuine 128GB microSD; prototype before custom PCB | Stage 0/1 evidence |
+| PR-02 | Use classic AI-Thinker ESP32-CAM + OV2640 with a genuine 128GB microSD as the first prototype | Exact board/memory/card evidence; no inherited S3 pin map |
 | PR-03 | Preserve a rolling target of 72 hours of captured footage at an accepted quality profile | Full retention soak, not a capacity extrapolation alone |
-| PR-04 | Production base hardware BOM < CNY150 excluding card and harness | Dated itemized quotes, quantity, exclusions, contingency |
+| PR-04 | Required hardware-kit BOM < CNY150 excluding card and harness, including external charger | Dated itemized quotes, quantity, explicit accessory basis and contingency |
 | PR-05 | Record in bounded segments; recover finalized footage after power loss | Media and fault tests |
 | PR-06 | No network required for recording; Wi-Fi range limits remote features | Offline and reconnect tests |
 | PR-07 | Flutter app pairs locally, shows truthful status/preview, downloads/resumes, and plays originals | Android and iOS device acceptance |
@@ -66,12 +78,16 @@ were unavailable. They are not silently reconstructed here.
 | PR-13 | Publish reproducible source, build/setup docs, BOM and design artifacts as available | Release manifest and license review |
 | PR-14 | An event pin cannot silently overwrite another pin or silently disable new recording | Quota and storage-full tests |
 | PR-15 | Preserve original footage; stabilized/transcoded outputs are separate derivatives | Hash and metadata tests |
+| PR-16 | Use nominal 3.7V 1000mAh and target about 1–2h per charge | Proposed minimum 1h/target 2h useful recording; actual pack/load/runtime measured |
+| PR-17 | Record with Wi-Fi off by default; enable it through physical local access | No remote-wake assumption; recording survives radio/session transitions |
+| PR-18 | Charge the unplugged removable pack externally after taking camera off harness | Compatible separate charger; no onboard charging; unplug/reconnect/recovery tests |
+| PR-19 | Design first for the owner's below-8kg dog's chest harness in dry weather | Exact measurements, fit/ground view and basic housing before wear; no universal small/large-dog or weather-rating claim |
 
 ## 5. Performance and capacity targets
 
 Initial measurement profile: JPEG, 640×480 at nominal 15 FPS; compare 800×600
 and reduced frame rates only through the feasibility matrix. These are proposed
-test profiles, not proven S3 capabilities. Resolution/FPS/JPEG quality are fixed
+test profiles, not proven ESP32-CAM capabilities. Resolution/FPS/JPEG quality are fixed
 within a segment and included in its manifest. Do not advertise 720p/1080p or a
 constant bitrate before measurement.
 
@@ -95,8 +111,14 @@ smaller measured card can reduce the rolling window further.
 
 The 72h target describes retained **recorded duration while powered**. It is not
 72h of battery runtime, nor 72h of wall-clock coverage across power-off periods.
-No battery runtime, device mass, water-resistance rating, low-light performance,
-or breed-size suitability has been established.
+The selected nominal pack is 1000mAh at 3.7V; runtime targets about 1–2h and is
+unmeasured. No device mass, water-resistance rating, low-light performance,
+or breed-size suitability has been established. Small-dog-first is a design
+priority, not proof that the same mount fits larger dogs. Weight, chest geometry,
+harness strap spacing, assembled mass, camera angle and movement need measurement.
+Dry-weather-first does not authorize bare electronics during wear: the basic
+housing must restrain the pack, isolate electronics and secure connectors before
+field use. Later weather sealing requires new thermal and ingress validation.
 
 Proposed firmware targets: boot to first recorded frame ≤10s on a healthy card;
 60s segments; periodic payload/index sync ≤1s; finalized segment cutover gap
@@ -112,7 +134,7 @@ automatic emergency dispatch, or vendor subscription. BLE is not required for
 v1 setup. On-demand low-rate Wi-Fi preview must yield to recording. Notifications
 are optional Stage 3 functionality while connectivity exists.
 
-If the S3 cannot meet the quality/capacity gate, report the measured failure and
+If ESP32-CAM cannot meet the quality/capacity/runtime/OTA gate, report the measured failure and
 offer explicit tradeoffs (quality/FPS/retention/card size/SoC/cost). Do not quietly
 weaken the requirement, switch to P4, or claim that smooth stabilized video
 restores blurred or missing detail.

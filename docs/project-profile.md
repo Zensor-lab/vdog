@@ -10,8 +10,14 @@ The local `.agent/PROJECT.md` points here. Operating rules remain in
   footage, optional self-hosted processing; for owners, builders and self-hosters.
 - Current state: agent starter and documentation only. No firmware/app/backend,
   application dependencies, CI or hardware designs. No application checks passed.
-- User priorities: ESP32-S3 +128GB; China procurement; hardware below CNY150
-  excluding SD/harness. See product spec for decision confidence.
+- User priorities (2026-11-09): classic AI-Thinker ESP32-CAM + OV2640, nominal
+  3.7V 1000mAh battery, about 1–2h per charge; mainly SD recording with Wi-Fi
+  when needed. 128GB/China procurement/<CNY150 excluding SD/harness remain.
+  See [decision review](hardware-decision-review.md); S3 is now an alternative.
+- Confirmed use: chest harness for the owner's small dog reported below 8kg,
+  dry weather; exact weight/chest/harness measurements before final fit. Remove the
+  whole camera, unplug pack and charge externally; no onboard charge/load sharing.
+  Basic protective housing before wear; weather sealing and larger-dog fit later.
 - Baseline: Wi-Fi only, automatic segmented MJPEG, target 72h retained footage
   while powered, Flutter app and Rust backend, off-device EIS, optional IMU.
 
@@ -19,14 +25,15 @@ The local `.agent/PROJECT.md` points here. Operating rules remain in
 
 | Area | Proposed baseline | Before implementation |
 | --- | --- | --- |
-| Firmware | WROOM-1-N16R8, ESP-IDF C++, PlatformIO | Exact board revision, platform/framework/compiler/camera versions, N16R8 memory setup, pins and partitions |
+| Firmware | Classic AI-Thinker ESP32-CAM + OV2640, ESP-IDF C++, PlatformIO | Exact PCB/chip revision, platform/framework/compiler/camera versions, detected flash/PSRAM, classic pin map, dual-slot OTA fit |
+| Power | Removable protected 3.7V 1000mAh 1S pack, regulation; separate external charger; target 1–2h | Exact pack/charger ratings, keyed connector/polarity, regulator/shutdown, measured load/runtime |
 | App | Flutter/Dart Android+iOS | Version pins, min OS/target SDK/plugins/test phones; qualified Dart implementation/review route |
 | Backend | Rust, Axum/Tokio, SQLite, private filesystem | Rust/MSRV/crates/deployment image and quotas |
 | Processing | FFmpeg with vid.stab | Build/filter/codec presence, license review, resource limits |
 | Card | Genuine 128GB, prepared FAT32 | Actual models, preparation/allocation size, latency/corruption qualification |
 
 Wiring is **not approved**. Use hardware's candidate map only for review. No
-supported PlatformIO environments exist yet; planned names are `vdog_s3_proto`
+supported PlatformIO environments exist yet; planned names are `vdog_esp32cam_proto`
 and `native`. Before firmware delegation, package 0.2 supplies exact versions/
 environments and 0.3 supplies reviewed wiring. The current docs request identifies
 no authorized device/port or flash, erase, format, OTA, or eFuse operation.

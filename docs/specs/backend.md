@@ -1,6 +1,6 @@
 # Rust self-hosted backend specification
 
-Status: proposed Stage 3 implementation baseline, 2026-11-07. No service exists
+Status: proposed Stage 3 implementation baseline, updated 2026-11-09. No service exists
 yet. The backend is optional: camera recording and local Flutter review must
 already work without it. The proposed stack is Rust, Axum, Tokio, SQLite, a local
 filesystem, and an isolated FFmpeg worker. Freeze exact versions, database
@@ -10,6 +10,19 @@ The canonical routes and JSON schema live in [interfaces.md](interfaces.md).
 The source bundle and its validation rules live in
 [media-format.md](media-format.md). This document specifies service behavior and
 durability; do not invent competing endpoint payloads while implementing it.
+
+The current device baseline is the classic AI-Thinker ESP32-CAM with OV2640,
+nominal 3.7V/1000mAh battery, and an approximately 1–2-hour continuous-recording
+runtime target. See [the hardware decision review](../hardware-decision-review.md).
+These choices do not change this server's media/API contract or establish
+measured runtime. Server operation must not depend on the camera having
+ESP32-S3 resources or sustaining simultaneous recording and network transfers.
+The default camera mode records with Wi-Fi off. A deliberate physical action
+opens local access; no server polling, discovery, notification, or job can
+remotely wake that radio. Local-access Wi-Fi expires after 300 seconds without
+authenticated activity and at a 15-minute absolute cap even while active.
+Physical reopening is distinct from the initial 120-second ownership-claim
+window; existing backend/local-camera credentials are not reissued each session.
 
 ## 1. Requirements and scope
 
@@ -118,6 +131,16 @@ notification credentials, footage, and location-bearing user notes from logs.
 Direct camera uploads are deferred until a separate resource gate. If enabled
 later, issue a scoped ingest credential that can upload for exactly one device;
 it cannot browse other footage, administer users, or create arbitrary jobs.
+The classic board may fail the recording-plus-upload resource gate. In that
+case leave direct sync disabled, retain the phone-mediated path, and report the
+unverified capability rather than reducing recording requirements or silently
+pausing recording. A server retry policy must not flood a busy/offline camera.
+Any later direct-device sync must checkpoint at the local session boundary and
+resume only after physical reopening, without attempting to extend the absolute
+cap. Missing contact between sessions is expected, not evidence that recording
+stopped or that a danger event occurred. Saved station credentials do not imply
+always-on network attachment. The qualified physical-control implementation
+belongs to the hardware/firmware gate, not the backend.
 
 ## 5. Data model and invariants
 
@@ -131,7 +154,7 @@ from validated internal IDs; no table stores a client-controlled absolute path.
 | `owners` / `clients` / `api_tokens` | Owner and client identity, verifier, role, issuance/revocation and optional configured expiry; never plaintext bearer. |
 | `devices` | Owner, external device identity, hardware/firmware metadata, label, enrollment state; unique owner/device identity. |
 | `uploads` | Owner/device/source clip ID, expected manifest/hash/file sizes, state, per-file committed offset, expiry, reserved bytes. |
-| `clips` | Owner/device/source clip identity, manifest hash, finalized storage path, validation version, source timeline and byte counts. Unique source identity with explicit hash-conflict handling. |
+| `clips` | Owner/device/source clip identity, manifest hash, card-local `capture_order`, finalized storage path, validation version, source timeline and byte counts. Unique source identity with explicit hash-conflict handling. |
 | `derivatives` | Source clip ID/hash, recipe/version, output hash/size/type/dimensions/duration, generated path; immutable once published. |
 | `jobs` | Type, deduplication key, state, attempt, lease/deadline, cancellation flag, progress phase, typed error and output identity. |
 | `events` | Manual origin, requested interval, coverage/gaps, device/clip links, protection state and acknowledgements. |
@@ -143,6 +166,9 @@ cannot refer to a staging upload. A derivative cannot outlive its source linkage
 without an explicit export policy. A completed upload repeated with identical
 identity/hash returns the existing clip; a different hash for the same identity
 returns a conflict and does not overwrite it.
+Preserve `capture_order` as source metadata only: it is an increasing ordering
+within the original card catalog, not a server-global sequence across cards or
+devices. Server ingestion time is also not a substitute for recording time.
 
 ## 6. Resumable ingest and commit
 
@@ -385,6 +411,7 @@ pending uploads after restore.
 | BE-T11 capacity | Full disk/quota, protected budget exhaustion, and expired uploads produce recoverable errors without deleting protected originals. |
 | BE-T12 operations | Clean-host backup restore and schema migration preserve media identity and owner isolation. |
 | BE-T13 notifications | Retries deduplicate events, bounded failures enter dead state, and offline delivery is shown accurately. |
+| BE-T14 optional device sync | A failed classic-board recording/upload resource gate leaves direct sync disabled and recording requirements unchanged. If admitted later, idle/absolute Wi-Fi expiry checkpoints upload and waits for physical reopening without remote wake; phone-mediated upload retains the same validated bundle contract. |
 
 Future checks from `backend/` are `cargo fmt --check`, `cargo clippy --all-targets
 -- -D warnings`, `cargo test`, and `cargo build --release`; no Cargo project exists

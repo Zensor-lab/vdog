@@ -1,21 +1,23 @@
 # vdog implementation plan
 
-Status: **NOT STARTED — documentation baseline only**, 2026-11-07. This is the
+Status: **NOT STARTED — documentation baseline only**, revised 2026-11-09. This is the
 master backlog, not authorization to execute every stage in one assignment.
-The present delivery creates documentation only. No implementation branch,
-hardware operation, purchase, deployment, commit, push or PR has been performed.
+This plan describes future application work. Documentation already has a
+review branch and PR; no application implementation, hardware operation,
+purchase or deployment has been performed.
 
 ## Goal, background and scope
 
 Build a low-cost open-source harness camera through three usable milestones:
 standalone recorder, local Flutter app, optional self-hosted Rust processing.
-Prioritize ESP32-S3 +128GB, mainland-China procurement and production BOM <CNY150
+Use classic AI-Thinker ESP32-CAM + OV2640, a nominal 3.7V 1000mAh pack,
+about 1–2h per charge, 128GB, China procurement and production BOM <CNY150
 excluding card/harness. Target automatic offline recording and 72h useful rolling
-footage; validate capacity/quality before committing to a custom PCB. Source
+footage; validate capacity/quality before committing to any custom carrier PCB. Source
 confidence and exclusions are in [product](../specs/product.md). Frameworks and
 many hardware choices are engineering proposals, not measured facts.
 
-Non-goals: LTE/GPS/audio, real-time S3 EIS, hazard/poison classifier, public
+Non-goals: LTE/GPS/audio, real-time onboard EIS, hazard/poison classifier, public
 multi-tenant cloud, mandatory subscription, hardware fabrication in this docs
 task, or unapproved changes to cost/SoC/card priorities. Preserve agent configuration
 and unrelated work. Specs do not authorize contacting suppliers or flashing devices.
@@ -28,6 +30,19 @@ Authoritative inputs:
 [backend](../specs/backend.md), [security](../security.md),
 [validation](../validation.md). Read the linked sections for the assigned package;
 never infer a missing contract from another application's implementation.
+
+The [hardware decision review](../hardware-decision-review.md) records the
+2026-11-09 owner selections and replaces the earlier S3 baseline. Keep Wi-Fi
+off during normal recording; physical local access enables a timed session.
+The proposed runtime pass threshold is ≥1h, with 2h as the target; neither is
+measured. Exact pack/power parts and actual board memory remain gated.
+
+Charging is external after removing the whole camera and unplugging its pack;
+no onboard charging/load-sharing or concurrent charging/recording is required.
+The owner's dog is below 8kg; prioritize chest mounting and dry weather. Basic
+protective housing still precedes wear. Dog/chest/harness measurements gate
+final fit, not host contracts or bench firmware work. Larger-dog compatibility
+and weather sealing require later validation.
 
 ## Execution contract for a 256k-context coding agent
 
@@ -115,12 +130,15 @@ stage the dependencies listed in each package override simple numeric order.
 
 ### 0.2 Qualify and lock toolchains
 
-- Inputs: actual N16R8 board identity, hardware §2/8, project profile.
+- Inputs: actual classic AI-Thinker ESP32-CAM PCB/chip/memory identity, hardware §2/8, project profile.
 - Steps: verify installed tools without automatic upgrades; prove a compatible
-  official PlatformIO/ESP-IDF/camera/compiler combination; define reviewed N16R8
-  board overrides; select Flutter/Dart/min OS/target SDK and Rust/MSRV/dependencies.
+  official PlatformIO/ESP-IDF/camera/compiler combination; select the original ESP32 `esp32cam` board definition
+  with reviewed memory/partition settings; select Flutter/Dart/min OS/target SDK and Rust/MSRV/dependencies.
+- Include an early flash-size budget for HTTPS/camera/SD plus two signed OTA
+  slots: 4MB cannot inherit the earlier 16MB partition assumptions. A single
+  large-app default does not qualify OTA. Preserve ESP-IDF unless separately decided.
 - Outputs: version matrix, lockfile policy, firmware bootstrap assignment,
-  planned `vdog_s3_proto`/`native` environments and executable build commands.
+  planned `vdog_esp32cam_proto`/`native` environments and executable build commands.
 - Acceptance: clean minimal cross-build with explicit flash/PSRAM settings;
   actual detected memory waits for 1.2. No arbitrary latest/fork fallback. If the
   official platform cannot support requirements, record a framework decision first.
@@ -129,9 +147,12 @@ stage the dependencies listed in each package override simple numeric order.
 
 - Inputs: acquired board/camera/SD schematics, hardware candidate pin table.
 - Steps: map every pad/header/net/direction/rail/pull/reset; audit memory/strap/
-  USB/JTAG/LED conflicts; identify recovery path; review continuity/first-power plan.
+  UART/boot/SD/flash-LED conflicts and physical-control availability; identify recovery path; review continuity/first-power plan.
 - Outputs: `hardware/prototype-a/pin-map.csv`, assembly diagram, part identities
   and reviewed revision label; qualified electrical signoff.
+- Reserve a reviewed physical local-access control; GPIO0 is camera XCLK after
+  boot and cannot simply be a runtime button. Audit card/flash-lamp shared pins;
+  no spare battery ADC or optional-IMU pins are assumed.
 - Acceptance: no duplicate/reserved GPIO or unidentified camera rail; all board
   revisions explicit. Candidate docs become approved wiring only after review.
 
@@ -141,15 +162,19 @@ stage the dependencies listed in each package override simple numeric order.
 - Steps: collect permitted dated CN quotes or mark quote requests pending;
   quantity/MPN/substitutes/taxes/freight/assembly/test/yield/contingency all explicit.
 - Outputs: `hardware/bom.csv` plus redacted costing notes and variance to ceiling.
-- Acceptance: card/harness excluded, device mount/power/battery included, no
-  double counting. Missing quotes remain UNVERIFIED; no purchase is implicit.
+- Acceptance: card/harness excluded; device mount, power, battery and required
+  external charger included on a stated required-kit/accessory basis, with no
+  silent exclusion or double counting. Missing quotes remain UNVERIFIED; no purchase is implicit.
 
 ### 0.5 Define image-quality and physical acceptance rubrics
 
 - Inputs: product §5 and validation §3, actual likely mounting geometry.
 - Steps: choose harmless object scenes/distances/light/motion; agree readability
   scoring, coverage/drop/gap limits and frame-rate expectations before measurement;
-  define thermal/mass/pack/mount criteria with qualified input.
+  define thermal/mass/pack/mount criteria with qualified input. Use the actual
+  below-8kg dog and chest-harness geometry as the first fit context, not an
+  assumed universal weight percentage or every-small-dog requirement. Exact
+  measurements precede final fit/CAD; they do not block host/bench work.
 - Outputs: reproducible bench scene/test protocol and separately gated wear plan.
 - Acceptance: objective enough to compare profiles without changing the standard
   after a poor result; no unsupported universal dog temperature/weight assumption.
@@ -201,7 +226,7 @@ stage the dependencies listed in each package override simple numeric order.
 ### 1.1 Bootstrap the firmware and portable core
 
 - Depends: 0.2, 0.3, 0.6, 0.7. Writable: `firmware/`, relevant CI/profile docs.
-- Steps: create pinned PlatformIO ESP-IDF structure, `vdog_s3_proto` and `native`,
+- Steps: create pinned PlatformIO ESP-IDF structure, `vdog_esp32cam_proto` and `native`,
   component interfaces, board selection and version reporting; add minimal host
   harness. Keep camera/SD implementations separate from portable logic.
 - Acceptance: root build/host commands work; unsupported boards fail clearly;
@@ -211,9 +236,10 @@ stage the dependencies listed in each package override simple numeric order.
 
 - Depends: 1.1 plus authorized identified hardware.
 - Steps: verify rails/current, module marking, flash capacity, PSRAM size/mode,
-  serial/native USB recovery and exact GPIO setup; log sanitized identity.
+  UART/programming-adapter recovery and exact GPIO setup; log sanitized identity.
 - Outputs: board adapter, measurements and hardware identity record.
-- Acceptance: measured 16MB flash/8MB PSRAM for selected N16R8, no strap conflicts,
+- Acceptance: detected flash/PSRAM match the actual classic board and build
+  (documented baseline 4MB flash/4MB PSRAM, not an N16R8 assumption), no strap conflicts,
   reproducible boot. Failure blocks camera/SD wiring assumptions.
 
 ### 1.3 Capture and validate bounded JPEG frames
@@ -286,9 +312,14 @@ stage the dependencies listed in each package override simple numeric order.
 - Depends: 1.3–1.9.
 - Steps: boot/recovery/record/fault/shutdown transitions, bounded init retries,
   LED/button adapter, calibrated optional battery status, low-power close,
-  no-network boot; sanitize diagnostic counters and logs.
+  radio-off boot; sanitize diagnostic counters and logs. Implement only portable
+  supervisor/timer hooks with fake radio/activity handlers here; reserve the
+  reviewed physical-control abstraction without provisioning/auth/network/OTA.
+  Real local-access activation, authenticated idle handling, ownership claims and
+  transfer/update cleanup integrate in 2.2/2.3/2.6/2.11 after recorder signoff.
 - Acceptance: ten healthy offline cold boots, first persisted-frame latency,
   truthful card/camera/full status, no fake battery percent; no secrets in logs.
+  Radio on/off transitions must not stop recording or reuse camera GPIO0.
 
 ### 1.11 Build desktop inspection and metrics tools
 
@@ -383,13 +414,16 @@ stage the dependencies listed in each package override simple numeric order.
 - Depends: 2.2,1.9/1.10.
 - Steps: bounded server/session config, auth on all routes, capabilities/status/
   settings/time, revision conflict/errors, mDNS hint and sanitized logs.
+- Initially allow one TLS connection total; pause preview before a control or
+  download uses it. Qualify any concurrency expansion against recording and heap.
 - Acceptance: good and wrong certificate/token/body/rate cases; offline recording
   continues during reconnect/auth failure; capabilities only advertise working features.
 
 ### 2.4 Implement phone permissions, QR and Wi-Fi pairing
 
 - Depends: 2.1–2.3.
-- Steps: platform conditional permission matrix, QR validation, OS AP join/manual
+- Steps: instruct physical local-access activation first (no radio-off remote
+  wake/discovery), then platform conditional permissions, QR validation, OS AP join/manual
   fallback, cert pin before secret, ownership claim and secure token storage;
   discover same ID/pin on router/hotspot without silent network takeover.
 - Acceptance: real Android+iOS deny/grant/internetless/stale QR/revoked/owned
@@ -439,7 +473,9 @@ stage the dependencies listed in each package override simple numeric order.
 ### 2.10 Freeze OTA envelope and trust policy
 
 - Depends: 0.2,1.17; before OTA implementation.
-- Steps: derive dual slots from measured binary sizes, select SDK-supported signed
+- Steps: prove dual slots fit measured classic-board flash (documented 4MB) with
+  actual signed-binary sizes and headroom; if not, block OTA for a scope decision.
+  Select SDK-supported signed
   image/envelope encoding and exact signature coverage, hardware/version/key IDs,
   update power preconditions, key custody and development test-key separation.
 - Outputs: `contracts/ota-v1.json`, partition/trust docs, positive/negative vectors.
@@ -627,12 +663,13 @@ stage the dependencies listed in each package override simple numeric order.
 ### 3.15 Add optional direct device sync only after a resource gate
 
 - Depends: 3.14 and new qualified simultaneous-load measurements.
-- Steps: opt-in HTTPS endpoint/scoped upload token, finalized-file lease and same
+- Steps: only within an owner-opened local-access session, opt-in HTTPS endpoint/
+  scoped upload token, finalized-file lease and same
   resumable protocol, one bounded transfer, backoff/throttling/low-power pause,
   durable ack metadata outside original files.
 - Acceptance: recording remains within qualified FPS/gap/heap/power limits under
   reconnect/upload; no admin token on device, no deletion-on-upload, no v1
-  dependency. Skip with a recorded decision if S3 resources do not permit it.
+  dependency. Skip with a recorded decision if ESP32-CAM resources do not permit it.
 
 ### 3.16 Sign off self-hosted processing milestone
 
@@ -644,29 +681,37 @@ stage the dependencies listed in each package override simple numeric order.
 
 ## Stage 4 — wearable hardware and public release
 
-### 4.1 Select reviewed pack and power circuit
+### 4.1 Select removable pack, regulation and external charger
 
 - Depends:1.14 measured load and0.5 physical limits.
-- Steps: choose documented protected pack, regulator/charger/power path/NTC,
-  connectors/ESD/current limits; simulate/review peak and low-voltage behavior.
-- Acceptance: reviewed schematic with no back-feed or unsafe charging assumption;
-  exact runtime/mass/cost tradeoff recorded before battery assembly.
+- Steps: choose exact protected nominal 3.7V 1000mAh pack, keyed service
+  connector/strain relief, reviewed switch/shutdown/regulator/undervoltage path,
+  and compatible separate charger. No onboard charging/load sharing. Separate
+  programming/bench supply from pack charging and prevent back-feed.
+- Acceptance: schematic/pack/charger compatibility, polarity, peak/cutoff and
+  disconnect/reconnect review; external charger included in kit cost; runtime/
+  mass/cost recorded. No recording-while-charging implementation required.
 
-### 4.2 Design custom board after feasibility
+### 4.2 Design carrier or integration assembly after feasibility
 
 - Depends:1.17,4.1,quotes0.4.
-- Steps: schematic/PCB sources, antenna keepout, DVP/SD routing/pullups, recovery/
-  test points, revision labels, optional unpopulated IMU, layout/ERC/DRC review.
+- Steps: retain the qualified ESP32-CAM/OV2640 assembly; design a carrier or
+  documented wiring assembly for power/control/recovery if needed, with antenna
+  clearance, connector/test points and revision labels. Review schematic/layout/
+  ERC/DRC for any carrier. A bare-MCU replacement is a separate scope decision.
 - Acceptance: complete fabrication review and CNY variance; separate explicit
   fabrication decision. A code build does not qualify a PCB.
 
 ### 4.3 Design enclosure, mount and damping
 
 - Depends:0.5,4.1/4.2 geometry.
-- Steps: serviceable pack/card enclosure, strain relief, lens tilt/occlusion,
-  antenna space, fit/mount retention, contact surface and thermal path.
-- Acceptance: editable CAD/assembly drawings and physical review; no assumed IP/
-  drop/breakaway rating. Harness excluded, device bracket/damping included in BOM.
+- Steps: create a basic dry-use housing and chest mount for the actual below-8kg
+  dog/harness measurements: insulated electronics, restrained removable pack,
+  secured connector, strain relief, rounded contact surfaces, lens angle/clearance,
+  antenna space and thermal path. Make pack disconnection serviceable off-harness.
+- Acceptance: CAD/assembly review and basic housing before wear. Weather sealing
+  is later work; no IP/drop/breakaway rating. Larger dogs need separate geometry/
+  angle/fit tests. Harness excluded, device housing/mount/damping included in BOM.
 
 ### 4.4 Bring up revised electronics
 
@@ -674,22 +719,27 @@ stage the dependencies listed in each package override simple numeric order.
 - Steps: continuity/short/current-limited rails, camera/card/USB/memory, programming
   and recovery, revised board adapter and compatibility identity.
 - Acceptance: hardware review plus repeat T-02–09/T-13/T-14 as affected; regression
-  evidence before wear. Do not reuse DevKit success as custom-board verification.
+  evidence before wear. Do not reuse base-board success as carrier-board verification.
 
 ### 4.5 Characterize runtime and thermal behavior
 
 - Depends:4.3,4.4.
-- Steps: recording-only/Wi-Fi-heavy runtime, peak transients, USB transitions,
-  charge path/pack/regulator temperatures in stated ambient/enclosure; shutdown
-  thresholds and battery reporting calibration.
-- Acceptance: T-18 against prior agreed physical limits, measured mass/runtime
-  published separately from72h retention; no charging while worn.
+- Steps: recording-only/timed-Wi-Fi runtime, peaks, pack unplug/reconnect and
+  qualified bench-power isolation, pack/regulator temperatures in actual dry-use
+  housing, shutdown and optional battery calibration. Separately qualify external
+  charging of the disconnected pack; no in-camera charging-under-load test.
+- Acceptance: ≥1h useful recording and target 2h on the selected 1000mAh pack,
+  reporting radio-off and timed-radio workloads separately. This is the proposed
+  interpretation of the owner goal, not measured evidence. T-18 against prior
+  agreed physical limits, measured mass/runtime
+  published separately from 72h retention; no charging while worn.
 
 ### 4.6 Conduct gated supervised mounting trials
 
 - Depends:4.5 pass and reviewed trial procedure/consent.
-- Steps: initial fit then controlled movement; assess view/fur occlusion/tilt/
-  mount/rubbing/warmth/comfort; stop on problems and revise.
+- Steps: first fit on the actual below-8kg dog's chest harness, then controlled
+  dry-weather movement; assess ground view/fur/straps/tilt, leg clearance, rubbing,
+  warmth, stability and comfort in the actual housing; stop/revise on problems.
 - Acceptance: T-19 with specific assembly/dog context and qualified review;
   no unsupported claim of suitability for all dogs or three-day continuous wear.
 
@@ -715,8 +765,9 @@ stage the dependencies listed in each package override simple numeric order.
 
 - Depends:accepted software/hardware revision.
 - Steps: tested clean-clone build/install, supported card prep, assembly, pairing,
-  recording status, privacy/storage, review/export, update/recovery, runtime and
-  maintenance, backup and troubleshooting; distinguish prototype/production.
+  recording status, unmount/unplug/external-charge/reconnect, small-dog chest fit,
+  dry-weather/basic-housing limits, privacy/storage, review/export, update/recovery,
+  runtime, maintenance, backup and troubleshooting; distinguish prototype/production.
 - Acceptance: another builder follows docs with no chat dependency; screenshots
   and commands match actual version; secrets/large outputs not in repository.
 
@@ -741,6 +792,26 @@ root README changes only for product/setup/usage/status. Durable new architectur
 decisions go in docs/decisions, optional sanitized reports under exact assigned
 `docs/tasks/<task>-report.md`. Large footage/metrics dumps stay outside Git.
 
-Current progress: specifications and this plan written; **0.1–4.10 remain
-unexecuted**. The next implementation assignment is Stage0 scope/toolchain/pin
-preflight, not a full firmware/app/backend build.
+## Current Stage 0 status — audited 2026-11-09
+
+**Stage 0 is not complete.** The owner-facing product choices and written scope
+are settled; technical preflight has not been demonstrated. Documentation review
+and ad-hoc documentation checks do not replace the outputs below.
+
+| Package | Status | Evidence / remaining output |
+| --- | --- | --- |
+| 0.1 Scope | Documented and reviewed | Product/decision records reflect the confirmed board, battery, runtime goal, Wi-Fi, external charging, chest fit and dry-weather scope |
+| 0.2 Toolchains | Not qualified | Proposed stack only; no pinned compatible environments, lockfiles or minimal cross-build evidence |
+| 0.3 Wiring | Candidate only | Reference pin table exists; actual PCB identity, reviewed pin-map.csv/assembly diagram and electrical signoff absent |
+| 0.4 Cost | Allocation only | CNY149 ceiling exists; exact-part BOM and dated supplier quote evidence absent |
+| 0.5 Acceptance rubrics | Draft | General test method exists; repeatable scenes/scoring, measurable limits and reviewed physical procedure not frozen |
+| 0.6 Contracts | Written baseline only | Media/API prose exists; schemas, OpenAPI files, real golden fixtures and validator absent |
+| 0.7 Card/bench | Planned, unverified | FAT32/no-autoformat policy exists; actual card/preparation and authorized identified-device bench record absent |
+| 0.8 Role ownership | Not established | Flutter/Dart and qualified hardware implementation/review routing still needs a concrete recorded assignment |
+| 0.9 Repository checks | Not established | Ad-hoc docs checks passed; no persistent contract validator or CI workflow exists |
+
+The next implementation assignments are 0.2 toolchain qualification and 0.6
+contract/schema/fixture work, with 0.3/0.4 actual-part and wiring/cost preparation
+in parallel. Hardware-dependent acceptance waits for identified parts and an
+appropriate authorized bench assignment. Stage 1–4 application/hardware work
+remains unexecuted; do not report the recorder or full Stage 0 as complete.

@@ -1,11 +1,13 @@
 # System architecture
 
-Status: proposed baseline. Wire/file contracts live in
+Status: baseline revised 2026-11-09 for classic ESP32-CAM, OV2640 and nominal
+3.7V 1000mAh power. See [decision review](hardware-decision-review.md).
+Wire/file contracts live in
 [interfaces](specs/interfaces.md) and [media format](specs/media-format.md).
 
 ```mermaid
 flowchart LR
-  Camera[OV2640 candidate] --> Recorder[ESP32-S3 recorder]
+  Camera[OV2640] --> Recorder[Classic ESP32-CAM recorder]
   Recorder --> SD[128GB microSD originals]
   Phone[Flutter Android / iOS] <-->|Local HTTPS over Wi-Fi| Recorder
   SD -->|Manual import during development| Tools[Desktop validation tools]
@@ -89,8 +91,23 @@ official PlatformIO path cannot support the required module/features.
 
 ## 6. Deployment and operational model
 
+The wearable power assembly is a removable protected 1S pack, reviewed connector/
+switch/regulation and camera. Remove the whole camera from the harness, unplug
+the pack and use a compatible separate charger. No onboard charger, load sharing
+or recording-while-charging path is required. Programming/bench power remains a
+separately reviewed configuration, not an owner charging input.
+
+First fit is a small dog's chest harness and dry weather. Basic protective
+housing/pack restraint precede wear; weather sealing is a future revision with
+new validation. Small-first design does not automatically qualify larger-dog fit.
+
 Local Wi-Fi is 2.4GHz, using a configured router/hotspot or a temporary device
-SoftAP. A hotspot is useful only while nearby and enabled. The app must explain
+SoftAP, enabled only within a physical local-access session. The radio starts
+off; there is no remote wake/discovery while it is off. Proposed timers are
+300s of authenticated inactivity and a 15min absolute session cap; checkpoint
+transfers on expiry and physically reopen for resume. The separate 120s pairing
+window governs new ownership, not an existing owner's token access. A hotspot
+is useful only while nearby and enabled. The app must explain
 local-network permission, internetless Wi-Fi and manual OS join steps. Local
 TLS authenticates the device through a QR-pinned certificate; owner bearer tokens
 authenticate the phone. The backend uses a separate credential and HTTPS endpoint.
