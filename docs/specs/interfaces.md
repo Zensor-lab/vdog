@@ -4,6 +4,12 @@ Status: proposed wire contract. Generate OpenAPI/JSON schemas and fixtures from
 this baseline in package 0.6 before consumer implementation. Routes below are
 normative; software specs defer to this document for exact names.
 
+The current device is XIAO ESP32S3 Sense with 32GB FAT32 first. Wire/media v1
+remain board-independent. Capabilities report qualified recording modes, actual
+resource limits and applied protection ceiling; no fixed 72h retained-history
+claim is encoded. The onboard microphone is unused. External-pack charging
+remains the owner workflow despite stock onboard charger hardware.
+
 ## 1. Shared conventions
 
 All JSON is UTF-8 and has `v:1` in top-level request/response objects. APIs are
@@ -54,7 +60,7 @@ once it is released; pause polling/preview while a response owns the slot.
 A full-file request must not require a second TLS connection to renew a lease.
 Resume after timeout/expiry through existing Range/ETag rules.
 
-During factory/development USB-UART provisioning generate per-device TLS key/cert,
+During factory/development reviewed USB/serial provisioning generate per-device TLS key/cert,
 32-byte random setup secret, unique ≥16-character WPA2 SoftAP password and stable
 device ID. QR payload is versioned JSON with `v`, `device_id`, `ap_ssid`,
 `ap_password`, `cert_sha256` (SHA-256 of DER certificate), and `setup_secret`
@@ -181,7 +187,7 @@ POST `/events` accepts `{v,event_id,clip_ids,label}`; `event_id` is a client UUI
 label ≤120 characters, 1–10 finalized clip IDs. Same ID/same content is idempotent;
 different content returns 409. Device computes newly protected bytes, then
 atomically pins all requested clips or returns 409 `PROTECTION_QUOTA`. Maximum
-protected size 8,000,000,000 bytes or the smaller configured safe pool bound.
+protected size 2,000,000,000 bytes or the smaller configured safe pool bound.
 GET `/events` lists event metadata; DELETE `/events/{event_id}` removes that
 event's pins, preserving clips pinned by other events. Physical automatic impact
 events are outside v1. Protection does not retroactively restore evicted clips.

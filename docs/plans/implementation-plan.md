@@ -1,6 +1,6 @@
 # vdog implementation plan
 
-Status: **NOT STARTED — documentation baseline only**, revised 2026-11-09. This is the
+Status: **NOT STARTED — documentation baseline only**, revised 2026-11-16. This is the
 master backlog, not authorization to execute every stage in one assignment.
 This plan describes future application work. Documentation already has a
 review branch and PR; no application implementation, hardware operation,
@@ -10,12 +10,17 @@ purchase or deployment has been performed.
 
 Build a low-cost open-source harness camera through three usable milestones:
 standalone recorder, local Flutter app, optional self-hosted Rust processing.
-Use classic AI-Thinker ESP32-CAM + OV2640, a nominal 3.7V 1000mAh pack,
-about 1–2h per charge, 128GB, China procurement and production BOM <CNY150
-excluding card/harness. Target automatic offline recording and 72h useful rolling
-footage; validate capacity/quality before committing to any custom carrier PCB. Source
-confidence and exclusions are in [product](../specs/product.md). Frameworks and
-many hardware choices are engineering proposals, not measured facts.
+Use Seeed Studio XIAO ESP32S3 Sense and **32GB FAT32 first**, retaining nominal
+3.7V 1000mAh, about 1–2h per charge, China sourcing and required-kit BOM <CNY150
+excluding SD/harness but including external charger. The camera is the acquired
+Sense revision's sensor; current shipments may be fixed-focus OV5640/OV3660,
+with OV2640 historical. No audio capture despite the onboard microphone.
+
+Automatic offline recording is primary. The 72h retained-footage goal is
+unverified on 32GB: nominal capacity permits only ~0.84Mbit/s total before
+pins/headroom, so useful JPEG quality may prevent it. Report actual retention,
+never silently lower image quality and obtain an explicit decision if the
+combination fails. Source confidence is in [product](../specs/product.md).
 
 Non-goals: LTE/GPS/audio, real-time onboard EIS, hazard/poison classifier, public
 multi-tenant cloud, mandatory subscription, hardware fabrication in this docs
@@ -31,18 +36,19 @@ Authoritative inputs:
 [validation](../validation.md). Read the linked sections for the assigned package;
 never infer a missing contract from another application's implementation.
 
-The [hardware decision review](../hardware-decision-review.md) records the
-2026-11-09 owner selections and replaces the earlier S3 baseline. Keep Wi-Fi
-off during normal recording; physical local access enables a timed session.
-The proposed runtime pass threshold is ≥1h, with 2h as the target; neither is
-measured. Exact pack/power parts and actual board memory remain gated.
+The [hardware review](../hardware-decision-review.md) records the 2026-11-16
+board/card update; [PlatformIO support](../platformio-support.md) verifies the
+upstream board/framework metadata, not a project build. The new base/Sense
+revision, SPI socket, sensor, 8MB flash/8MB octal PSRAM and USB/BAT wiring must
+be qualified; old classic/128GB/5V-boost/SDMMC assumptions are superseded.
 
-Charging is external after removing the whole camera and unplugging its pack;
-no onboard charging/load-sharing or concurrent charging/recording is required.
-The owner's dog is below 8kg; prioritize chest mounting and dry weather. Basic
-protective housing still precedes wear. Dog/chest/harness measurements gate
-final fit, not host contracts or bench firmware work. Larger-dog compatibility
-and weather sealing require later validation.
+Keep Wi-Fi off except timed physical access; one TLS connection until qualified.
+Proposed battery minimum is 1h/target 2h, unmeasured. Remove camera/unplug pack
+for external charging. Stock XIAO charging hardware exists: disconnect pack
+before USB service unless isolation is reviewed; no additional charge/load-sharing
+function is required. The owner's below-8kg dog/chest/dry-use/basic-case choices
+remain; final-fit measurements do not block host/bench work. Weather sealing and
+larger-dog fit remain future validation.
 
 ## Execution contract for a 256k-context coding agent
 
@@ -130,31 +136,35 @@ stage the dependencies listed in each package override simple numeric order.
 
 ### 0.2 Qualify and lock toolchains
 
-- Inputs: actual classic AI-Thinker ESP32-CAM PCB/chip/memory identity, hardware §2/8, project profile.
-- Steps: verify installed tools without automatic upgrades; prove a compatible
-  official PlatformIO/ESP-IDF/camera/compiler combination; select the original ESP32 `esp32cam` board definition
-  with reviewed memory/partition settings; select Flutter/Dart/min OS/target SDK and Rust/MSRV/dependencies.
-- Include an early flash-size budget for HTTPS/camera/SD plus two signed OTA
-  slots: 4MB cannot inherit the earlier 16MB partition assumptions. A single
-  large-app default does not qualify OTA. Preserve ESP-IDF unless separately decided.
-- Outputs: version matrix, lockfile policy, firmware bootstrap assignment,
-  planned `vdog_esp32cam_proto`/`native` environments and executable build commands.
-- Acceptance: clean minimal cross-build with explicit flash/PSRAM settings;
-  actual detected memory waits for 1.2. No arbitrary latest/fork fallback. If the
-  official platform cannot support requirements, record a framework decision first.
+- Inputs: acquired XIAO base/Sense/sensor identities, hardware §2/8, profile and
+  the upstream PlatformIO check. Board ID is `seeed_xiao_esp32s3` with ESP-IDF.
+- Steps: inspect installed tools without automatic upgrades; qualify a compatible
+  official platform/SDK/compiler/camera combination. Official 8.0.0 is a candidate,
+  not a passed build. Set IDF flash/octal-PSRAM/USB options explicitly; Arduino
+  `qio_opi`/partition defaults are not IDF configuration. Lock component versions.
+- Include an early 8MB-flash budget for camera/SPI SD/HTTPS, identity/NVS and two
+  signed OTA slots with headroom; do not inherit classic 4MB, N16R8 or Plus layouts.
+- Outputs: version/lockfile matrix, bootstrap assignment, `vdog_xiao_sense_proto`
+  and `native` definitions and working commands; freeze Flutter/Dart/OS and Rust
+  compatibility separately. No framework/fork switch solely for convenience.
+- Acceptance: clean minimal cross-build, explicit memory/partition config and
+  actual dependencies; physical memory detection waits for 1.2. An upstream board
+  entry alone is not complete. Report compatibility failure before changing scope.
 
 ### 0.3 Approve prototype electrical identity and wiring
 
-- Inputs: acquired board/camera/SD schematics, hardware candidate pin table.
-- Steps: map every pad/header/net/direction/rail/pull/reset; audit memory/strap/
-  UART/boot/SD/flash-LED conflicts and physical-control availability; identify recovery path; review continuity/first-power plan.
-- Outputs: `hardware/prototype-a/pin-map.csv`, assembly diagram, part identities
-  and reviewed revision label; qualified electrical signoff.
-- Reserve a reviewed physical local-access control; GPIO0 is camera XCLK after
-  boot and cannot simply be a runtime button. Audit card/flash-lamp shared pins;
-  no spare battery ADC or optional-IMU pins are assumed.
-- Acceptance: no duplicate/reserved GPIO or unidentified camera rail; all board
-  revisions explicit. Candidate docs become approved wiring only after review.
+- Inputs: actual XIAO/Sense/sensor revision and matched schematics, battery and
+  32GB card; current vendor reference map is only a starting point.
+- Steps: map pad/header/GPIO/net/direction/voltage/pulls/reset states, DVP/SCCB,
+  SPI clock/data/CS, USB, BAT, onboard charger and control/indicator circuits.
+- Reconcile current CS21/user-LED sharing and historical schematic differences;
+  no heartbeat toggles a live card select. GPIO0 is BOOT, camera XCLK is separate;
+  qualify button/strap gestures rather than copying the old GPIO0 prohibition.
+  Keep microphone capture disabled and do not assume built-in battery telemetry.
+- Outputs: reviewed `hardware/prototype-a/pin-map.csv`, assembly/power isolation
+  diagram, identities, revision label and electrical signoff.
+- Acceptance: no conflicting pins/rails/USB-pack sources, approved removable-pack
+  BAT connection and recovery path. Candidate maps are not approved wiring.
 
 ### 0.4 Build a cost evidence workbook/table
 
@@ -194,11 +204,11 @@ stage the dependencies listed in each package override simple numeric order.
 
 - Inputs: actual card models, host OS, board/port and desired authorized operations.
 - Steps: document owner backup and identified-device FAT32 preparation; qualify
-  128GB allocation/mount settings; current-limited power and cut/removal procedures;
+  32GB FAT32 allocation/SPI-mount settings; current-limited power and cut/removal procedures;
   separate cross-build, build-only tests and hardware test commands.
 - Outputs: actual card/preparation record and bench assignment with explicit
   flash/test/monitor scope and port; no generic destructive disk command.
-- Acceptance: factory exFAT rejected without format; no unapproved device erase,
+- Acceptance: unsupported exFAT rejected without format; no unapproved device erase,
   battery wiring, eFuse, OTA or filesystem upload hidden inside checks.
 
 ### 0.8 Establish Flutter/Dart and hardware review ownership
@@ -226,7 +236,7 @@ stage the dependencies listed in each package override simple numeric order.
 ### 1.1 Bootstrap the firmware and portable core
 
 - Depends: 0.2, 0.3, 0.6, 0.7. Writable: `firmware/`, relevant CI/profile docs.
-- Steps: create pinned PlatformIO ESP-IDF structure, `vdog_esp32cam_proto` and `native`,
+- Steps: create pinned PlatformIO ESP-IDF structure, `vdog_xiao_sense_proto` and `native`,
   component interfaces, board selection and version reporting; add minimal host
   harness. Keep camera/SD implementations separate from portable logic.
 - Acceptance: root build/host commands work; unsupported boards fail clearly;
@@ -236,16 +246,18 @@ stage the dependencies listed in each package override simple numeric order.
 
 - Depends: 1.1 plus authorized identified hardware.
 - Steps: verify rails/current, module marking, flash capacity, PSRAM size/mode,
-  UART/programming-adapter recovery and exact GPIO setup; log sanitized identity.
+  native USB/BOOT recovery and exact XIAO/Sense GPIO setup; log sanitized identity.
 - Outputs: board adapter, measurements and hardware identity record.
-- Acceptance: detected flash/PSRAM match the actual classic board and build
-  (documented baseline 4MB flash/4MB PSRAM, not an N16R8 assumption), no strap conflicts,
-  reproducible boot. Failure blocks camera/SD wiring assumptions.
+- Acceptance: detected memory matches actual XIAO Sense and build (documented
+  baseline 8MB flash/8MB octal PSRAM, not Plus/N16R8/classic). Reproducible USB/BOOT
+  recovery, correct sensor identity and no strap conflicts; no mic initialization.
 
 ### 1.3 Capture and validate bounded JPEG frames
 
 - Depends: 1.2. Writable: camera component and host fakes/tests.
-- Steps: configure OV2640 JPEG/PSRAM; acquire/timestamp/validate/release; two-buffer
+- Steps: detect/configure the actual Sense sensor (current OV5640/OV3660,
+  legacy OV2640 only if separately qualified), JPEG/PSRAM and reviewed camera map;
+  respect media-v1 bounds. Acquire/timestamp/validate/release; two-buffer
   starting point; bound frame/queue sizes; expose FPS/drop/invalid/memory counters.
 - Acceptance: decodable frames/dimensions; fake driver tests cover every ownership
   path including queue full, oversize, init/allocation failure and shutdown.
@@ -254,7 +266,8 @@ stage the dependencies listed in each package override simple numeric order.
 ### 1.4 Mount and qualify the SD adapter
 
 - Depends: 1.2, 0.7; can parallel 1.3 in separate bounded assignments.
-- Steps: explicit 1-bit SDMMC, pull-up/mount settings, no-format error paths,
+- Steps: explicit Sense SPI/SDSPI bus and reviewed CS/pulls/LED arbitration,
+  32GB FAT32 mount, no-format error paths,
   64-bit capacity counters, chunked read/write/sync/truncate abstraction.
 - Acceptance: real FAT32 card operations, unsupported exFAT/no card/removal/readonly
   errors; measured latency. Do not create recording files before card validation.
@@ -296,7 +309,7 @@ stage the dependencies listed in each package override simple numeric order.
   accounting and full-state/resume behavior. Host-test future pin/lease rules now.
 - Acceptance: simulated tiny capacity forces repeated rollover, threshold and
   integer-boundary tests pass; no deletion race or double-counted protected bytes.
-  Real 72h acceptance remains 1.15.
+  32GB measured-retention/72h-goal acceptance remains 1.15.
 
 ### 1.9 Add clock mapping and settings migration
 
@@ -319,7 +332,8 @@ stage the dependencies listed in each package override simple numeric order.
   transfer/update cleanup integrate in 2.2/2.3/2.6/2.11 after recorder signoff.
 - Acceptance: ten healthy offline cold boots, first persisted-frame latency,
   truthful card/camera/full status, no fake battery percent; no secrets in logs.
-  Radio on/off transitions must not stop recording or reuse camera GPIO0.
+  Radio transitions must not stop recording; do not toggle SPI CS for status
+  indication, and qualify the XIAO BOOT/control gesture independently of camera.
 
 ### 1.11 Build desktop inspection and metrics tools
 
@@ -349,21 +363,24 @@ stage the dependencies listed in each package override simple numeric order.
 - Acceptance: required checks pass on exact handoff; matching ESP32 reviewer
   approves; no claim that compiled embedded tests executed on hardware.
 
-### 1.14 Decide camera quality, throughput and capacity feasibility
+### 1.14 Decide image quality and 32GB capacity feasibility
 
 - Depends: 1.11–1.13 and rubric0.5; requires DEVICE evidence.
 - Steps: measure real mixed-scene profile matrix, JPEG distributions, achieved
   FPS/gaps/blur/object visibility, SD stalls, allocated bytes/hour and power;
-  project 72h with reserve/protection/headroom; choose supported/default profile.
-- Acceptance: agreed readability and capture criteria plus sustainable rate
-  near ≤3.0Mbit/s total. If incompatible, stop dependent feature expansion and
-  present measured tradeoffs for a scope decision; no silent downgrade/SoC switch.
+  report actual 32GB useful retention, allocate 85% pool/≤2GB protection and
+  complete-bundle headroom. Screen 72h at ≤0.75Mbit/s total allocated growth.
+- Acceptance: agreed readability/capture/rate evidence, not a presumed 0.75Mbit/s
+  supported mode. A 72h pass additionally needs useful footage within capacity;
+  if incompatible, document the unmet goal and obtain a scope/storage/profile
+  decision before full milestone signoff/claims. No automatic quality/FPS reduction.
 
-### 1.15 Validate power faults and real 72h retention
+### 1.15 Validate 32GB rollover, power faults and the 72h goal
 
 - Depends: 1.14, approved bench power/card procedure.
 - Steps: ≥30 controlled cut cases across write/finalize/prune; inspect all prior
-  data damage; run ≥72h plus enough rollover on priority 128GB card; sample files
+  data damage; run ≥72h plus enough rollover on priority 32GB card; measure the
+  actual retained duration (earlier overwrite is an unmet 72h target). Sample files
   throughout and verify recorded duration, quality and gaps. Repeat on a second
   qualified card model before broad compatibility claims.
 - Acceptance: T-05–09 evidence with actual profile/card/commit; any corruption
@@ -384,7 +401,10 @@ stage the dependencies listed in each package override simple numeric order.
 - Depends: 1.13–1.16 plus relevant hardware gates.
 - Steps: update build/card/profile/recovery docs, known limits and status ledger;
   matching review/fix loop, independent test-engineer checks, lead detached review.
-- Acceptance: recorder criteria PR-01–03,05–06/FW-01–05 have explicit evidence;
+- Acceptance: recorder criteria PR-01–02,05–06/FW-01–05 have explicit evidence;
+  PR-03 has an explicit measured verdict: a working 32GB loop is not a 72h pass.
+  If PR-03 is unmet, full milestone verification requires a scope decision;
+  any accepted limited prototype handoff states its actual retention and limits.
   PR-04 production BOM remains UNVERIFIED until 4.8/HW-G5. Early quote feasibility
   is not a production-cost pass. Remaining physical/runtime gates are labeled.
   Stage 1 is usable offline with documented manual SD inspection.
@@ -473,7 +493,7 @@ stage the dependencies listed in each package override simple numeric order.
 ### 2.10 Freeze OTA envelope and trust policy
 
 - Depends: 0.2,1.17; before OTA implementation.
-- Steps: prove dual slots fit measured classic-board flash (documented 4MB) with
+- Steps: prove dual slots fit actual XIAO Sense flash (documented 8MB) with
   actual signed-binary sizes and headroom; if not, block OTA for a scope decision.
   Select SDK-supported signed
   image/envelope encoding and exact signature coverage, hardware/version/key IDs,
@@ -627,7 +647,7 @@ stage the dependencies listed in each package override simple numeric order.
 - Depends: 1.8,2.3,3.6 for device/backend; additionally 2.16 for the Flutter UI.
   Use separate bounded ESP32/Rust/app assignments.
 - Steps: atomic1–10clip device pin by event UUID, overlap reference counts,
-  8GB cap inside pool, quota/evicted errors; server event association distinct
+  2GB-or-smaller cap inside pool, quota/evicted errors; server event association distinct
   from device acknowledgment; app offline-pending/manual-event UI.
 - Acceptance: quota races/no partial pin/no double count, unpin overlaps, all
   pinned/leased full-state; retention re-tested at maximum advertised protection.
@@ -669,7 +689,7 @@ stage the dependencies listed in each package override simple numeric order.
   durable ack metadata outside original files.
 - Acceptance: recording remains within qualified FPS/gap/heap/power limits under
   reconnect/upload; no admin token on device, no deletion-on-upload, no v1
-  dependency. Skip with a recorded decision if ESP32-CAM resources do not permit it.
+  dependency. Skip with a recorded decision if XIAO Sense resources do not permit it.
 
 ### 3.16 Sign off self-hosted processing milestone
 
@@ -685,9 +705,11 @@ stage the dependencies listed in each package override simple numeric order.
 
 - Depends:1.14 measured load and0.5 physical limits.
 - Steps: choose exact protected nominal 3.7V 1000mAh pack, keyed service
-  connector/strain relief, reviewed switch/shutdown/regulator/undervoltage path,
-  and compatible separate charger. No onboard charging/load sharing. Separate
-  programming/bench supply from pack charging and prevent back-feed.
+  connector/strain relief, reviewed switch/shutdown and XIAO BAT/onboard-regulator/
+  undervoltage path (no default external 5V boost),
+  and compatible separate charger. Stock onboard charger exists but is not the
+  owner workflow; disconnect pack before USB service unless isolation is reviewed.
+  No added charging/load-sharing feature. Prevent accidental charging/back-feed.
 - Acceptance: schematic/pack/charger compatibility, polarity, peak/cutoff and
   disconnect/reconnect review; external charger included in kit cost; runtime/
   mass/cost recorded. No recording-while-charging implementation required.
@@ -695,7 +717,7 @@ stage the dependencies listed in each package override simple numeric order.
 ### 4.2 Design carrier or integration assembly after feasibility
 
 - Depends:1.17,4.1,quotes0.4.
-- Steps: retain the qualified ESP32-CAM/OV2640 assembly; design a carrier or
+- Steps: retain the qualified XIAO/Sense/sensor assembly; design a carrier or
   documented wiring assembly for power/control/recovery if needed, with antenna
   clearance, connector/test points and revision labels. Review schematic/layout/
   ERC/DRC for any carrier. A bare-MCU replacement is a separate scope decision.
@@ -729,7 +751,7 @@ stage the dependencies listed in each package override simple numeric order.
   housing, shutdown and optional battery calibration. Separately qualify external
   charging of the disconnected pack; no in-camera charging-under-load test.
 - Acceptance: ≥1h useful recording and target 2h on the selected 1000mAh pack,
-  reporting radio-off and timed-radio workloads separately. This is the proposed
+  reporting radio-off and timed-radio workloads separately on the XIAO BAT input. This is the proposed
   interpretation of the owner goal, not measured evidence. T-18 against prior
   agreed physical limits, measured mass/runtime
   published separately from 72h retention; no charging while worn.
@@ -792,7 +814,7 @@ root README changes only for product/setup/usage/status. Durable new architectur
 decisions go in docs/decisions, optional sanitized reports under exact assigned
 `docs/tasks/<task>-report.md`. Large footage/metrics dumps stay outside Git.
 
-## Current Stage 0 status — audited 2026-11-09
+## Current Stage 0 status — audited 2026-11-16
 
 **Stage 0 is not complete.** The owner-facing product choices and written scope
 are settled; technical preflight has not been demonstrated. Documentation review
@@ -801,7 +823,7 @@ and ad-hoc documentation checks do not replace the outputs below.
 | Package | Status | Evidence / remaining output |
 | --- | --- | --- |
 | 0.1 Scope | Documented and reviewed | Product/decision records reflect the confirmed board, battery, runtime goal, Wi-Fi, external charging, chest fit and dry-weather scope |
-| 0.2 Toolchains | Not qualified | Proposed stack only; no pinned compatible environments, lockfiles or minimal cross-build evidence |
+| 0.2 Toolchains | Upstream support checked, project unqualified | Official XIAO board/framework metadata and candidate release documented; no project environment, lockfiles or cross-build evidence |
 | 0.3 Wiring | Candidate only | Reference pin table exists; actual PCB identity, reviewed pin-map.csv/assembly diagram and electrical signoff absent |
 | 0.4 Cost | Allocation only | CNY149 ceiling exists; exact-part BOM and dated supplier quote evidence absent |
 | 0.5 Acceptance rubrics | Draft | General test method exists; repeatable scenes/scoring, measurable limits and reviewed physical procedure not frozen |

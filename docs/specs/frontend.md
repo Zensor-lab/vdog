@@ -1,18 +1,25 @@
 # Flutter companion application specification
 
-Status: proposed implementation baseline, updated 2026-11-09. No application exists yet.
+Status: proposed implementation baseline, updated 2026-11-16. No application exists yet.
 The source conversation proposed Flutter for Stage 2; detailed behavior below is
 an engineering baseline for that choice. The canonical wire contract is
 [interfaces.md](interfaces.md), and the recording bundle is defined in
 [media-format.md](media-format.md). If those contracts change, update fixtures,
 the firmware, this application, and the backend together.
 
-The current hardware decision is the classic AI-Thinker ESP32-CAM with OV2640
-and a nominal 3.7V, 1000mAh battery; approximately 1–2 hours of continuous
-recording is the runtime target, not a measured result. See
+The current hardware decision is Seeed Studio XIAO ESP32S3 Sense with a genuine
+32GB microSD first, and a nominal 3.7V, 1000mAh battery; approximately 1–2 hours
+of continuous recording is the runtime target, not a measured result. See
 [the hardware decision review](../hardware-decision-review.md) for the decision,
-qualification gates, and remaining board/power uncertainties. This app must
-not infer ESP32-S3 memory or concurrency capabilities from earlier proposals.
+qualification gates, and remaining board/power uncertainties. Inventory must
+identify the board revision and fitted camera. Seeed's
+[current getting-started guide](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/)
+describes a transition from OV3660 to fixed-focus OV5640, with either sensor
+shipping during the transition; OV2640 is discontinued and historical. Qualify
+the as-shipped OV5640/OV3660 unit rather than assuming one fixed sensor;
+historical OV2640 hardware needs its own explicit qualification. Actual flash, PSRAM,
+peripherals, and firmware capability limits require qualification; the S3 name
+alone does not authorize extra TLS connections or concurrent features.
 Normal use is recording with the radio off. Local Wi-Fi access is an on-demand
 session opened through a deliberate physical action on the camera, not an
 always-connected prerequisite for recording.
@@ -43,6 +50,11 @@ classification, and background transfer guarantees are outside the initial scope
 Exact Flutter/Dart, Android SDK, iOS deployment target, and dependency versions
 must be frozen at the toolchain milestone and recorded in lockfiles. Do not
 infer supported OS versions from this document's examples.
+The Sense microphone does not add audio recording, playback controls, microphone
+permission, or audio export to v1. The media contract remains JPEG video only.
+V1 retains its maximum of 1600 pixels per dimension and starts with the agreed
+VGA/SVGA measurement profiles; a higher-resolution sensor does not create a 5MP
+recording promise or expand media bounds.
 
 ## 2. Architecture and proposed files
 
@@ -162,8 +174,9 @@ access physically. Once the radio is on, reconnect using the stored device ID,
 certificate pin, and authorized token; do not call `/pair` again or require a new
 ownership claim merely because the previous Wi-Fi session ended. The actual
 physical control/pin must be qualified for the purchased board. App instructions
-must match that reviewed control and must not assume a generic GPIO0/button
-assignment is safe on a board where a pin can serve the camera clock or boot mode.
+must match the reviewed XIAO/baseboard/expansion-board control and pin inventory,
+including boot/reset and camera, card, and microphone net conflicts. Do not reuse
+an earlier board's GPIO/button assignment.
 
 The default recording-only mode has no Wi-Fi discovery or remote wake. An app
 cannot reach the camera to enable a radio that is off. Present this as the
@@ -226,7 +239,7 @@ internet. These platform facts were checked on 2026-11-07.
 | Screen | Required content and actions | Empty/error behavior |
 | --- | --- | --- |
 | Home/device list | Paired cameras, last-seen age, current connection, physical local-access instructions, add camera. | No camera: pairing entry; disconnected/radio-off workflow: last-known values labeled stale, no remote-wake button. |
-| Camera dashboard | Actual recording state, SD health/free bytes, estimated retained window, power indication if measured, firmware and Wi-Fi state. | Unknown battery is shown as unavailable, never an invented percentage. Storage faults remain visible even when preview works. |
+| Camera dashboard | Actual recording state, measured card capacity/free bytes, retained recorded duration, power indication if measured, firmware and Wi-Fi state. | Unknown battery is unavailable, never an invented percentage. Unknown retention remains unknown; no fixed 72h promise. Storage faults remain visible even when preview works. |
 | Preview | Live image, age of last frame, lower-priority notice, stop preview, local-session expiry if known. | Stale image gets an overlay; resource pressure or session end stops preview and gives the appropriate retry/physical-reopen action. |
 | Camera library | Cursor-paged clips, time confidence, duration, size, download action. | No clips, recovering index, expired cursor, and offline are distinct. |
 | Local library | Verified originals, local derivatives, upload/export actions. | Partial downloads appear only in transfer list, not as playable complete clips. |
@@ -253,25 +266,38 @@ qualified hardware exposes them and the relevant calibration exists; otherwise
 show battery/runtime as unavailable. Retained recording duration remains
 separate from continuous battery runtime.
 
+The first card priority is 32GB. The main 72-hour recording-history target remains
+explicitly unverified on that card, subject to useful image quality and actual
+write rate; it is not a guaranteed retention entitlement. Do not automatically
+reduce resolution, FPS, or JPEG quality to make 72h fit. Show measured capacity and the
+actual retained recorded duration from the camera. Any future estimate must
+identify its measured profile and assumptions, account for protected bytes and
+allocation overhead, and distinguish itself from retained footage already
+present. Do not substitute upload age, wall-clock span, or a hard-coded card size.
+
 Show the owner charging procedure in device help: remove the camera from the
 harness, use any approved shutdown action, unplug the pack and charge it in the
 compatible external charger. The camera is offline while its pack is removed;
 this is not evidence of SD failure or lost ownership. Do not show an onboard
 charging state inferred from an external-power flag. On reconnect load actual
-recording/recovery state. State dry-weather-only and use the reviewed small-dog
-chest-mount guide, without promising universal size or weather protection.
+recording/recovery state. The Sense's onboard charging hardware does not change
+the chosen external-pack charging workflow or authorize a charging UI/state.
+State dry-weather-only and use the reviewed chest-mount guide for the owner's
+dog reported below 8kg, without promising universal size or weather protection.
 
 ## 6. Preview, download, and storage
 
-The classic ESP32-CAM baseline is recording first. Simultaneous recording,
+The XIAO ESP32S3 Sense baseline is recording first. Simultaneous recording,
 preview, and download are not assumed to fit its memory, SD, CPU, TLS, or power
 budget. Initially permit only the network operations demonstrated by the
 hardware-specific capability/resource gate. A rejected operation is shown as
 unavailable or waiting for recorder resources; an in-progress transfer can pause
 and checkpoint. Do not stop recording to make preview or download succeed.
-These gates do not lower the existing recording profile, useful-quality, or
-retention acceptance targets. An unproved required feature remains a blocked
-milestone criterion, not a passed feature hidden from the UI.
+These gates do not silently lower the nominal 15FPS measurement profile or its
+useful-quality criteria. The 32GB retention result must be reported as measured;
+the 72h target remains unverified rather than a pass implied by the board change.
+An unproved required feature remains a blocked milestone criterion, not a passed
+feature hidden from the UI.
 
 Preview is an authenticated best-effort MJPEG stream, distinct from the SD
 recording stream. Honor capabilities and server throttling; use at most one
@@ -363,8 +389,8 @@ until the rebooted camera passes status/self-test; distinguish reconnect delay
 from successful installation. OTA failure never erases SD recordings. Signing
 keys are never distributed in the app.
 
-On the classic board's candidate 4MB flash configuration, expose the OTA action
-only after the actual board/flash identity, signed image size, two app slots,
+On the acquired XIAO ESP32S3 Sense, expose the OTA action only after the actual
+board/flash identity, signed image size, two app slots,
 required metadata partitions, and rollback path have been proved to fit and
 work. Never substitute unsigned or single-slot overwrite updates. If that gate
 fails, show OTA as blocked with the reason and document the physical recovery
@@ -377,8 +403,12 @@ contract. The UI may help translate an intended time interval into those clips,
 but must display the resulting clip-level coverage and any missing interval. A pending
 phone mark is not shown as protected until the camera/server confirms it. If the
 protected-byte budget is exhausted, display failure and effective retention;
-do not report an unqualified 72-hour retained window. Notifications describe
-manual event/sync/processing status. They do not claim automatic hazard detection.
+do not report an unqualified 72-hour retained window. The initial 32GB device
+configuration has a 2,000,000,000-byte protection ceiling within its recording
+pool, or a smaller qualified safe bound. Use the reported capabilities and actual
+usage; do not hard-code that ceiling as free space or apply it to server quotas.
+Notifications describe manual event/sync/processing status. They do not claim
+automatic hazard detection.
 
 ## 9. Backend integration
 
@@ -403,7 +433,7 @@ The default route is camera → phone → backend. Direct camera → backend upl
 a later opt-in capability gated by recorder memory, throughput, TLS, and recovery
 measurements. The app must not assume the camera can record, preview, download,
 and upload simultaneously. In particular, direct sync may remain unavailable on
-the classic board if its resource gate fails; that does not block the
+the selected Sense revision if its resource gate fails; that does not block the
 camera → phone → backend path once local download itself is qualified.
 Optional device sync also runs only during a physically opened, qualified Wi-Fi
 session; neither the phone nor backend can remotely wake a radio-off camera.
@@ -418,13 +448,14 @@ session; neither the phone nor backend can remotely wake a radio-off camera.
 | APP-T04 transfer recovery | Kill app/disconnect at multiple byte offsets; restart resumes verified data without duplicating clips or accepting changed bytes. |
 | APP-T05 media fixtures | Shared normal, dropped-frame, unknown-clock, truncated, oversized, bad-CRC, and bad-hash fixtures yield contract-defined results. |
 | APP-T06 player | Seek and playback preserve variable timestamps; ten-minute repeated playback on target handsets has bounded decoded-image memory. |
-| APP-T07 recording priority | On the actual classic ESP32-CAM, unqualified/resource-heavy preview/download is denied or paused visibly; admitted work leaves recording within unchanged firmware quality/FPS/retention acceptance thresholds. |
+| APP-T07 recording priority | On the actual XIAO ESP32S3 Sense revision, unqualified/resource-heavy preview/download is denied or paused visibly; admitted work meets the agreed firmware quality/FPS criteria. Single-TLS scheduling remains default until measured; actual 32GB retention is reported separately from the unverified 72h target, with no automatic quality/FPS reduction to fit it. |
 | APP-T08 storage | Phone disk full/cancel removes no verified unrelated media and leaves a recoverable transfer state. |
 | APP-T09 OTA | Until signed dual-slot fit/rollback is proved on the actual flash configuration, OTA is visibly blocked and unverified. Once qualified, valid update, bad signature, wrong board, interruption, pre-reboot recorder resumption, failed self-test rollback, and successful reconnect are distinguished. |
 | APP-T10 optional backend | Server outage or rejected/revoked backend token never disables local pairing, download, or playback. |
 | APP-T11 accessibility/localization | Main flow works with screen reader and enlarged text in both initial locales. |
 | APP-T12 battery truthfulness | A configured 1000mAh capacity without measurement/calibration produces no invented percentage or remaining-runtime estimate. |
 | APP-T13 on-demand Wi-Fi | Radio-off recording needs no app; physical activation permits token-based reconnect without reclaiming ownership. The 120s claim timer, 300s authenticated-idle timeout, 15min absolute session cap, and transfer lease are tested independently; session expiry checkpoints transfers and leaves recording running. |
+| APP-T14 card/protection truthfulness | A 32GB card's measured capacity and retained duration are displayed without claiming 72h; event protection respects the device-reported safe limit and does not treat the nominal 2GB ceiling as extra storage. |
 
 Future checks from `app/` are `flutter analyze`, `flutter test`, and targeted
 `flutter test integration_test`; they are not currently runnable because the app

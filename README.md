@@ -16,27 +16,42 @@ that harm will be detected or prevented.
 enclosure have not been built or tested. Cost, 72-hour retention, image quality,
 battery runtime and wearable suitability remain engineering gates.
 
-The prototype direction is **classic AI-Thinker ESP32-CAM + OV2640**, a **3.7V
-1000mAh battery**, and approximately **1–2 hours of recording per charge**.
-Record mainly to SD and enable Wi-Fi when needed. These targets await bench
-validation; the earlier S3 prototype proposal has been superseded.
+The current prototype uses **Seeed Studio XIAO ESP32S3 Sense** and starts with
+**32GB FAT32 microSD**. PlatformIO officially supports the XIAO base-board target
+with ESP-IDF and Arduino; the Sense peripherals still need a qualified build
+and hardware tests. See [PlatformIO support](docs/platformio-support.md).
+
+Use the camera shipped with the acquired Sense revision after identification:
+current Seeed documentation describes fixed-focus OV5640/OV3660 shipments;
+OV2640 belongs to older units. The onboard microphone remains unused: v1 has
+no audio recording. Nominal **3.7V 1000mAh**, approximately **1–2h per charge**,
+mainly SD recording and on-demand Wi-Fi remain the targets, not measured results.
 
 The first version targets a **small dog's chest harness** (the owner's dog is
-**below 8kg**), in **dry weather**. Remove the camera from the harness and unplug the battery for charging
-with a separate compatible charger; there is no onboard charging requirement.
-A basic protective housing is still required before wear. Weather protection is
-later work and larger-dog fit needs separate checks.
+**below 8kg**) in **dry weather**. Remove the camera and unplug the pack for a
+compatible external charger. The XIAO has onboard charging hardware, but our
+external-charge policy remains: disconnect the pack before USB service unless
+an isolation arrangement is reviewed. Use its qualified BAT input/onboard power
+path; the former AI-Thinker 5V-boost topology is not a default for this board.
+Basic protective housing is required before wear. Weather protection and
+larger-dog fit need later validation.
 
-The **128GB microSD** priority remains, with Chinese procurement and
-a **production hardware BOM below CNY150**, excluding the SD card and harness.
-This is a design target, not a quoted retail price or the cost of a one-off
-development prototype.
+The **72h recorded-footage retention goal remains unverified on 32GB**. With
+15% reserved, the nominal ceiling is only about **0.84Mbit/s total recording
+writes**, before event protection/headroom. Useful high-motion JPEG quality may
+not fit; measure retention and quality together and obtain a decision if the
+combination fails. Never promise 72h or silently reduce image quality.
+
+China procurement and the **required-kit BOM target below CNY150**, excluding
+SD/harness but including the external charger, remain goals requiring new quotes.
+The XIAO board selection has not been shown to meet that budget. Prototype cost
+and retail price are separate; current allocations are not supplier quotations.
 
 ## Planned capabilities
 
 - Start recording automatically and keep segmented footage on microSD offline.
-- Target a 72-hour rolling recording history while powered; battery endurance is
-  a separate measurement.
+- Measure the rolling history on 32GB; retain 72h as an unverified quality/capacity
+  goal. Battery endurance is a separate measurement.
 - Use Wi-Fi for a Flutter Android/iOS app: pairing, preview, verified downloads,
   original playback and signed firmware updates.
 - Optionally self-host a Rust backend for originals, MP4 exports, event
@@ -57,15 +72,16 @@ a custom PCB or full app/backend build.
 
 The eventual owner flow is: prepare a supported card, power the camera and check
 recording status, pair nearby over Wi-Fi, then review or download footage. The
-storage baseline requires an explicitly prepared and tested FAT32 card;
-factory-formatted 128GB exFAT support is not assumed. Prototype animal use waits
+storage baseline is a genuine 32GB FAT32 card on the Sense SPI socket; larger
+cards need a separate qualification. Prototype animal use waits
 for electrical, thermal and mounting acceptance.
 
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
-| [Hardware decision review](docs/hardware-decision-review.md) | ESP32-CAM/battery tradeoffs, runtime calculations and remaining decisions |
+| [Hardware decision review](docs/hardware-decision-review.md) | XIAO Sense/32GB tradeoffs, retention/runtime calculations and decisions |
+| [PlatformIO support](docs/platformio-support.md) | Verified upstream board support and the remaining build/peripheral gates |
 | [Detailed implementation plan](docs/plans/implementation-plan.md) | Numbered work packages, dependencies, outputs, tests and agent handoffs |
 | [Hardware specification](docs/specs/hardware.md) | Candidate parts/pins, power, card compatibility, cost allocation and production gates |
 | [Firmware specification](docs/specs/firmware.md) | Capture, recovery, retention, networking and OTA |

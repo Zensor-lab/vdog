@@ -1,24 +1,27 @@
 # Firmware specification
 
-Status: classic AI-Thinker ESP32-CAM + OV2640 baseline, revised 2026-11-09.
-Power target is nominal 3.7V 1000mAh and about 1–2h per charge, with Wi-Fi off
-until local access. See [decision review](../hardware-decision-review.md).
-Follow the exact board/toolchain and
-pin gates in [hardware](hardware.md). This task has not created a PlatformIO
-project or authorized flashing, provisioning, formatting, erasing or eFuse writes.
+Status: Seeed Studio XIAO ESP32S3 Sense / 32GB-first, revised 2026-11-16.
+Nominal 3.7V 1000mAh and about 1–2h per charge, external pack charging and
+on-demand Wi-Fi remain. See [hardware review](../hardware-decision-review.md),
+[PlatformIO support](../platformio-support.md) and [hardware](hardware.md).
+No firmware project, cross-build, upload or device operation was performed here.
 
 ## 1. Platform and module boundaries
 
-Use ESP-IDF C++ through a qualified pinned PlatformIO environment. Preserve
-ESP-IDF C API boundaries in small adapters; portable recorder logic should build
-on the host. Do not add Arduino or a custom platform fork without a recorded
-decision. Framework/platform/driver/compiler versions, `sdkconfig`, flash mode,
-PSRAM mode, board revision and partition table are release inputs.
+Use ESP-IDF C++ through a qualified pinned PlatformIO environment, with board
+`seeed_xiao_esp32s3` and proposed environment `vdog_xiao_sense_proto`. Official
+board support is source-verified; candidate official platform 8.0.0 still needs
+project build qualification. Preserve small ESP-IDF C adapters and portable host
+logic. No silent Arduino/fork switch. Framework/compiler/camera/board versions,
+`sdkconfig`, actual 8MB flash/8MB octal PSRAM settings and partitions are release
+inputs; Arduino `qio_opi` flags do not configure ESP-IDF.
 
-Target original ESP32, not S3. Detect actual flash/PSRAM; documented classic 4MB
-flash is not the old N16R8 configuration. Do not enable S2/S3-only camera
-PSRAM-DMA settings. Use classic pins/UART recovery without assuming native USB
-or a spare GPIO0 button: GPIO0 is camera XCLK after boot.
+Target the acquired XIAO/Sense revision and camera. Current units may have
+fixed-focus OV5640 or OV3660; older OV2640 needs its own qualification. Verify
+sensor detection and driver configuration; preserve media-v1 bounds and the
+VGA/SVGA measurement matrix. The Sense microphone stays unused/no audio capture.
+Native USB/BOOT recovery replaces the classic UART-only assumption. Do not reuse
+classic camera pins, 4MB partitions, old SDMMC or external 5V-boost defaults.
 
 | Planned component | Owns | Must not own |
 | --- | --- | --- |
@@ -54,6 +57,10 @@ Use the actual card state and first successfully persisted frames to indicate
 recording. A blinking boot LED is not a recording acknowledgment. Define and
 test nonambiguous LED patterns in board docs for recording, recovery, pairing,
 storage/camera fault, and update; do not make color the only distinction.
+The Sense SD CS and user LED may share GPIO21: no independent Blink/heartbeat
+may toggle a live CS. Qualify a separate indication or arbitration for the actual
+revision. GPIO0 is BOOT, not the former camera XCLK; approve its gesture/reset
+behavior before using it for local access.
 
 ## 3. Scheduling, memory and capture
 
@@ -82,7 +89,8 @@ qualified timeout. No unbounded retry or queue expansion.
 
 ## 4. Storage ownership and catalog
 
-Mount tested FAT32 using 1-bit SDMMC and explicit no-format behavior. Use 64-bit
+Mount genuine 32GB FAT32 through the Sense SPI/SDSPI socket with explicit
+no-format behavior and reviewed bus/CS mapping. Use 64-bit
 capacity/cumulative accounting. Only the storage coordinator mutates clip files,
 catalog, active records, pin metadata and tombstones. Serialize pruning with
 leases and event changes. File handles and scan page sizes are bounded.
@@ -101,7 +109,7 @@ lengths and manifest schema validate; full CRC/hash validation is mandatory on
 recovery and transfer verification. Background integrity checks yield to recording.
 
 A healthy boot uses the committed catalog and lightweight manifest/size checks,
-not a full 128GB rehash. Fully verify active/suspicious clips during recovery;
+not a full-card rehash. Fully verify active/suspicious clips during recovery;
 scan/rebuild a damaged catalog incrementally with bounded memory and visible
 progress. The ≤10s boot target applies to a healthy catalog, not damaged-card
 recovery. Unverified suspicious clips remain absent from downloads until checked.
@@ -113,11 +121,15 @@ filesystem bytes for originals, indexes, manifests, active files, catalog and
 pin metadata, rather than summing JPEG payload lengths alone. The remaining
 15% is a free-space reserve, not a hidden protected-event pool.
 
-Stage 1 uses the recording pool for rolling clips. Stage 3 permits at most
-8,000,000,000 bytes of protected clips inside that pool; protected bytes are
-subtracted from rolling capacity. A profile must pass 72h tests at the supported
-protection budget before both claims are advertised together. Initial target
-is ≤3.0Mbit/s of total allocated recording growth over representative workloads.
+Stage 1 uses the pool for rolling clips. On nominal 32GB the 85% pool is 27.2GB;
+Stage 3 permits at most 2,000,000,000 protected bytes inside it, further reduced
+when actual capacity/headroom requires. Pins subtract from rolling capacity.
+Report the applied limit; backend quota is separate. The nominal 72h ceiling
+is ~0.84Mbit/s total before pins/headroom or ~0.778Mbit/s with full 2GB protection.
+Use ≤0.75Mbit/s total allocated growth as an unverified capacity-screening target,
+not a proven useful JPEG mode. Measure real retention/quality first; PR-03 is not
+passed unless useful recorded duration reaches 72h at the advertised pin budget.
+Never silently reduce quality/FPS/resolution or advertise 72h to conceal failure.
 
 Before starting a segment maintain within-pool headroom for two maximum allocated
 complete bundles, including payload/index/manifest/active metadata, cluster-rounding,
@@ -138,11 +150,15 @@ is required in v1; rolling pruning and explicit card maintenance cover that scop
 
 ## 6. Power, settings and time
 
-V1 has no onboard battery charging. The owner removes the camera from the
-harness and unplugs the pack to charge separately. Battery removal can be an
-abrupt power loss: test recovery and automatic recording on reconnection; do
-not require a charger-connected state machine. Use the approved shutdown action
-if available, but never assume unplugging will allow a final flush.
+The owner removes the camera and unplugs its pack for external charging.
+The XIAO physically has an onboard charger: disconnect the pack before USB
+service unless isolation is reviewed; firmware must not claim that charging is
+physically disabled by this policy. Qualify the BAT input/onboard regulation,
+connector, switch/cutoff and peaks rather than inheriting a 5V boost. Battery
+removal is a power-loss case: test recovery/auto-record on reconnection. Use an
+approved shutdown action if available; never assume a final flush after unplug.
+No owner-facing in-camera charge state machine is required. Battery voltage or
+percentage stays unavailable without a reviewed measurement/calibration path.
 
 Shutdown/low-power indications trigger best-effort close/sync and an explicit
 state. A hardware power switch may remove power abruptly, so recovery remains
@@ -168,7 +184,8 @@ Implement [interfaces](interfaces.md) after the core recorder passes its gate.
 Start with Wi-Fi off and record to SD. A deliberate physical action on a
 qualified control opens local access using the unique-credential SoftAP or a
 previously configured station network. No remote wake/discovery is possible
-while off. GPIO0 must not serve as a live pairing button during capture.
+while off. Qualify the chosen local-access control against the XIAO BOOT/strap,
+SD CS/LED and expansion wiring; no inherited classic-board button assignment.
 
 Proposed local-access limits are 300s since last authenticated activity and a
 15min absolute cap. Accepted authenticated traffic, including an active transfer,
@@ -203,11 +220,11 @@ not encrypt removable SD originals.
 ## 8. OTA and optional Stage 3 extensions
 
 Plan dual OTA app slots plus OTA data, NVS and recovery needs within detected
-flash (classic baseline documented as 4MB). Prove signed-image slot fit with
+flash (XIAO Sense documented baseline 8MB, verify on the actual unit). Prove signed-image slot fit with
 headroom using the actual build before advertising OTA. A single large app
 partition does not meet dual-slot rollback requirements. If it cannot fit,
 report a blocked gate and obtain a scope/board decision rather than removing
-signatures, TLS or rollback. Never copy an N16R8 partition table.
+signatures, TLS or rollback. Never copy classic 4MB, N16R8 or Plus partition assumptions.
 OTA uses a suitably charged qualified pack or separately reviewed isolated
 bench power, not an assumed in-camera charging supply. Do not invent charge
 percentage telemetry; retain interruption/rollback tests for pack loss.
@@ -238,7 +255,7 @@ tests; it is not part of media v1 or a required release deliverable.
 | FW-01 auto recording | Healthy boot, no Wi-Fi, no phone, backend down, restart |
 | FW-02 bounded capture | Queue saturation, invalid JPEG, allocation failure, SD stall, preview pressure |
 | FW-03 media/recovery | Golden fixtures, partial write at each step, CRC/hash mismatch, quarantine |
-| FW-04 retention | Simulated prune arithmetic and actual 72h + rollover at selected profile |
+| FW-04 retention | 32GB arithmetic/actual rollover and measured useful window; 72h is a separate unverified goal until real soak passes |
 | FW-05 truthful status | No card, exFAT, full/pinned/leased, camera error, unknown UTC, ADC absent |
 | FW-06 secure networking | Pair window, bad pin/token, replay/stale settings, network reconnect |
 | FW-07 update recovery | Signature/hardware/length failure, interrupted OTA, first-boot failure/rollback |

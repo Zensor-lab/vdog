@@ -1,142 +1,124 @@
-# ESP32-CAM and 1000mAh battery decision review
+# XIAO ESP32S3 Sense and 32GB decision review
 
-Reviewed 2026-11-09. This supersedes the earlier S3 prototype direction; the
-replacement has not passed bench, storage, runtime or wearable tests.
+Reviewed 2026-11-16. The active board/card replace the earlier classic
+AI-Thinker ESP32-CAM/128GB baseline. This is a documentation/source review;
+no vdog firmware build, upload, card, runtime or wearable test has run.
 
-## 1. Confirmed direction and recommendation
+## 1. Confirmed direction
 
-The owner selected **classic AI-Thinker ESP32-CAM + OV2640**, a nominal **3.7V
-1000mAh single-cell battery**, approximately **1–2 hours per charge**, and
-**mainly SD recording, enabling Wi-Fi when needed**. The 128GB card priority,
-72-hour recorded-footage retention target and sub-CNY150 base-hardware target
-remain unchanged. Exact PCB revision, supplier, pack SKU and power assembly
-still need qualification.
+Use **Seeed Studio XIAO ESP32S3 Sense**, including its Sense expansion board,
+and **32GB FAT32 first**. Keep the nominal **3.7V 1000mAh removable protected
+pack**, approximately **1–2h per charge**, mainly SD recording and Wi-Fi enabled
+through physical local access. Camera type is the acquired unit's sensor, not
+an assumed OV2640 replacement part.
 
-The owner also confirmed external battery charging after removing the complete
-camera from the harness and unplugging the pack; no onboard charging is needed.
-Initial fit is a chest harness on the owner's dog, weighing below 8kg. Dry
-weather is the first scope; weather protection comes later. This is not a claim
-of suitability for every dog below 8kg or automatic fit on larger dogs.
+Remove the whole camera from the harness, unplug the pack and charge it using
+a compatible external charger. The first fit subject is the owner's dog
+reported below 8kg, using a chest harness in dry weather. A basic protective
+case precedes wear; weather sealing and larger-dog fit require later validation.
+China procurement and required-kit BOM <CNY150 excluding SD/harness, including
+external charger, remain unquoted goals.
 
-Recommendation: use this as the first low-cost recorder prototype. Integrated
-camera/card connections simplify assembly, while the older board offers less
-flash margin than N16R8. The S3 pin map, 16MB/8MB expectation and build settings
-are superseded, not configuration defaults for this board.
+## 2. PlatformIO conclusion
 
-## 2. Changes and remaining gates
+**Yes: upstream PlatformIO officially lists this XIAO base-board target with
+both ESP-IDF and Arduino support**, using `board = seeed_xiao_esp32s3`. Keep the
+ESP-IDF C++ proposal. Official platform 8.0.0 is a candidate for package 0.2;
+no vdog build has qualified it yet. The manifest's Arduino memory/partition
+settings are not ESP-IDF configuration. The Sense camera, octal PSRAM, SPI SD,
+USB and signed OTA still need explicit setup and tests.
 
-| Topic | New baseline | Remaining evidence |
+See [PlatformIO support](platformio-support.md) for the candidate configuration,
+versioned primary sources and remaining build/hardware acceptance.
+
+## 3. Board-specific changes
+
+| Topic | Active baseline | Gate |
 | --- | --- | --- |
-| MCU/camera | Original ESP32, classic ESP32-CAM, OV2640 JPEG | PCB/chip revision, lens, useful FPS/image quality |
-| Memory | PlatformIO describes 4MB flash; legacy vendor spec describes 4MB PSRAM | Actual detected memory, variant and dual-OTA fit |
-| Power | Removable protected 3.7V 1000mAh 1S pack and regulation; separate charger | Pack/charger compatibility, peak current, cutoff, keyed connector/polarity, heat |
-| Radio | Off by default; physical timed local-access session | Qualified control pin, TLS load, transition/resume behavior |
-| Card | 128GB remains first priority | FAT32/card qualification and 72h powered retention soak |
-| Updates | Signed dual-slot OTA and rollback remain required for Stage 2 | Real build sizes/partitions; no silent security removal |
+| MCU/memory | XIAO ESP32S3 Sense, documented 8MB flash/8MB PSRAM | Detect actual memory; do not copy classic 4MB, N16R8 16MB or Plus assumptions |
+| Camera | Current Seeed transition may ship fixed-focus OV5640 or OV3660; OV2640 historical | Sensor/revision/lens inventory and pinned driver; VGA/SVGA tests, not 5MP performance claims |
+| Storage | Sense SPI socket, genuine 32GB SDHC FAT32 | Actual CS/revision/LED sharing, latency, allocated bytes, recovery/rollover |
+| Microphone | Hardware is present, audio recording remains excluded | Do not initialize an audio capture pipeline |
+| Power | Reviewed removable pack connection to XIAO BAT input and onboard regulation | Onboard charger exists; external-charge policy and USB/pack isolation remain |
+| Networking | Radio-off default, physical timed access, one TLS connection initially | Recorder/heap/power concurrency measured before expansion |
+| OTA | Signed two-slot update and rollback in actual flash | Binary/partition sizing and real fault tests, not automatic success from 8MB |
 
-[PlatformIO](https://docs.platformio.org/en/latest/boards/espressif32/esp32cam.html)
-identifies the original ESP32 and 4MB flash. The manufacturer-authored
-[legacy specification mirror](https://lemariva.com/storage/app/media/uploaded-files/ESP32-CAM%20Product%20Specification.pdf)
-is historical evidence, not current qualification of every seller's variant.
-Its limited published card support neither establishes 128GB support nor proves
-128GB impossible. Verify the actual board/card rather than generalizing a label.
+The current [Seeed guide](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/)
+and [Sense card guide](https://wiki.seeedstudio.com/xiao_esp32s3_sense_filesystem/)
+are hardware-family references; reconcile the acquired base/expansion revisions.
+The card socket is not the old SDMMC slot. GPIO21 CS/user-LED interaction means
+an independent heartbeat blink must not toggle the active card-select line.
 
-## 3. Runtime calculation
+## 4. 32GB retention consequence
 
-Nominal energy is `3.7V × 1.0Ah = 3.7Wh`. For sensitivity analysis only, assume
-80% usable capacity before shutdown and 85% conversion efficiency to board input:
+The 72h recorded-footage goal is retained but **unverified on 32GB**. Nominal
+capacity arithmetic, before actual allocation/active-bundle headroom:
 
 ```text
-energy delivered to board = 3.7Wh × 0.80 × 0.85 = 2.516Wh
-runtime_hours = 2.516Wh / measured_average_board_input_power_W
+32000000000 bytes * 0.85 recording pool = 27200000000 bytes
+72h = 259200 seconds
+27200000000 * 8 / 259200 = 839506.17 bit/s total recording ceiling
+with 2000000000 protected bytes inside pool:
+25200000000 * 8 / 259200 = 777777.78 bit/s
 ```
 
-| Hypothetical board-input load | Calculated runtime |
-| ---: | ---: |
-| 0.5W | 5.0h |
-| 1.0W | 2.5h |
-| 1.5W | 1.7h |
-| 2.0W | 1.3h |
+Proposed capacity screening target: ≤0.75Mbit/s total allocated recording growth,
+including indexes/manifests/catalog. At 15fps that is only 6,250 bytes per frame
+including overhead; useful high-motion JPEG may not fit. At that rate 72h uses
+24.3GB, leaving 0.9GB of the pool after full 2GB event protection, before complete
+bundle headroom. This is a narrow feasibility margin, not a supported profile.
 
-These loads and efficiencies are assumptions, not measurements or guarantees.
-Measure at the regulated board input; onboard regulator losses are already
-included there. Do not omit them from a chip-only load or count them twice.
-Under these assumptions, two hours requires average board-input power ≤1.258W.
-Age, temperature, pack quality and Wi-Fi use can reduce runtime. Capacity in
-mAh does not specify peak-current capability.
+At 1/2/3Mbit/s, the nominal unprotected pool holds about 60.4/30.2/20.1h before
+headroom. Report actual useful captured duration; no silent FPS/resolution/
+quality reduction and no fixed 72h UI claim. If agreed image usefulness and
+72h cannot coexist, return measured alternatives for an explicit decision.
+Larger cards are future qualification; 128GB is not the current requirement.
+A working 32GB loop recorder does not by itself pass the 72h criterion.
 
-Proposed acceptance interpretation of “about 1–2 hours”: demonstrate at least
-one hour of useful recording, target two, and publish conditions/results.
-Record Wi-Fi-off and qualified Wi-Fi-session cases separately. Deep-sleep time
-is not continuous recording. A 72-hour SD history may accumulate over multiple
-charges; it does not imply three days per charge.
+## 5. Battery and charging policy
 
-## 4. Power assembly
+The prior stock-board 5V boost proposal is superseded. Review the actual XIAO
+BAT+/BAT− circuit, pack limits, keyed service connector, switch/shutdown,
+undervoltage behavior and onboard regulation. Do not add a boost stage solely
+because the previous board required it. Native USB-C can power/program this
+board and can also charge a connected pack through onboard hardware: unplug
+the pack before USB service unless an isolation procedure is reviewed.
+Firmware cannot make that physical charger disappear.
 
-The [V1.6 schematic mirror](https://www.olimex.com/Products/IoT/ESP32/ESP32-CAM/resources/ESP32_CAM_V1.6.pdf)
-shows a linear regulator and separate camera rails, without a charger. For a
-matching stock board, start bench design around its regulated 5V input,
-typically supplied by a reviewed boost stage from the pack. Measure the heat
-and energy cost of the complete power path.
+Runtime remains a measured gate. For a simple battery-side sensitivity example:
 
-Do not connect a bare cell directly to 3V3: nominal 3.7V is not regulated 3.3V.
-Do not assume that a cell connected to 5V meets the board's requirements across
-discharge. A regulated direct-3.3V architecture requires its own regulator,
-board and back-feed review.
+```text
+nominal battery energy = 3.7V * 1.0Ah = 3.7Wh
+hypothetical usable battery energy = 3.7Wh * 0.80 = 2.96Wh
+runtime_hours = 2.96Wh / measured_average_battery_input_power_W
+```
 
-The camera now needs only the protected pack's discharge path, a reviewed
-service connector, switch/shutdown and regulated supply. Select pack protection,
-voltage/cutoff limits, discharge rating, polarity/keying, strain relief and peak
-margin together. No onboard charger, USB battery charging or load-sharing IC is
-required. Programming/bench power is separately reviewed and isolated from the
-pack; it must not become an accidental charging path.
+Hypothetical battery-side loads of 1/1.5/2W imply about 2.96/1.97/1.48h.
+The 80% allowance is assumed, not measured. Battery-input power includes all
+board/converter losses; do not multiply an extra 85% conversion factor on top.
+If measuring a downstream load instead, record the applicable efficiency and
+apply it once. Neither examples nor advertised low-power sleep prove recording
+runtime. Proposed minimum is 1h, target 2h, with actual conditions disclosed.
 
-Owner procedure: remove the camera from the harness, use its approved power-off
-action, unplug the pack and connect it only to a compatible external 1S charger.
-Choose that charger's voltage/current for the exact pack. Reconnect the pack to
-resume automatic recording. Abrupt unplugging can still occur, so recovery tests
-remain required; a final flush is not guaranteed. The required external charger
-stays in required-kit costing: the existing budget excludes only SD and harness.
+A 72h history may accumulate across charging cycles. Unpowered time is a coverage
+gap and cannot count as recording. Validate abrupt disconnect/reconnect and
+media recovery; use an approved shutdown action when available, without assuming
+there is enough energy to flush after unplugging. Charge only the disconnected
+pack off-harness using the matched external charger.
 
-Dry-weather use still needs a basic protective case before wear, insulating and
-restraining electronics/pack, securing connectors and providing suitable contact
-surfaces. Weather sealing is later work with fresh thermal/ingress validation.
-Chest geometry, strap spacing, ground view and movement need actual checks;
-small-dog-first is a design priority, not universal larger-dog compatibility.
+## 6. Work still needed
 
-## 5. Required experiments
+- Inventory base/Sense revisions, sensor, antenna, pack/connector and genuine
+  32GB card. Approve the pin map/control/USB isolation before physical use.
+- Pin a compatible platform/SDK/compiler/camera release and produce a clean build;
+  then authorize and perform detection/camera/SPI SD/OTA tests on an identified unit.
+- Measure image usefulness, gaps/FPS, SPI stalls, allocated growth, heap/PSRAM,
+  current peaks, runtime and enclosed heat. Preserve original recordings.
+- Obtain current CN quotes for the complete Sense assembly and required kit;
+  the prior classic-board allocation is not evidence of this board's price.
+- Obtain exact dog/chest/harness measurements for final mount/CAD and dry-use
+  wear signoff; these do not block software contracts or desk recording tests.
 
-1. Verify actual board/pack identity, memory, rails, wiring and polarity.
-2. Record to real 128GB FAT32 cards; validate JPEG/index/hash/recovery behavior.
-   MCU replacement does not change the nominal ~3.36Mbit/s 72h capacity ceiling
-   at an 85% recording pool, before further protection/headroom deductions.
-3. Measure image usefulness, delivered FPS/gaps, bytes, SD stalls, current peaks,
-   average board-input power, brownouts, heat and runtime.
-4. Keep flash lamp off for baseline recording. Low-light blur remains a quality
-   gate, not something to hide to achieve runtime/capacity numbers.
-5. Qualify TLS+camera+SD before preview/download concurrency. Do not copy the
-   S2/S3-only PSRAM-DMA setting onto original ESP32.
-6. Prove two signed OTA slots and rollback fit; single-large-app partitions do
-   not satisfy that requirement. Request a scope decision if they cannot fit.
-7. Qualify enclosure/mount/power before wear and collect China quotes before a
-   production-cost claim.
-
-References: [camera driver](https://github.com/espressif/esp32-camera),
-[PlatformIO manifest](https://github.com/platformio/platform-espressif32/blob/develop/boards/esp32cam.json),
-[ESP-IDF OTA](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/ota.html).
-
-## 6. Decisions still needed
-
-- Exact board supplier/revision and pack SKU, dimensions, mass, protection,
-  discharge rating and connector.
-- Compatible external charger and removable connector/regulator assembly.
-  External charging is settled; recording while charging is outside v1.
-- Actual dog weight/chest/harness measurements before final mount/CAD and field
-  signoff; these do not block host development or bench recording.
-- Supported image profile after quality/rate/runtime measurement.
-- Response if retention or signed OTA fails: explicitly revise scope, select
-  a qualified larger-memory board, or return to S3 with owner direction.
-
-Media/API and Flutter/Rust boundaries remain v1. Board configuration, runtime
-tests, Wi-Fi policy and capability reporting change together. No purchase,
-hardware operation or application implementation occurred during this review.
+Media/API v1 remain JPEG/index-based and independent of sensor/board name.
+The draft device protection ceiling changes to 2GB for the smaller card; backend
+storage quotas remain separately configured. Stage 0 is still incomplete.

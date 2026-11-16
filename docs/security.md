@@ -24,6 +24,11 @@ is not automatically trusted.
 | Bad update / stolen signing key | Signed hardware-compatible images, version policy, rollback, key custody | Bench checks are not production secure-boot provisioning |
 | Storage exhaustion / denial of service | Quotas, bounded leases, upload expiry, rate limits | Availability cannot be guaranteed against physical disruption |
 
+The active XIAO ESP32S3 Sense contains a microphone and onboard charger. Keep
+microphone capture disabled; the external-charge owner workflow does not disable
+the physical charge circuit. Reviewed pack/USB isolation and board-specific
+control/CS wiring are prerequisites, not capabilities inferred from an API.
+
 ## 2. Data handling
 
 Do not capture audio, location or personal identifiers beyond required opaque

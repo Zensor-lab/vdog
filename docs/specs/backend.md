@@ -1,6 +1,6 @@
 # Rust self-hosted backend specification
 
-Status: proposed Stage 3 implementation baseline, updated 2026-11-09. No service exists
+Status: proposed Stage 3 implementation baseline, updated 2026-11-16. No service exists
 yet. The backend is optional: camera recording and local Flutter review must
 already work without it. The proposed stack is Rust, Axum, Tokio, SQLite, a local
 filesystem, and an isolated FFmpeg worker. Freeze exact versions, database
@@ -11,12 +11,25 @@ The source bundle and its validation rules live in
 [media-format.md](media-format.md). This document specifies service behavior and
 durability; do not invent competing endpoint payloads while implementing it.
 
-The current device baseline is the classic AI-Thinker ESP32-CAM with OV2640,
-nominal 3.7V/1000mAh battery, and an approximately 1–2-hour continuous-recording
-runtime target. See [the hardware decision review](../hardware-decision-review.md).
-These choices do not change this server's media/API contract or establish
-measured runtime. Server operation must not depend on the camera having
-ESP32-S3 resources or sustaining simultaneous recording and network transfers.
+The current device baseline is XIAO ESP32S3 Sense, a genuine 32GB microSD first,
+nominal 3.7V/1000mAh battery with separate external-pack charging, and an
+approximately 1–2-hour continuous-recording runtime target. See
+[the hardware decision review](../hardware-decision-review.md). Seeed's
+[current getting-started guide](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/)
+reports the transition to fixed-focus OV5640 from OV3660, with either shipping
+during the transition; OV2640 is historical/discontinued. Verify the as-shipped
+OV5640/OV3660 sensor and board revision, actual flash, PSRAM, and peripherals.
+An acquired historical OV2640 unit requires separate explicit qualification.
+These choices do not change this server's v1 media/API contract or establish
+measured runtime, 72h retention, or concurrency. The main 72h history target
+remains explicitly unverified on 32GB; no automatic source-quality/FPS reduction
+is allowed merely to make it fit. Recording usefulness and actual
+retention measurements remain visible; server ingestion cannot recover footage
+already pruned from the card. One camera TLS connection remains the initial
+default until a measured resource gate permits expansion.
+V1's source limit remains 1600 pixels per dimension, with the agreed VGA/SVGA
+measurement profiles. Do not accept a larger sensor-native image as valid v1
+input, advertise 5MP recording, or upscale derivatives to imply extra detail.
 The default camera mode records with Wi-Fi off. A deliberate physical action
 opens local access; no server polling, discovery, notification, or job can
 remotely wake that radio. Local-access Wi-Fi expires after 300 seconds without
@@ -42,6 +55,9 @@ cameras/phones. Public registration, multi-tenant billing, object storage,
 distributed workers, live remote camera proxying, automatic poison detection,
 face recognition, geolocation, and mandatory push-service integration are out of
 scope. SQLite and filesystem storage are deliberate first-version choices.
+The Sense's onboard microphone does not enable audio ingestion, transcription,
+or audio in derivatives. Its onboard charging circuitry does not alter the
+external-pack charging workflow or create server-side charging telemetry.
 
 ## 2. Architecture and proposed files
 
@@ -131,8 +147,8 @@ notification credentials, footage, and location-bearing user notes from logs.
 Direct camera uploads are deferred until a separate resource gate. If enabled
 later, issue a scoped ingest credential that can upload for exactly one device;
 it cannot browse other footage, administer users, or create arbitrary jobs.
-The classic board may fail the recording-plus-upload resource gate. In that
-case leave direct sync disabled, retain the phone-mediated path, and report the
+The acquired Sense revision may fail the recording-plus-upload resource gate.
+In that case leave direct sync disabled, retain the phone-mediated path, and report the
 unverified capability rather than reducing recording requirements or silently
 pausing recording. A server retry policy must not flood a busy/offline camera.
 Any later direct-device sync must checkpoint at the local session boundary and
@@ -284,7 +300,7 @@ Reject path traversal and prohibit external URL/protocol fetches. Generated fram
 names contain no uploaded labels. Frame extraction and intermediate files count
 toward scratch quota and are removed on terminal completion. For a long export,
 process one bounded segment at a time before joining derivatives; do not load a
-72-hour library into RAM or materialize every frame in a single job.
+whole library into RAM or materialize every frame in a single job.
 
 ### 7.3 Derivative types
 
@@ -352,6 +368,11 @@ Backend storage uses a bounded protected budget. If protection cannot be granted
 return the capacity reason and leave the previous state unchanged. Do not resolve
 full protected storage by silently deleting protected originals. Show the effect
 on ordinary retention and require an owner retention decision where needed.
+Keep this server policy separate from the initial 32GB device's protection
+ceiling of 2,000,000,000 bytes within its recording pool, or the smaller qualified
+device-reported bound. Device protection is not extra card capacity, and that
+device ceiling does not automatically become the backend's quota. Never report
+72h source retention merely because a backend copy or event association exists.
 
 Create notifications through a transactional outbox so a committed event and its
 notification intent cannot diverge. Start with in-app status and an optional
@@ -411,7 +432,8 @@ pending uploads after restore.
 | BE-T11 capacity | Full disk/quota, protected budget exhaustion, and expired uploads produce recoverable errors without deleting protected originals. |
 | BE-T12 operations | Clean-host backup restore and schema migration preserve media identity and owner isolation. |
 | BE-T13 notifications | Retries deduplicate events, bounded failures enter dead state, and offline delivery is shown accurately. |
-| BE-T14 optional device sync | A failed classic-board recording/upload resource gate leaves direct sync disabled and recording requirements unchanged. If admitted later, idle/absolute Wi-Fi expiry checkpoints upload and waits for physical reopening without remote wake; phone-mediated upload retains the same validated bundle contract. |
+| BE-T14 optional device sync | A failed Sense recording/upload resource gate leaves direct sync disabled without silently lowering the recording quality/FPS profile. If admitted later, single-TLS scheduling and idle/absolute Wi-Fi expiry checkpoint upload until physical reopening; phone-mediated upload retains the same validated v1 bundle contract. |
+| BE-T15 source-storage truthfulness | 32GB source capacity and device event bounds are preserved as source metadata, not backend capacity guarantees. Server records/copies do not assert the unverified 72h source-retention target or claim to recover pruned footage; no automatic source-quality/FPS reduction is used to make it fit. |
 
 Future checks from `backend/` are `cargo fmt --check`, `cargo clippy --all-targets
 -- -D warnings`, `cargo test`, and `cargo build --release`; no Cargo project exists

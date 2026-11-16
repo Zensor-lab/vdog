@@ -5,6 +5,12 @@ document owns file names, timestamps, bounds, integrity, and recovery semantics.
 It deliberately avoids requiring an AVI muxer on the microcontroller or assuming
 that a phone's native video player can play raw MJPEG.
 
+The XIAO ESP32S3 Sense/32GB hardware update does not change this draft v1 byte
+layout. Sensor identity and capture setup come from acquired hardware revision;
+OV5640/OV3660 capability does not raise the 1600-per-dimension/other parser bounds.
+Use qualified VGA/SVGA JPEG profiles. Retention and protection budgets belong to
+the product/storage policy, not an assumed sensor or card size in these files.
+
 ## 1. Layout and identity
 
 ```text

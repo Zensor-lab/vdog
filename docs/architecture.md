@@ -1,14 +1,15 @@
 # System architecture
 
-Status: baseline revised 2026-11-09 for classic ESP32-CAM, OV2640 and nominal
-3.7V 1000mAh power. See [decision review](hardware-decision-review.md).
+Status: baseline revised 2026-11-16 for XIAO ESP32S3 Sense, 32GB FAT32 first
+and nominal 3.7V 1000mAh. See [decision review](hardware-decision-review.md)
+and [PlatformIO support](platformio-support.md).
 Wire/file contracts live in
 [interfaces](specs/interfaces.md) and [media format](specs/media-format.md).
 
 ```mermaid
 flowchart LR
-  Camera[OV2640] --> Recorder[Classic ESP32-CAM recorder]
-  Recorder --> SD[128GB microSD originals]
+  Camera[Identified Sense camera] --> Recorder[XIAO ESP32S3 Sense recorder]
+  Recorder -->|Sense SPI socket| SD[32GB FAT32 originals]
   Phone[Flutter Android / iOS] <-->|Local HTTPS over Wi-Fi| Recorder
   SD -->|Manual import during development| Tools[Desktop validation tools]
   Phone -->|Optional authenticated upload| API[Rust self-hosted API]
@@ -81,6 +82,10 @@ Flutter/Dart for both mobile OSes; Rust with Axum/Tokio/SQLite for self-hosting;
 FFmpeg with the required vid.stab filters for host post-processing. Exact versions
 and lockfiles are selected in package 0.2 after verifying a compatible combination.
 Do not equate current upstream ESP-IDF with the version packaged by PlatformIO.
+Upstream XIAO board/framework support has been checked from official sources;
+platform 8.0.0 is a candidate, not a passed project build. Configure Sense camera,
+8MB flash/octal PSRAM, SPI storage and USB separately; see the support document.
+
 
 The existing firmware role explicitly expects an existing PlatformIO project.
 Package 0.2 first creates a bounded bootstrap assignment and records board,
@@ -91,11 +96,19 @@ official PlatformIO path cannot support the required module/features.
 
 ## 6. Deployment and operational model
 
-The wearable power assembly is a removable protected 1S pack, reviewed connector/
-switch/regulation and camera. Remove the whole camera from the harness, unplug
-the pack and use a compatible separate charger. No onboard charger, load sharing
-or recording-while-charging path is required. Programming/bench power remains a
-separately reviewed configuration, not an owner charging input.
+The wearable power assembly is a removable protected 1S pack, reviewed keyed
+connector/switch and the acquired XIAO BAT input/onboard regulation. The old
+classic-board 5V boost is not a default. Remove camera/unplug pack for external
+charging. Stock onboard charging exists: unplug pack before USB-C service unless
+an isolation configuration is reviewed; no additional charge/load-sharing
+function is requested. Native USB/BOOT recovery and its power path are qualified
+for the actual base/Sense revision. The onboard microphone remains unused.
+
+A 32GB SDHC FAT32 card is the first supported target. The 85% recording pool is
+nominally 27.2GB, with proposed local pins ≤2GB inside it and full-bundle headroom.
+Report measured useful retention. 72h is an unverified goal; preserving image
+usefulness may prevent meeting its ~0.84Mbit/s total capacity ceiling. Backend
+quotas are independent; no audio pipeline or automatic quality reduction is added.
 
 First fit is a small dog's chest harness and dry weather. Basic protective
 housing/pack restraint precede wear; weather sealing is a future revision with

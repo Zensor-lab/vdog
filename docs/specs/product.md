@@ -1,6 +1,6 @@
 # Product requirements
 
-Status: implementation baseline revised 2026-11-09. Requirement IDs below are
+Status: implementation baseline revised 2026-11-16. Requirement IDs below are
 stable; acceptance requires recorded evidence under [validation](../validation.md).
 
 ## 1. Purpose and motivation
@@ -24,26 +24,34 @@ The connected reader returned five recent user/assistant turns, with no older
 cursor and no attachments. Earlier requirements referenced inside those replies
 were unavailable. They are not silently reconstructed here.
 
-The owner's 2026-11-09 follow-up selected classic AI-Thinker ESP32-CAM + OV2640,
-nominal 3.7V 1000mAh battery, about 1–2h per charge and mainly SD recording with
-Wi-Fi when needed. This supersedes the S3 direction. See the
-[hardware decision review](../hardware-decision-review.md) for evidence and gates.
-The same-day follow-up confirms separate charging of the unplugged battery after
-removing the whole camera, chest mounting for the owner's small dog reported
-below 8kg, and dry-weather-first use. A later weather-protective enclosure is a separate revision.
+The owner's 2026-11-16 follow-up selects **Seeed Studio XIAO ESP32S3 Sense**
+and **32GB microSD first**, superseding the 2026-11-09 classic AI-Thinker/128GB
+baseline. Use the acquired Sense camera after sensor/revision identification:
+Seeed currently describes fixed-focus OV5640/OV3660 shipments, with OV2640
+historical. The board is not the Plus model. See the
+[hardware review](../hardware-decision-review.md) and
+[PlatformIO support check](../platformio-support.md).
+
+Earlier confirmed choices remain: nominal 3.7V 1000mAh, about 1–2h per charge,
+mainly SD recording with Wi-Fi when needed, external charging of the unplugged
+pack after removing the camera, below-8kg owner's dog/chest mount and dry weather.
+Basic protective housing precedes wear; weather sealing is a later revision.
+The XIAO physically has onboard charging hardware; the external-charge workflow
+requires pack disconnection before USB service unless isolation is reviewed.
 
 | Classification | Decision | Treatment |
 | --- | --- | --- |
 | Explicit user direction | Develop/procure in China; use Chinese prices | CNY is the cost unit; obtain supplier quotes in Stage 0 |
 | Explicit user direction | Price below 150 excluding SD card and harness | Interpret as production hardware BOM < CNY150, as the discussion did; retail price is not validated |
-| Latest explicit user direction | Classic AI-Thinker ESP32-CAM + OV2640, nominal 3.7V 1000mAh, about 1–2h per charge | Exact board/pack and measured runtime remain gated |
-| Continuing user priority | 128GB SD first priority | Card qualification and retention target remain unchanged |
+| Latest explicit user direction | Seeed Studio XIAO ESP32S3 Sense | Exact base/Sense/sensor revisions and measured operation remain gated |
+| Latest explicit user direction | 32GB FAT32 first | Larger cards are future qualification; recalculate capacity and actual retention |
+| Continuing user direction | Nominal 3.7V 1000mAh and about 1–2h per charge | Exact protected pack/connector/runtime remain gated |
 | Latest explicit user direction | Mainly SD recording; Wi-Fi when needed | Radio off by default; physical local-access session |
-| Latest explicit user direction | Remove camera and unplug pack for external charging | No onboard charging/load-sharing or record-while-charging requirement |
+| Continuing user direction | Remove camera and unplug pack for external charging | Onboard charger exists but is not the owner workflow; disconnect pack before USB service |
 | Latest explicit user direction | Small dog first, chest harness mount, dry weather | Actual fit measured before wear; basic housing required; weather sealing later |
 | User question / assistant proposal | Wi-Fi only, no SIM | v1 engineering baseline; cellular excluded from current implementation |
-| Superseded baseline | S3-WROOM-1-N16R8 prototype | Alternative only; its pins/memory settings do not apply to ESP32-CAM |
-| Assistant proposal | Automatic recording, 72h rolling retention | Primary engineering acceptance target, subject to image-quality/capacity gate |
+| Superseded baselines | N16R8 prototype, then classic AI-Thinker/OV2640/128GB | Neither supplies the current XIAO pin, memory or power configuration |
+| Retained engineering target | Automatic recording, 72h recorded-footage retention | Unverified on 32GB; no 72h claim without useful-quality/full-retention evidence |
 | Assistant proposal | Flutter app then Rust backend | Proposed software architecture used in these specifications |
 | Assistant proposal retained | Mechanical damping; off-device EIS; IMU optional | Baseline; no real-time onboard EIS |
 | Superseded proposals | P4 first, 256GB first, mandatory IMU, cellular in Stage 3, higher BOM | Not v1 requirements; alternatives need a recorded decision |
@@ -64,8 +72,8 @@ below 8kg, and dry-weather-first use. A later weather-protective enclosure is a 
 | ID | Requirement | Acceptance anchor |
 | --- | --- | --- |
 | PR-01 | Start recording automatically with a valid card, independent of Wi-Fi/app/backend | Bench boot and offline tests |
-| PR-02 | Use classic AI-Thinker ESP32-CAM + OV2640 with a genuine 128GB microSD as the first prototype | Exact board/memory/card evidence; no inherited S3 pin map |
-| PR-03 | Preserve a rolling target of 72 hours of captured footage at an accepted quality profile | Full retention soak, not a capacity extrapolation alone |
+| PR-02 | Use XIAO ESP32S3 Sense and genuine 32GB FAT32 first | Actual base/Sense/sensor/memory/card evidence; reviewed XIAO camera/SPI-SD pins |
+| PR-03 | Retain 72h as the unverified recorded-footage target; expose actual 32GB retention | Quality/capacity gate plus real soak/rollover before any 72h pass or claim; failed combination requires a decision |
 | PR-04 | Required hardware-kit BOM < CNY150 excluding card and harness, including external charger | Dated itemized quotes, quantity, explicit accessory basis and contingency |
 | PR-05 | Record in bounded segments; recover finalized footage after power loss | Media and fault tests |
 | PR-06 | No network required for recording; Wi-Fi range limits remote features | Offline and reconnect tests |
@@ -80,34 +88,46 @@ below 8kg, and dry-weather-first use. A later weather-protective enclosure is a 
 | PR-15 | Preserve original footage; stabilized/transcoded outputs are separate derivatives | Hash and metadata tests |
 | PR-16 | Use nominal 3.7V 1000mAh and target about 1–2h per charge | Proposed minimum 1h/target 2h useful recording; actual pack/load/runtime measured |
 | PR-17 | Record with Wi-Fi off by default; enable it through physical local access | No remote-wake assumption; recording survives radio/session transitions |
-| PR-18 | Charge the unplugged removable pack externally after taking camera off harness | Compatible separate charger; no onboard charging; unplug/reconnect/recovery tests |
+| PR-18 | Charge the unplugged pack externally after taking camera off harness | Compatible separate charger and USB/pack isolation despite onboard charging circuit; unplug/reconnect/recovery tests |
 | PR-19 | Design first for the owner's below-8kg dog's chest harness in dry weather | Exact measurements, fit/ground view and basic housing before wear; no universal small/large-dog or weather-rating claim |
 
 ## 5. Performance and capacity targets
 
 Initial measurement profile: JPEG, 640×480 at nominal 15 FPS; compare 800×600
 and reduced frame rates only through the feasibility matrix. These are proposed
-test profiles, not proven ESP32-CAM capabilities. Resolution/FPS/JPEG quality are fixed
+test profiles, not proven XIAO Sense workload capabilities. Resolution/FPS/JPEG quality are fixed
 within a segment and included in its manifest. Do not advertise 720p/1080p or a
 constant bitrate before measurement.
 
-128GB means 128,000,000,000 nominal bytes. With 15% reserved, the theoretical
-recording pool is 108,800,000,000 bytes. For 259,200 seconds (72h):
+32GB means 32,000,000,000 nominal bytes. With 15% reserved, the theoretical
+recording pool is 27,200,000,000 bytes. For 259,200 seconds (72h):
 
 ```text
-maximum average total recording rate = pool_bytes * 8 / 259200
-                                     = 3,358,024 bit/s (about 3.36 Mbit/s)
-at 15 FPS, video-only upper bound      = about 27,984 bytes/JPEG
+maximum average total recording rate = 27200000000 * 8 / 259200
+                                     = 839506.17 bit/s (about 0.84 Mbit/s)
+at 15 FPS, all-recording allowance     = about 6996 bytes/frame
 ```
 
-Filesystem allocation, frame indexes, manifests and variability consume part of
-that budget. Use the smaller measured filesystem capacity rather than nominal
-card capacity in real calculations. At Stage 3, up to 8,000,000,000 bytes of the
-pool may hold protected clips; the nominal rolling remainder is then 100.8GB,
-or approximately 3.11 Mbit/s. Start with a **3.0 Mbit/s total rolling-write target**
-including metadata and allocation overhead. This leaves only limited margin and
-must be validated against real high-motion scenes. More protected footage or a
-smaller measured card can reduce the rolling window further.
+That allowance includes index/manifest/catalog and allocation overhead, not
+just JPEG bytes. Use actual filesystem capacity in implementation. The proposed
+Stage 3 protected ceiling is **2,000,000,000 bytes inside the recording pool**,
+reduced if the measured card cannot safely support it. The nominal rolling
+remainder is 25.2GB, approximately 0.778Mbit/s over 72h before active-bundle
+headroom. Start capacity screening at **≤0.75Mbit/s total allocated growth**;
+this uses 24.3GB/72h and leaves only 0.9GB after full 2GB protection, before
+headroom. Two maximum 256MiB payloads alone consume about 0.537GB, plus their
+indexes/manifests and allocation. Quality may make this rate unattainable.
+
+For perspective, the nominal 27.2GB pool holds about 60.4h at 1Mbit/s, 30.2h at
+2Mbit/s, or 20.1h at 3Mbit/s, all before additional pin/headroom deductions.
+These are calculations, not measurements. Switching to a higher-resolution
+sensor or S3 does not by itself improve JPEG compression enough to meet 72h.
+
+First validate useful recording and report measured retention on 32GB. A working
+loop recorder is not a passed PR-03 criterion. Never silently reduce quality,
+FPS or resolution to meet storage; if 72h and the agreed quality cannot coexist,
+report the failure and obtain an explicit profile/retention/storage decision.
+No guarantee of 72h on 32GB is made by these specifications.
 
 The 72h target describes retained **recorded duration while powered**. It is not
 72h of battery runtime, nor 72h of wall-clock coverage across power-off periods.
@@ -128,13 +148,15 @@ is not a guarantee that loss is limited to one second.
 
 ## 6. v1 exclusions
 
-No LTE/SIM/GPS, microphone/audio, screen, speaker, always-on live cloud stream,
+No LTE/SIM/GPS, audio capture, screen, speaker, always-on live cloud stream,
 real-time onboard EIS, autonomous hazard/poison diagnosis, mandatory IMU,
 automatic emergency dispatch, or vendor subscription. BLE is not required for
-v1 setup. On-demand low-rate Wi-Fi preview must yield to recording. Notifications
+v1 setup. The Sense microphone is present but unused and not initialized for
+audio capture. Current sensor megapixel capability does not override media-v1
+capture bounds or advertise 5MP/HD recording. On-demand low-rate Wi-Fi preview must yield to recording. Notifications
 are optional Stage 3 functionality while connectivity exists.
 
-If ESP32-CAM cannot meet the quality/capacity/runtime/OTA gate, report the measured failure and
+If the XIAO Sense/32GB combination cannot meet quality/capacity/runtime/OTA gates, report the measured failure and
 offer explicit tradeoffs (quality/FPS/retention/card size/SoC/cost). Do not quietly
 weaken the requirement, switch to P4, or claim that smooth stabilized video
 restores blurred or missing detail.

@@ -10,30 +10,34 @@ The local `.agent/PROJECT.md` points here. Operating rules remain in
   footage, optional self-hosted processing; for owners, builders and self-hosters.
 - Current state: agent starter and documentation only. No firmware/app/backend,
   application dependencies, CI or hardware designs. No application checks passed.
-- User priorities (2026-11-09): classic AI-Thinker ESP32-CAM + OV2640, nominal
-  3.7V 1000mAh battery, about 1–2h per charge; mainly SD recording with Wi-Fi
-  when needed. 128GB/China procurement/<CNY150 excluding SD/harness remain.
-  See [decision review](hardware-decision-review.md); S3 is now an alternative.
-- Confirmed use: chest harness for the owner's small dog reported below 8kg,
-  dry weather; exact weight/chest/harness measurements before final fit. Remove the
-  whole camera, unplug pack and charge externally; no onboard charge/load sharing.
-  Basic protective housing before wear; weather sealing and larger-dog fit later.
-- Baseline: Wi-Fi only, automatic segmented MJPEG, target 72h retained footage
-  while powered, Flutter app and Rust backend, off-device EIS, optional IMU.
+- User priorities (2026-11-16): Seeed Studio XIAO ESP32S3 Sense and 32GB FAT32
+  first. The acquired camera/revision is identified before configuration; current
+  shipments may be fixed-focus OV5640 or OV3660, with OV2640 historical.
+- Continuing choices: nominal 3.7V 1000mAh, about 1–2h, on-demand Wi-Fi,
+  external charging of the unplugged pack, below-8kg owner's dog/chest harness,
+  dry weather and basic protective housing. Exact fit measurements precede CAD.
+- China required-kit BOM <CNY150 excluding SD/harness remains unquoted; larger
+  cards are future qualification. No camera/audio feature or price is inferred.
+- Baseline: segmented JPEG recording, Flutter, Rust and off-device EIS. The 72h
+  retention goal is unverified on 32GB; measured useful quality/retention controls
+  release claims. No automatic profile reduction to manufacture a pass.
+- See [decision review](hardware-decision-review.md) and
+  [PlatformIO support](platformio-support.md). The XIAO's onboard charger exists
+  but is not the selected owner workflow; disconnect pack before USB servicing.
 
 ## Stack and gates
 
 | Area | Proposed baseline | Before implementation |
 | --- | --- | --- |
-| Firmware | Classic AI-Thinker ESP32-CAM + OV2640, ESP-IDF C++, PlatformIO | Exact PCB/chip revision, platform/framework/compiler/camera versions, detected flash/PSRAM, classic pin map, dual-slot OTA fit |
-| Power | Removable protected 3.7V 1000mAh 1S pack, regulation; separate external charger; target 1–2h | Exact pack/charger ratings, keyed connector/polarity, regulator/shutdown, measured load/runtime |
+| Firmware | XIAO ESP32S3 Sense, ESP-IDF C++, PlatformIO board `seeed_xiao_esp32s3` | Exact base/Sense/sensor revisions, pinned compatible platform/SDK/compiler/camera, 8MB flash/8MB octal PSRAM detection, SPI SD/pin review and OTA fit |
+| Power | Removable protected 3.7V 1000mAh pack through reviewed BAT input; separate charger; 1–2h goal | Actual board power/charger circuit, polarity, connector, cutoff/runtime and USB isolation; no assumed 5V boost |
 | App | Flutter/Dart Android+iOS | Version pins, min OS/target SDK/plugins/test phones; qualified Dart implementation/review route |
 | Backend | Rust, Axum/Tokio, SQLite, private filesystem | Rust/MSRV/crates/deployment image and quotas |
 | Processing | FFmpeg with vid.stab | Build/filter/codec presence, license review, resource limits |
-| Card | Genuine 128GB, prepared FAT32 | Actual models, preparation/allocation size, latency/corruption qualification |
+| Card | Genuine 32GB SDHC FAT32, Sense SPI socket | Exact models/allocation, measured bytes/latency, recovery/rollover and capacity/quality acceptance |
 
 Wiring is **not approved**. Use hardware's candidate map only for review. No
-supported PlatformIO environments exist yet; planned names are `vdog_esp32cam_proto`
+supported PlatformIO environments exist yet; planned names are `vdog_xiao_sense_proto`
 and `native`. Before firmware delegation, package 0.2 supplies exact versions/
 environments and 0.3 supplies reviewed wiring. The current docs request identifies
 no authorized device/port or flash, erase, format, OTA, or eFuse operation.
@@ -44,6 +48,8 @@ Future roots: `firmware/`, `app/`, `backend/`, `hardware/`, `contracts/`, `tools
 Requirements: `docs/specs/`; [plan](plans/implementation-plan.md). Planned commands
 are in [validation](validation.md); currently only documentation/Git inspection
 exists. Update this file with working install/build/test commands after bootstrap.
+Official board support has been checked from upstream documentation; no vdog
+cross-build, memory detection or hardware qualification has been performed.
 
 Non-secret configuration includes hardware revision, profile, SD budgets,
 backend bind/database/storage/scratch roots, quotas and approved processing
