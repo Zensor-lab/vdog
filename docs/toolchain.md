@@ -46,6 +46,34 @@ The component-manager lockfile `firmware/dependencies.lock`
 (`manifest_hash a1a1e378…e566`, `target: esp32s3`, lock schema 3.0.0) is
 **tracked in Git** so transitive versions are reproducible.
 
+### PlatformIO package locking (PR-review F1)
+
+`firmware/platformio.ini` additionally pins **every** package this
+environment resolves via `platform_packages =` with exact
+`owner/name@version` strings (the platform itself otherwise resolves its
+packages by range): `platformio/framework-espidf@4.60100.0`,
+`platformio/toolchain-xtensa-esp-elf@15.2.0+20251204`,
+`platformio/toolchain-riscv32-esp@15.2.0+20251204`,
+`platformio/toolchain-esp32ulp@1.23800.240113`,
+`platformio/tool-cmake@3.30.2`, `platformio/tool-ninja@1.13.2`,
+`platformio/tool-esptool@2.50400.0`,
+`platformio/tool-esp-rom-elfs@0.0.1+20241011`,
+`espressif/tool-xtensa-esp-elf-gdb@12.1.0+20221002`,
+`espressif/tool-riscv32-esp-elf-gdb@12.1.0+20221002`.
+`pio pkg list` (§6) now shows every package with an exact `required:` spec.
+The 15.2.0+20251204 toolchains are the platform's **declared optional
+variant** (`optionalVersions` in platform.json; default is 14.2.0+20260121)
+that resolves for ESP-IDF v6.1.0 — pinned explicitly so a cold cache cannot
+substitute a different compiler. The native environment is locked too:
+`platform = platformio/native@1.2.1` (registry-verified owner/version) plus
+`platform_packages = platformio/tool-scons@4.41101.0`, and HOST tests use
+`throwtheswitch/Unity@2.6.1` (exact pin, §2 above). GDB/ulp/rom-elfs
+packages are installed-by-default platform deps and are pinned even though
+debugging/ULP are unused in vdog v1.
+
+Verification with an **empty package cache** (`PLATFORMIO_CORE_DIR=$(mktemp
+-d)`, cold IDF venv + cold component-manager cache) is recorded in §7.
+
 ### esp32-camera compatibility note (ESP32-S3 + candidate sensors)
 
 `espressif/esp32-camera` 2.1.9 declares `idf >=5.1` (satisfied by v6.1.0)
@@ -63,7 +91,7 @@ behaviour on the actual module remains DEVICE evidence for packages 1.2–1.4.
 | Environment | Purpose | Definition |
 | --- | --- | --- |
 | `vdog_xiao_sense_proto` | cross-build (BUILD evidence) | `platform = platformio/espressif32@8.0.0`, `board = seeed_xiao_esp32s3`, `framework = espidf`, `monitor_speed = 115200`, `board_build.partitions = partitions/vdog_8mb_two_ota.csv` |
-| `native` | host tests (HOST evidence) | `platform = native`, `lib_deps = ./core` |
+| `native` | host tests (HOST evidence) | `platform = platformio/native@1.2.1` (exact, PR-review F1), `platform_packages = platformio/tool-scons@4.41101.0`, `lib_deps = ./core` + `throwtheswitch/Unity@2.6.1` |
 
 These are the only firmware environments (plan §4.1). `core/` (pure C, no
 IDF headers) is shared: ESP-IDF builds it via the thin
@@ -152,8 +180,8 @@ package's qualification runs.
 | `pio --version` | 0 | HOST inventory | PlatformIO Core 6.2.0 |
 | `pio run -d firmware -e vdog_xiao_sense_proto` | 0 | **BUILD** | full cross-compile incl. pinned camera component; `[SUCCESS]` (clean-checkout rerun also exit 0, §7) |
 | `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | **BUILD** | `text 148313 / data 60356 / bss 376865` |
-| `pio test -d firmware -e native` | 0 | **HOST** | `native:test_vdog_core [PASSED]` — 5 test cases, 5 succeeded (real assertions on the shared core module; Unity pinned to 2.6.1, §2) |
-| `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | **BUILD-only** | `vdog_xiao_sense_proto:test_vdog_core [SKIPPED]` — the test image compiles and links; **tests are not executed** (never claim execution here) |
+| `pio test -d firmware -e native` | 0 | **HOST** | `native:test_vdog_core [PASSED]` — **7 test cases, 7 succeeded**: `test_format_version_exact`, `test_format_version_exact_fit`, `test_format_version_rejects_small_and_null`, `test_version_pack_roundtrip`, `test_version_pack_bounds_and_overflow` (255/0 accepted; 256, 0x100, 65536, UINT32_MAX rejected per component — PR-review F3), `test_version_compare_ordering`, `test_cpp_smoke_linkage` (C TU calls an `extern "C"` symbol defined in `cpp_smoke.cpp`; the C↔C++ link is real — PR-review F2). Unity pinned to 2.6.1 (§2) |
+| `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | **BUILD-only** | `vdog_xiao_sense_proto:test_vdog_core [SKIPPED]` — the test image compiles and links (incl. the C++ TU `test/test_vdog_core/cpp_smoke.cpp` → `cpp_smoke.o` in the embedded test build tree, linked against the C core component); **tests are not executed** (never claim execution here) |
 | `pio pkg list -d firmware -e vdog_xiao_sense_proto` | 0 | lock evidence | §2 table |
 | `~/.platformio/packages/tool-esptool/esptool --chip esp32s3 image-info firmware/.pio/build/vdog_xiao_sense_proto/firmware.bin` (and `bootloader.bin`) | 0 | **BUILD** (host-side image analysis; no device I/O) | "Image size: 208784 bytes / Flash size: 8MB / Flash freq: 80m"; bootloader 22,944 B. Output archived in the package 0.2 evidence bundle (`image-info-firmware.log`) alongside the build/test logs listed in the handoff; resolved flash values are independently readable from `config/sdkconfig.json` in any local build tree |
 | `git diff --check` | 0 | hygiene | clean |
@@ -181,6 +209,20 @@ logs archived in the package 0.2 evidence bundle named in the handoff):
 - Clean host tests (`clean-rerun-native-test.log`): **exit 0**,
   `Library Manager: Installing throwtheswitch/Unity @ 2.6.1` (pin honored on
   a cold cache) and 5/5 test cases passed.
+
+- Empty package cache (full lock verification, PR-review F1):
+  `PLATFORMIO_CORE_DIR=$(mktemp -d) pio run -d firmware -e
+  vdog_xiao_sense_proto` → **exit 0** (`[SUCCESS]` 305.8 s, 13 cold package
+  downloads, cold IDF venv with the same pinned pip dependency set, cold
+  component-manager cache; `emptycache-build.log`). The run's `PACKAGES:`
+  block matches §2 **exactly** (framework-espidf 4.60100.0/6.1.0, GCC
+  15.2.0+20251204 toolchains, cmake 3.30.2, ninja 1.13.2, esptool
+  2.50400.0/5.4.0, ulp 1.23800.240113, rom-elfs 0.0.1+20241011, gdb
+  12.1.0+20221002 ×2). Follow-up in the same cold core dir:
+  `pio test -d firmware -e native` → **exit 0**, `Platform Manager:
+  Installing platformio/native @ 1.2.1` (exact pin honored) and 7/7 test
+  cases passed (`emptycache-native-test.log`). No package resolved
+  differently from the matrix.
 
 All recorded runs exit 0. The tracked `firmware/dependencies.lock`, the
 Unity pin and the exact pins (`platformio/espressif32@8.0.0`, `==2.1.9`)

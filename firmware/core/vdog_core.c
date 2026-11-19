@@ -10,14 +10,21 @@
 #define VDOG_VERSION_STRING_PREFIX "vdog "
 #define VDOG_VERSION_DIGITS "%u.%u.%u"
 
-int vdog_version_pack(uint8_t major, uint8_t minor, uint8_t patch,
+int vdog_version_pack(uint32_t major, uint32_t minor, uint32_t patch,
                       uint32_t *packed_out)
 {
     if (packed_out == NULL) {
         return VDOG_ERR_INVALID_ARG;
     }
-    *packed_out = ((uint32_t)major << 16) | ((uint32_t)minor << 8) |
-                  (uint32_t)patch;
+    /* Validate BEFORE packing on widened parameters: out-of-range values
+     * (256, 0x100, 65536, ...) are rejected instead of silently narrowed
+     * to the 8-bit fields of the packed form. */
+    if (major > VDOG_VERSION_COMPONENT_MAX ||
+        minor > VDOG_VERSION_COMPONENT_MAX ||
+        patch > VDOG_VERSION_COMPONENT_MAX) {
+        return VDOG_ERR_INVALID_ARG;
+    }
+    *packed_out = (major << 16) | (minor << 8) | patch;
     return VDOG_OK;
 }
 

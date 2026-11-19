@@ -46,6 +46,54 @@ static void test_version_pack_roundtrip(void)
                           vdog_version_pack(1u, 2u, 3u, NULL));
 }
 
+static void test_version_pack_bounds_and_overflow(void)
+{
+    uint32_t packed = 0u;
+
+    /* Upper edge accepted; packed layout verified. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_version_pack(255u, 255u, 255u, &packed));
+    TEST_ASSERT_EQUAL_UINT32(0x00FFFFFFu, packed);
+    /* Zero accepted. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_version_pack(0u, 0u, 0u, &packed));
+    TEST_ASSERT_EQUAL_UINT32(0u, packed);
+
+    /* 256 rejected for EACH component (widened API: no silent narrowing). */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_version_pack(256u, 0u, 0u, &packed));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_version_pack(0u, 256u, 0u, &packed));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_version_pack(0u, 0u, 256u, &packed));
+
+    /* Overflow-shaped values rejected instead of narrowing (256->0,
+     * 65536->0). Regression for PR-review F3. */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_version_pack(0x100u, 0u, 0u, &packed));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_version_pack(0u, 0x100u, 0u, &packed));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_version_pack(0u, 0u, 0x100u, &packed));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_version_pack(65536u, 0u, 0u, &packed));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_version_pack(0u, 65536u, 0u, &packed));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_version_pack(0u, 0u, 65536u, &packed));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_version_pack(4294967295u, 0u, 0u, &packed));
+}
+
+/* Crosses the C/C++ link boundary: vdog_cpp_smoke() is DEFINED in C++
+ * (cpp_smoke.cpp) with extern "C" linkage and called from this C TU, so
+ * linking the native test binary proves the header guard is effective.
+ * Regression for PR-review F2. */
+extern int vdog_cpp_smoke(void);
+
+static void test_cpp_smoke_linkage(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, vdog_cpp_smoke());
+}
+
 static void test_version_compare_ordering(void)
 {
     uint32_t v_old, v_new;
@@ -74,7 +122,9 @@ void app_main(void)
     RUN_TEST(test_format_version_exact_fit);
     RUN_TEST(test_format_version_rejects_small_and_null);
     RUN_TEST(test_version_pack_roundtrip);
+    RUN_TEST(test_version_pack_bounds_and_overflow);
     RUN_TEST(test_version_compare_ordering);
+    RUN_TEST(test_cpp_smoke_linkage);
     UNITY_END();
 }
 #else
@@ -85,7 +135,9 @@ int main(void)
     RUN_TEST(test_format_version_exact_fit);
     RUN_TEST(test_format_version_rejects_small_and_null);
     RUN_TEST(test_version_pack_roundtrip);
+    RUN_TEST(test_version_pack_bounds_and_overflow);
     RUN_TEST(test_version_compare_ordering);
+    RUN_TEST(test_cpp_smoke_linkage);
     return UNITY_END();
 }
 #endif
