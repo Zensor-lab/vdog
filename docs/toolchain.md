@@ -160,17 +160,26 @@ package's qualification runs.
 
 ## 7. Reproducibility
 
-A clean-checkout rerun (fresh detached worktree of this branch at the handoff
-commit, no `firmware/.pio`, run from that repository root; 2026-11-19) of
-`pio run -d firmware -e vdog_xiao_sense_proto` **exited 0** ([SUCCESS] in
-51 s) after re-resolving `managed_components/` from the tracked lock, and
-`-t size` reported `text 148313 / data 60344 / bss 376873` — identical
-`text` and slot-fitting `firmware.bin` (208,768 B vs the canonical 208,784 B;
-the few-byte drift is the embedded `esp_app_desc` build-timestamp/hash
-section, not configuration). Both runs' exit codes (0 and 0) are recorded in
-the package 0.2 handoff. The tracked `firmware/dependencies.lock` and the
-exact pins (`platformio/espressif32@8.0.0`, `==2.1.9`) are the
-reproducibility contract.
+Reproducibility was proven by fresh detached-worktree runs at the handoff
+commits with no `firmware/.pio`, from that worktree's root (2026-11-19; all
+logs archived in the package 0.2 evidence bundle named in the handoff):
+
+- Clean build (`clean-rerun-build.log`): `pio run -d firmware -e
+  vdog_xiao_sense_proto` **exit 0**, `[SUCCESS]` in 42 s, re-resolving
+  `managed_components/` (esp32-camera 2.1.9 + esp_jpeg 1.3.2) from the
+  tracked lock.
+- Clean size report (`clean-rerun-size.log`): **exit 0**,
+  `text 148313 / data 60344 / bss 376873`, `firmware.bin` 208,768 B —
+  identical `text` and slot-fitting image vs the canonical 208,784 B; the
+  few-byte drift is the embedded `esp_app_desc` build-timestamp/hash
+  section, not configuration.
+- Clean host tests (`clean-rerun-native-test.log`): **exit 0**,
+  `Library Manager: Installing throwtheswitch/Unity @ 2.6.1` (pin honored on
+  a cold cache) and 5/5 test cases passed.
+
+All recorded runs exit 0. The tracked `firmware/dependencies.lock`, the
+Unity pin and the exact pins (`platformio/espressif32@8.0.0`, `==2.1.9`)
+are the reproducibility contract.
 
 ## 8. App/Backend deferred pins (not qualified here)
 
