@@ -1,0 +1,10 @@
+{
+  "name": "vdog-core",
+  "version": "0.2.0",
+  "description": "vdog portable pure-C core module (host-tested, shared with the ESP-IDF component build)",
+  "keywords": "vdog,core,version",
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*",
+  "headers": "vdog_core.h"
+}

@@ -1,0 +1,16 @@
+## ESP-IDF component manager manifest for the `src` main component
+## (package 0.2, plan §4.1). Note: with the pinned idf-component-manager
+## (3.1.x, ESP-IDF v6.1) manifests are collected per component directory
+## containing CMakeLists.txt + idf_component.yml; PlatformIO registers
+## firmware/src as the main component, so the manifest lives here rather
+## than at the project root (documented equivalent, plan §9).
+## The camera driver is pinned to ONE exact version and linked as a real
+## compile/link-time dependency only: no camera runtime is initialized in
+## this package. Compatibility: esp32-camera 2.1.9 targets ESP32-S3 and
+## bundles OV2640/OV3660/OV5640 sensor drivers (docs/specs/hardware.md §2.1
+## candidate sensors); it declares IDF >=5.1 and espressif/esp_jpeg ^1.3.1,
+## satisfied by the pinned framework. See docs/toolchain.md for the matrix.
+version: "1.0.0"
+description: "vdog main application component (Stage 0 toolchain qualification)"
+dependencies:
+  espressif/esp32-camera: "==2.1.9"
