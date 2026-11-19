@@ -36,20 +36,31 @@ The local `.agent/PROJECT.md` points here. Operating rules remain in
 | Processing | FFmpeg with vid.stab | Build/filter/codec presence, license review, resource limits |
 | Card | Genuine 32GB SDHC FAT32, Sense SPI socket | Exact models/allocation, measured bytes/latency, recovery/rollover and capacity/quality acceptance |
 
-Wiring is **not approved**. Use hardware's candidate map only for review. No
-supported PlatformIO environments exist yet; planned names are `vdog_xiao_sense_proto`
-and `native`. Before firmware delegation, package 0.2 supplies exact versions/
-environments and 0.3 supplies reviewed wiring. The current docs request identifies
-no authorized device/port or flash, erase, format, OTA, or eFuse operation.
+Wiring is **not approved**. Use hardware's candidate map only for review.
+The supported PlatformIO environments now exist in `firmware/platformio.ini`:
+`vdog_xiao_sense_proto` (ESP-IDF cross-build) and `native` (host tests);
+package 0.2 supplied the exact platform/SDK/toolchain/camera pins and
+working commands ([toolchain](toolchain.md)) and 0.3 still owes the reviewed
+wiring. The current docs request identifies no authorized device/port or
+flash, erase, format, OTA, or eFuse operation; package 0.2 ran no such
+operation.
 
 ## Layout, commands and constraints
 
 Future roots: `firmware/`, `app/`, `backend/`, `hardware/`, `contracts/`, `tools/`.
-Requirements: `docs/specs/`; [plan](plans/implementation-plan.md). Planned commands
-are in [validation](validation.md); currently only documentation/Git inspection
-exists. Update this file with working install/build/test commands after bootstrap.
-Official board support has been checked from upstream documentation; no vdog
-cross-build, memory detection or hardware qualification has been performed.
+Requirements: `docs/specs/`; [plan](plans/implementation-plan.md). Working
+commands from package 0.2 (run from repository root, verified 2026-11-19):
+`pio run -d firmware -e vdog_xiao_sense_proto` (BUILD),
+`pio run -d firmware -e vdog_xiao_sense_proto -t size` (BUILD size report),
+`pio test -d firmware -e native` (HOST), and
+`pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing`
+(build-only; does not execute tests). Pinned toolchain, resolved versions,
+partition budget and full command evidence: [toolchain](toolchain.md).
+Remaining commands in [validation](validation.md) stay planned until their
+packages exist. Official board support was checked from upstream
+documentation and is now backed by a vdog cross-build (BUILD/HOST evidence
+only); memory detection and all other hardware qualification remain
+unperformed.
 
 Non-secret configuration includes hardware revision, profile, SD budgets,
 backend bind/database/storage/scratch roots, quotas and approved processing

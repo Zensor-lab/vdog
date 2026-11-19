@@ -823,7 +823,7 @@ and ad-hoc documentation checks do not replace the outputs below.
 | Package | Status | Evidence / remaining output |
 | --- | --- | --- |
 | 0.1 Scope | Documented and reviewed | Product/decision records reflect the confirmed board, battery, runtime goal, Wi-Fi, external charging, chest fit and dry-weather scope |
-| 0.2 Toolchains | Upstream support checked, project unqualified | Official XIAO board/framework metadata and candidate release documented; no project environment, lockfiles or cross-build evidence |
+| 0.2 Toolchains | Qualified 2026-11-19 (BUILD/HOST) | `firmware/` project pinned to official `platformio/espressif32@8.0.0` (ESP-IDF v6.1.0), envs `vdog_xiao_sense_proto`/`native`, tracked lockfile, explicit 8MB/octal-PSRAM/USB-console/custom-partition Kconfig, 8MB two-slot budget from the measured image and clean cross-build + native test passes: [toolchain matrix](../toolchain.md). Physical flash/PSRAM/camera detection remains DEVICE evidence for 1.2–1.4 |
 | 0.3 Wiring | Candidate only | Reference pin table exists; actual PCB identity, reviewed pin-map.csv/assembly diagram and electrical signoff absent |
 | 0.4 Cost | Allocation only | CNY149 ceiling exists; exact-part BOM and dated supplier quote evidence absent |
 | 0.5 Acceptance rubrics | Draft | General test method exists; repeatable scenes/scoring, measurable limits and reviewed physical procedure not frozen |
@@ -832,8 +832,10 @@ and ad-hoc documentation checks do not replace the outputs below.
 | 0.8 Role ownership | Not established | Flutter/Dart and qualified hardware implementation/review routing still needs a concrete recorded assignment |
 | 0.9 Repository checks | Not established | Ad-hoc docs checks passed; no persistent contract validator or CI workflow exists |
 
-The next implementation assignments are 0.2 toolchain qualification and 0.6
-contract/schema/fixture work, with 0.3/0.4 actual-part and wiring/cost preparation
-in parallel. Hardware-dependent acceptance waits for identified parts and an
-appropriate authorized bench assignment. Stage 1–4 application/hardware work
-remains unexecuted; do not report the recorder or full Stage 0 as complete.
+Package 0.2 completed 2026-11-19 with BUILD/HOST evidence
+([toolchain](../toolchain.md)); Stage-0 hardware-dependent acceptance still
+waits for identified parts and an appropriate authorized bench assignment.
+The next implementation assignments are 0.6 contract/schema/fixture work,
+with 0.3/0.4 actual-part and wiring/cost preparation in parallel. Stage 1–4
+application/hardware work remains unexecuted; do not report the recorder or
+full Stage 0 as complete.

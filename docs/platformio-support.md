@@ -1,9 +1,12 @@
 # PlatformIO support: XIAO ESP32S3 Sense
 
-Checked 2026-11-16. **PlatformIO officially lists the XIAO ESP32S3 base board
-with both ESP-IDF and Arduino support.** The Sense camera/SD expansion still
-needs project-specific configuration and qualification. No firmware build,
-upload or device test was performed for this documentation update.
+Checked 2026-11-16; build evidence closed 2026-11-19 (package 0.2).
+**PlatformIO officially lists the XIAO ESP32S3 base board with both ESP-IDF
+and Arduino support,** and package 0.2 added a real project cross-build:
+see [toolchain qualification](toolchain.md). The Sense camera/SD expansion
+still needs project-specific configuration and device qualification. No
+upload, device test or hardware operation was performed for package 0.2 —
+BUILD/HOST evidence only.
 
 ## 1. Verified upstream support
 
@@ -74,14 +77,21 @@ Sources: [Seeed getting started and revisions](https://wiki.seeedstudio.com/xiao
 [Sense microSD tutorial](https://wiki.seeedstudio.com/xiao_esp32s3_sense_filesystem/),
 [Espressif camera driver](https://github.com/espressif/esp32-camera).
 
-## 4. Build evidence needed to close package 0.2
+## 4. Build evidence — closed by package 0.2 (2026-11-19)
 
-Record exact versions, source/lockfile revision, board/environment, flash/PSRAM
-settings, partition sizes, camera dependency and clean-build command/results.
-Run `pio run -d firmware -e vdog_xiao_sense_proto` only after the firmware
-bootstrap exists. The portable `native` environment is a separate test target.
-Package 0.2 closes on the pinned/reproducible build evidence and configuration;
-it does not wait for the later recorder or OTA implementation.
+Recorded in [docs/toolchain.md](toolchain.md): resolved platform
+`platformio/espressif32@8.0.0` (ESP-IDF v6.1.0 via `framework-espidf
+4.60100.0`), toolchain/component lock versions incl. the tracked
+`firmware/dependencies.lock`, the two project environments
+(`vdog_xiao_sense_proto`, `native`), explicit ESP-IDF flash-8MB/octal-PSRAM/
+USB-console/partition Kconfig with verification method, the 8MB two-slot
+partition budget derived from the measured minimal image, the pinned
+`espressif/esp32-camera` 2.1.9 compiled as a real link-time dependency, and
+the clean cross-build command results. The candidate in §2 is now the
+project baseline: `pio run -d firmware -e vdog_xiao_sense_proto` and
+`pio test -d firmware -e native` pass from a clean checkout (BUILD/HOST
+evidence). Package 0.2 closed on this pinned/reproducible build evidence and
+configuration without waiting for the later recorder or OTA implementation.
 
 ## 5. Later device qualification
 
@@ -91,6 +101,9 @@ signed OTA staging and rollback are implemented/tested in 2.10–2.11. These nee
 an identified authorized unit/port and cannot be prerequisites that make the
 0.2 bootstrap depend on later stages.
 
-At present: upstream support is **verified from documentation**; project
-cross-build and hardware behavior are **UNVERIFIED**. Stage 0 is not completed
-by finding a board entry or copying this configuration.
+At present (package 0.2, 2026-11-19): upstream support is **verified from
+documentation**; the project cross-build and `native` host tests are
+**verified as BUILD/HOST evidence** in [docs/toolchain.md](toolchain.md);
+hardware behavior remains **UNVERIFIED** pending the device packages above.
+Stage 0 completion still requires the remaining packages, not merely a board
+entry or this configuration.

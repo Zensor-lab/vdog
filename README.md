@@ -76,6 +76,22 @@ storage baseline is a genuine 32GB FAT32 card on the Sense SPI socket; larger
 cards need a separate qualification. Prototype animal use waits
 for electrical, thermal and mounting acceptance.
 
+### Firmware build
+
+Package 0.2 qualified a pinned minimal ESP-IDF proto build for the XIAO
+ESP32S3 target (qualifier: see [toolchain matrix](docs/toolchain.md)). From
+the repository root with PlatformIO Core 6.2:
+
+```sh
+pio run -d firmware -e vdog_xiao_sense_proto   # cross-build (BUILD evidence)
+pio run -d firmware -e vdog_xiao_sense_proto -t size
+pio test -d firmware -e native                 # host tests (HOST evidence)
+```
+
+These commands compile and host-test only. This proto has no camera, SD,
+network or radio runtime, is not offered for flashing, and device
+verification follows in Stage 1 with an authorized identified unit.
+
 ## Documentation
 
 | Document | Contents |
