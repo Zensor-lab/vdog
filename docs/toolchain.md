@@ -61,8 +61,9 @@ packages by range): `platformio/framework-espidf@4.60100.0`,
 `espressif/tool-xtensa-esp-elf-gdb@12.1.0+20221002`,
 `espressif/tool-riscv32-esp-elf-gdb@12.1.0+20221002`, and
 `platformio/tool-scons@4.41101.0` (the SCons driver the espidf builder
-uses; `pio pkg list` does not surface it, but the cold-cache install line
-is exact — §7). `pio pkg list` (§6) now shows every package with an exact
+uses; unpinned it resolved by range `~4.41101.0`, and the exact pin is
+confirmed both by the cold-install line and the resolver output — §7/§6).
+`pio pkg list` (§6) now shows every package with an exact
 `required:` spec.
 The 15.2.0+20251204 toolchains are the platform's **declared optional
 variant** (`optionalVersions` in platform.json; default is 14.2.0+20260121)
@@ -184,7 +185,7 @@ package's qualification runs.
 | `pio run -d firmware -e vdog_xiao_sense_proto` | 0 | **BUILD** | full cross-compile incl. pinned camera component; `[SUCCESS]` (clean-checkout rerun also exit 0, §7) |
 | `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | **BUILD** | `text 148313 / data 60356 / bss 376865` |
 | `pio test -d firmware -e native` | 0 | **HOST** | `native:test_vdog_core [PASSED]` — **7 test cases, 7 succeeded**: `test_format_version_exact`, `test_format_version_exact_fit`, `test_format_version_rejects_small_and_null`, `test_version_pack_roundtrip`, `test_version_pack_bounds_and_overflow` (255/0 accepted; 256, 0x100, 65536, UINT32_MAX rejected per component — PR-review F3), `test_version_compare_ordering`, `test_cpp_smoke_linkage` (C TU calls an `extern "C"` symbol defined in `cpp_smoke.cpp`; the C↔C++ link is real — PR-review F2). Unity pinned to 2.6.1 (§2) |
-| `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | **BUILD-only** | `vdog_xiao_sense_proto:test_vdog_core [SKIPPED]` — the test image compiles and links (incl. the C++ TU `test/test_vdog_core/cpp_smoke.cpp`; `cpp_smoke.o` retained in the embedded test build tree with unmangled `T vdog_cpp_smoke` — §7); **tests are not executed** (never claim execution here) |
+| `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | **BUILD-only** | `vdog_xiao_sense_proto:test_vdog_core [SKIPPED]` — the test image compiles and links (incl. the C++ TU `test/test_vdog_core/cpp_smoke.cpp`; archived `nm` proof of unmangled `T vdog_cpp_smoke` in the embedded test object — §7); **tests are not executed** (never claim execution here) |
 | `pio pkg list -d firmware -e vdog_xiao_sense_proto` | 0 | lock evidence | §2 table |
 | `~/.platformio/packages/tool-esptool/esptool --chip esp32s3 image-info firmware/.pio/build/vdog_xiao_sense_proto/firmware.bin` (and `bootloader.bin`) | 0 | **BUILD** (host-side image analysis; no device I/O) | "Image size: 208784 bytes / Flash size: 8MB / Flash freq: 80m"; bootloader 22,944 B. Output archived in the package 0.2 evidence bundle (`image-info-firmware.log`) alongside the build/test logs listed in the handoff; resolved flash values are independently readable from `config/sdkconfig.json` in any local build tree |
 | `git diff --check` | 0 | hygiene | clean |
@@ -238,11 +239,12 @@ logs archived in the package 0.2 evidence bundle named in the handoff):
   completing the exact-install coverage for every package the build pulls.
 - Embedded test-object evidence (review round 3, N4): after
   `pio test -e vdog_xiao_sense_proto --without-uploading --without-testing`
-  (exit 0, `[SKIPPED]`; `embedded-testbuild5-prfix.log`), the C++ test TU is
-  retained in the embedded build tree and its symbols show unmangled C
-  linkage — `xtensa-esp32s3-elf-nm`: `T vdog_cpp_smoke` with `U
-  vdog_format_version / vdog_version_compare / vdog_version_pack`
-  (`embedded-cpp-smoke-object-prfix.log`).
+  (exit 0, `[SKIPPED]`; `embedded-testbuild5-prfix.log`), the C++ test TU was
+  captured from the embedded test build tree and archived —
+  `embedded-cpp-smoke-object-prfix.log` holds the `ls` of `cpp_smoke.o`
+  (6,344 B) plus `xtensa-esp32s3-elf-nm` output showing unmangled C linkage:
+  `T vdog_cpp_smoke` with `U vdog_format_version / vdog_version_compare /
+  vdog_version_pack`.
 
 All recorded runs exit 0. The tracked `firmware/dependencies.lock`, the
 Unity pin and the exact pins (`platformio/espressif32@8.0.0`, `==2.1.9`)
