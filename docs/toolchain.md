@@ -159,11 +159,15 @@ package's qualification runs.
 
 ## 7. Reproducibility
 
-A clean-checkout rerun (fresh worktree of this branch, empty
-`firmware/.pio`, from the repository root) of
-`pio run -d firmware -e vdog_xiao_sense_proto` exits 0 with the same
-package resolution (§2) and the same image size — recorded in the package
-0.2 handoff evidence. The tracked `firmware/dependencies.lock` and the
+A clean-checkout rerun (fresh detached worktree of this branch at the handoff
+commit, no `firmware/.pio`, run from that repository root; 2026-11-19) of
+`pio run -d firmware -e vdog_xiao_sense_proto` **exited 0** ([SUCCESS] in
+51 s) after re-resolving `managed_components/` from the tracked lock, and
+`-t size` reported `text 148313 / data 60344 / bss 376873` — identical
+`text` and slot-fitting `firmware.bin` (208,768 B vs the canonical 208,784 B;
+the few-byte drift is the embedded `esp_app_desc` build-timestamp/hash
+section, not configuration). Both runs' exit codes (0 and 0) are recorded in
+the package 0.2 handoff. The tracked `firmware/dependencies.lock` and the
 exact pins (`platformio/espressif32@8.0.0`, `==2.1.9`) are the
 reproducibility contract.
 
