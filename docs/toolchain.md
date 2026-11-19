@@ -39,6 +39,7 @@ packages were fetched into `~/.platformio` by PlatformIO itself.
 | `tool-xtensa-esp-elf-gdb` / `tool-riscv32-esp-elf-gdb` | 12.1.0+20221002 | debuggers (unused) |
 | `espressif/esp32-camera` | **2.1.9 (pinned `==2.1.9`)** from the ESP Component Registry (`components.espressif.com`), `component_hash f14a6a9a5c22…f774fe` | camera driver, link-time dependency only |
 | `espressif/esp_jpeg` | 1.3.2 (transitive, `^1.3.1`), `component_hash 47d19eac…76bdf` | esp32-camera dependency |
+| `throwtheswitch/Unity` (native test env only) | **2.6.1 (pinned exactly** in `[env:native] lib_deps)` | HOST test framework (ESP-IDF side uses the SDK's bundled Unity via `PRIV_REQUIRES unity`) |
 | Component manager | `idf-component-manager` 3.1.2 in the IDF venv (`~/.platformio/penv/.espidf-6.1.0`) | resolves `src/idf_component.yml` |
 
 The component-manager lockfile `firmware/dependencies.lock`
@@ -151,10 +152,10 @@ package's qualification runs.
 | `pio --version` | 0 | HOST inventory | PlatformIO Core 6.2.0 |
 | `pio run -d firmware -e vdog_xiao_sense_proto` | 0 | **BUILD** | full cross-compile incl. pinned camera component; `[SUCCESS]` (clean-checkout rerun also exit 0, §7) |
 | `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | **BUILD** | `text 148313 / data 60356 / bss 376865` |
-| `pio test -d firmware -e native` | 0 | **HOST** | `native:test_vdog_core [PASSED]` — 5 test cases, 5 succeeded (real assertions on the shared core module) |
+| `pio test -d firmware -e native` | 0 | **HOST** | `native:test_vdog_core [PASSED]` — 5 test cases, 5 succeeded (real assertions on the shared core module; Unity pinned to 2.6.1, §2) |
 | `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | **BUILD-only** | `vdog_xiao_sense_proto:test_vdog_core [SKIPPED]` — the test image compiles and links; **tests are not executed** (never claim execution here) |
 | `pio pkg list -d firmware -e vdog_xiao_sense_proto` | 0 | lock evidence | §2 table |
-| `~/.platformio/packages/tool-esptool/esptool --chip esp32s3 image-info firmware/.pio/build/vdog_xiao_sense_proto/firmware.bin` | 0 | **BUILD** (host-side image analysis; no device I/O) | "Image size: 208784 bytes / Flash size: 8MB / Flash freq: 80m" |
+| `~/.platformio/packages/tool-esptool/esptool --chip esp32s3 image-info firmware/.pio/build/vdog_xiao_sense_proto/firmware.bin` (and `bootloader.bin`) | 0 | **BUILD** (host-side image analysis; no device I/O) | "Image size: 208784 bytes / Flash size: 8MB / Flash freq: 80m"; bootloader 22,944 B. Output archived in the package 0.2 evidence bundle (`image-info-firmware.log`) alongside the build/test logs listed in the handoff; resolved flash values are independently readable from `config/sdkconfig.json` in any local build tree |
 | `git diff --check` | 0 | hygiene | clean |
 
 ## 7. Reproducibility
