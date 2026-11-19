@@ -39,7 +39,7 @@ packages were fetched into `~/.platformio` by PlatformIO itself.
 | `tool-xtensa-esp-elf-gdb` / `tool-riscv32-esp-elf-gdb` | 12.1.0+20221002 | debuggers (unused) |
 | `espressif/esp32-camera` | **2.1.9 (pinned `==2.1.9`)** from the ESP Component Registry (`components.espressif.com`), `component_hash f14a6a9a5c22…f774fe` | camera driver, link-time dependency only |
 | `espressif/esp_jpeg` | 1.3.2 (transitive, `^1.3.1`), `component_hash 47d19eac…76bdf` | esp32-camera dependency |
-| `throwtheswitch/Unity` (native test env only) | **2.6.1 (pinned exactly** in `[env:native] lib_deps)` | HOST test framework (ESP-IDF side uses the SDK's bundled Unity via `PRIV_REQUIRES unity`) |
+| `throwtheswitch/Unity` (native test env only) | **2.6.1 (pinned exactly)** in `[env:native] lib_deps` | HOST test framework (ESP-IDF side uses the SDK's bundled Unity via `PRIV_REQUIRES unity`) |
 | Component manager | `idf-component-manager` 3.1.2 in the IDF venv (`~/.platformio/penv/.espidf-6.1.0`) | resolves `src/idf_component.yml` |
 
 The component-manager lockfile `firmware/dependencies.lock`
@@ -169,10 +169,15 @@ logs archived in the package 0.2 evidence bundle named in the handoff):
   `managed_components/` (esp32-camera 2.1.9 + esp_jpeg 1.3.2) from the
   tracked lock.
 - Clean size report (`clean-rerun-size.log`): **exit 0**,
-  `text 148313 / data 60344 / bss 376873`, `firmware.bin` 208,768 B —
-  identical `text` and slot-fitting image vs the canonical 208,784 B; the
-  few-byte drift is the embedded `esp_app_desc` build-timestamp/hash
-  section, not configuration.
+  `text 148313 / data 60344 / bss 376873`, `firmware.bin` 208,768 B at that
+  commit — identical `text` and slot-fitting image vs the canonical
+  208,784 B. A second archived clean build at the final handoff commit
+  (`clean-rerun2-build.log`, `[SUCCESS]` 47.5 s; `ls -l` + `esptool
+  image-info` byte count in `clean-rerun-image-info.log`: "Image size:
+  208784 bytes / Flash size: 8MB / Flash freq: 80m") shows the image byte
+  count varies per build (observed 208,768–208,784 B) with the embedded
+  `esp_app_desc` build-timestamp/hash section, not configuration; both ends
+  of the range keep ≥15× slot margin (§5).
 - Clean host tests (`clean-rerun-native-test.log`): **exit 0**,
   `Library Manager: Installing throwtheswitch/Unity @ 2.6.1` (pin honored on
   a cold cache) and 5/5 test cases passed.
