@@ -12,14 +12,15 @@ that harm will be detected or prevented.
 
 ## Project status
 
-**Planning and specifications only.** Firmware, the mobile app, backend, PCB and
-enclosure have not been built or tested. Cost, 72-hour retention, image quality,
+**Early prototype.** A minimal firmware build and portable host tests are
+available; camera recording, the mobile app, backend, PCB and enclosure remain
+planned. Device operation, cost, 72-hour retention, image quality,
 battery runtime and wearable suitability remain engineering gates.
 
 The current prototype uses **Seeed Studio XIAO ESP32S3 Sense** and starts with
 **32GB FAT32 microSD**. PlatformIO officially supports the XIAO base-board target
-with ESP-IDF and Arduino; the Sense peripherals still need a qualified build
-and hardware tests. See [PlatformIO support](docs/platformio-support.md).
+with ESP-IDF and Arduino; the minimal ESP-IDF build is qualified, while the
+Sense peripherals still need hardware tests. See [PlatformIO support](docs/platformio-support.md).
 
 Use the camera shipped with the acquired Sense revision after identification:
 current Seeed documentation describes fixed-focus OV5640/OV3660 shipments;
@@ -64,8 +65,9 @@ user priorities versus engineering proposals.
 
 ## Getting started
 
-There is no application to install, flash or run yet. Start with the
-[documentation guide](docs/README.md), then execute
+For the minimal firmware, follow the [prototype installation guide](docs/installation.md)
+for tool setup, USB upload, port selection and BOOT/RESET recovery.
+For development, start with the [documentation guide](docs/README.md), then
 [Stage 0 of the implementation plan](docs/plans/implementation-plan.md). It
 qualifies the board/toolchain, wiring, card format and recording quality before
 a custom PCB or full app/backend build.
@@ -89,13 +91,15 @@ pio test -d firmware -e native                 # host tests (HOST evidence)
 ```
 
 These commands compile and host-test only. This proto has no camera, SD,
-network or radio runtime, is not offered for flashing, and device
-verification follows in Stage 1 with an authorized identified unit.
+network or radio runtime. USB upload instructions are in the
+[installation guide](docs/installation.md); upload and device operation remain
+unverified here.
 
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
+| [Prototype installation](docs/installation.md) | Build, USB upload, port selection, BOOT/RESET recovery and Python troubleshooting |
 | [Hardware decision review](docs/hardware-decision-review.md) | XIAO Sense/32GB tradeoffs, retention/runtime calculations and decisions |
 | [PlatformIO support](docs/platformio-support.md) | Verified upstream board support and the remaining build/peripheral gates |
 | [Detailed implementation plan](docs/plans/implementation-plan.md) | Numbered work packages, dependencies, outputs, tests and agent handoffs |
