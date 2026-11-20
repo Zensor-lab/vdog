@@ -1,8 +1,9 @@
 # Validation and evidence plan
 
-Status: revised 2026-11-16 for XIAO ESP32S3 Sense/32GB. No application or
-hardware validation has run. Documentation inspection
-does not verify firmware, app, backend, cost, model inference or live delegation.
+Status: updated 2026-11-20. Package 0.2 records firmware BUILD and portable
+HOST evidence in [toolchain](toolchain.md). Device/app/backend/recording and
+CI/release execution remain unverified. Documentation inspection supplies none
+of those runtime or deployment results.
 
 ## 1. Evidence levels and record format
 
@@ -72,12 +73,13 @@ may fail useful image quality. Compare nominal 1/2/3Mbit/s capacities (~60.4/30.
 Record actual sensor and keep audio disabled. Prove SPI CS/LED arbitration and
 native USB/BOOT recovery on the acquired revision; no old SDMMC/pin-map assumptions.
 
-## 4. Planned checks after bootstrap
+## 4. Working and planned check commands
 
-These are **future command contracts**, not runnable checks in today's starter.
-Package 0.2 creates/verifies them and updates exact versions/environments.
-The upstream PlatformIO support check alone does not count as a cross-build;
-see [support evidence](platformio-support.md).
+The three PlatformIO commands below exist with package 0.2 BUILD/HOST evidence;
+see [toolchain](toolchain.md). The contract validator, Flutter and Rust commands
+remain future contracts until their packages exist. The [Stage 0.9 release plan](plans/0.9-firmware-ci-release.md)
+adds real package/installer/workflow tests without pretending absent tools passed.
+Upstream board support alone is not a project build or device qualification.
 
 ```sh
 pio run -d firmware -e vdog_xiao_sense_proto
@@ -98,8 +100,14 @@ may upload; use only the plan's identified authorized device/port.
 
 ## 5. CI and milestone signoff
 
-CI runs schemas/fixtures, portable tests, pinned firmware build, Flutter
-analyze/tests and Rust checks once implemented. Hardware/mobile-device/field
+Stage 0.9's [CI-T01–CI-T15 matrix](plans/0.9-firmware-ci-release.md) owns PR head
+identity, exact-main build/tag/release, archive integrity, installer behavior,
+permissions, retry/concurrency and device-install evidence. Current status is
+plan ready, not deployed. Hosted dry runs are HOST evidence; actual flashing
+needs the identified authorized unit/port and separate DEVICE evidence.
+
+CI runs available portable tests and the pinned normal firmware build, then
+schemas/fixtures, Flutter and Rust checks when their implementations exist. Hardware/mobile-device/field
 gates require separate evidence. Keep large recordings, secrets, build outputs
 and local DBs out of Git; use small synthetic fixtures and sanitized metrics.
 

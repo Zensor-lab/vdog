@@ -95,10 +95,21 @@ network or radio runtime. USB upload instructions are in the
 [installation guide](docs/installation.md); upload and device operation remain
 unverified here.
 
+### Planned firmware CI and releases
+
+[Stage 0.9](docs/plans/0.9-firmware-ci-release.md) defines a firmware build for
+every PR, using the latest PR head hash in the build/artifact name. After a
+successful main build, it will create `firmware-main-<sha12>` at the exact main
+commit and publish the prebuilt images, flash layout, checksums, installation
+guide and cross-platform installer. Current bootstrap releases will be marked
+prototype/pre-release. These workflows and packaged installers are planned;
+use the existing source-build installation route until implementation lands.
+
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
+| [CI and installation release plan](docs/plans/0.9-firmware-ci-release.md) | Detailed Stage 0.9 tasks for PR builds, automatic main tags/releases and install assets |
 | [Prototype installation](docs/installation.md) | Build, USB upload, port selection, BOOT/RESET recovery and Python troubleshooting |
 | [Hardware decision review](docs/hardware-decision-review.md) | XIAO Sense/32GB tradeoffs, retention/runtime calculations and decisions |
 | [PlatformIO support](docs/platformio-support.md) | Verified upstream board support and the remaining build/peripheral gates |

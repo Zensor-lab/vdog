@@ -10,6 +10,14 @@ The build passed on 2026-11-20; upload and runtime operation have not yet been
 verified in this guide. See the [toolchain matrix](toolchain.md) for dependency
 pins and earlier BUILD/HOST evidence.
 
+## Planned prebuilt release installation
+
+[Stage 0.9](plans/0.9-firmware-ci-release.md) specifies downloadable images,
+validated flash layout, checksums, a versioned installation guide and Python/
+shell/PowerShell installer for each tagged main release. PR packages will carry
+the PR head commit hash. That pipeline is not implemented by the plan; this
+page currently describes the source-build/PlatformIO installation method.
+
 ## 1. Prepare the computer and board
 
 - Use PlatformIO Core **6.2.0** with **Python 3.12**. The pinned ESP-IDF 6.1

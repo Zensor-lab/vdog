@@ -1,10 +1,10 @@
 # vdog implementation plan
 
-Status: **NOT STARTED — documentation baseline only**, revised 2026-11-16. This is the
-master backlog, not authorization to execute every stage in one assignment.
-This plan describes future application work. Documentation already has a
-review branch and PR; no application implementation, hardware operation,
-purchase or deployment has been performed.
+Status: **IN PROGRESS — 0.2 qualified; 0.9 CI/release plan ready**, revised
+2026-11-20. This is the master backlog, not authorization to execute every stage
+in one assignment. The minimal firmware and portable host tests exist with
+BUILD/HOST evidence. Recording, device operation and automated CI/releases are
+not delivered merely by this plan.
 
 ## Goal, background and scope
 
@@ -108,7 +108,9 @@ Handoff commit: ... | Next package: ...
 
 ```text
 0.1 source -> 0.2 toolchain + 0.3 pins + 0.4 cost + 0.5 quality/physical rubric
-          -> 0.6 contracts -> 0.7 bench plan + 0.8 role route + 0.9 CI plan
+          -> 0.6 contracts -> 0.7 bench plan + 0.8 role route
+0.2 toolchain -> 0.9.1..0.9.16 PR builds + tagged main releases + installation bundle
+                 (parallel to 0.6; its later checks join CI when implemented)
 1.1..1.13 recorder -> 1.14 quality/rate -> 1.15 powerfault/retention
                  -> 1.16 host EIS experiment -> 1.17 recorder signoff
 2.1..2.15 local device/app -> 2.16 local-app signoff
@@ -221,15 +223,32 @@ stage the dependencies listed in each package override simple numeric order.
 - Acceptance: app work never assigned to a React role merely by name; no profile
   edits bundled into unrelated firmware work. Existing role permissions respected.
 
-### 0.9 Establish repository checks and contribution boundaries
+### 0.9 Build PR firmware and publish tagged installation releases
 
-- Inputs: contract validator and selected bootstrap commands.
-- Steps: define CI jobs by actual component presence; document fixture privacy,
-  generated-file ignores and required review/test evidence; keep agent setup in
-  AGENTS, application setup in README/profile.
-- Outputs: minimal CI for available checks, not green placeholder jobs.
-- Acceptance: checks actually execute; missing firmware/mobile/backend tests
-  remain unavailable until their bootstrap packages, not passed by an empty suite.
+- Detailed assignment: [0.9 firmware CI and release plan](0.9-firmware-ci-release.md),
+  broken into **0.9.1–0.9.16** with files, dependencies, contracts and acceptance.
+- Depends: completed 0.2 firmware/host commands. Release-manifest schemas and
+  tests are created here; this package need not wait for media/API work 0.6.
+  Add 0.6/Flutter/backend checks when those implementations actually exist.
+- PRs: build each immutable latest head SHA, including docs-only/draft PRs;
+  include that head hash in build/run/artifact names. Keep stable check names.
+- Main: rebuild/test the exact main push SHA after a merge, then create immutable
+  `firmware-main-<sha12>` at that full SHA and publish a complete installation
+  Release. No PR artifact promotion or tag/release on failed checks.
+- Payload: flash images and generated offsets, manifest/version/checksums,
+  cross-platform Python installer/setup wrappers, dependency lock, install guide,
+  release notes and licenses. Users need no PlatformIO/source checkout to flash
+  prebuilt binaries. Preserve the existing developer source-install route.
+- Gates: least privilege, explicit port/consent, actual chip/layout checks,
+  no default full erase/NVS overwrite/eFuse writes, retry/concurrency handling,
+  no silent security downgrade. Current minimal firmware releases are prototype
+  pre-releases with hardware installation and recording limitations stated.
+- Outputs: the planned GitHub workflows, release/installer tools and real tests
+  listed in the detailed plan; update README/profile/guide and evidence ledger.
+- Acceptance after rollout: CI-T01–CI-T14 pass with HOST/BUILD/workflow evidence;
+  pre-merge handoff reports live main publication pending. CI-T15 needs
+  separately authorized DEVICE installation evidence. No empty/skipped checks
+  presented as green validation. Writing this plan does not implement the pipeline.
 
 ## Stage 1 — standalone camera recorder
 
@@ -786,7 +805,8 @@ stage the dependencies listed in each package override simple numeric order.
 ### 4.9 Publish reproducible installation and owner documentation
 
 - Depends:accepted software/hardware revision.
-- Steps: tested clean-clone build/install, supported card prep, assembly, pairing,
+- Steps: extend 0.9's versioned release/install bundle for the accepted product
+  revision; retain tested package-only and clean-clone install routes, card prep, assembly, pairing,
   recording status, unmount/unplug/external-charge/reconnect, small-dog chest fit,
   dry-weather/basic-housing limits, privacy/storage, review/export, update/recovery,
   runtime, maintenance, backup and troubleshooting; distinguish prototype/production.
@@ -814,11 +834,11 @@ root README changes only for product/setup/usage/status. Durable new architectur
 decisions go in docs/decisions, optional sanitized reports under exact assigned
 `docs/tasks/<task>-report.md`. Large footage/metrics dumps stay outside Git.
 
-## Current Stage 0 status — audited 2026-11-16
+## Current Stage 0 status — audited 2026-11-20
 
 **Stage 0 is not complete.** The owner-facing product choices and written scope
-are settled; technical preflight has not been demonstrated. Documentation review
-and ad-hoc documentation checks do not replace the outputs below.
+are settled; package 0.2 has BUILD/HOST evidence and remaining preflight work is
+incomplete. Documentation review does not replace the outputs below.
 
 | Package | Status | Evidence / remaining output |
 | --- | --- | --- |
@@ -830,12 +850,13 @@ and ad-hoc documentation checks do not replace the outputs below.
 | 0.6 Contracts | Written baseline only | Media/API prose exists; schemas, OpenAPI files, real golden fixtures and validator absent |
 | 0.7 Card/bench | Planned, unverified | FAT32/no-autoformat policy exists; actual card/preparation and authorized identified-device bench record absent |
 | 0.8 Role ownership | Not established | Flutter/Dart and qualified hardware implementation/review routing still needs a concrete recorded assignment |
-| 0.9 Repository checks | Not established | Ad-hoc docs checks passed; no persistent contract validator or CI workflow exists |
+| 0.9 CI and installation releases | Detailed plan ready; implementation pending | [0.9.1–0.9.16](0.9-firmware-ci-release.md): PR head-hash builds; exact-main rebuild, immutable tag and complete install Release; workflows/tools not yet created |
 
 Package 0.2 completed 2026-11-19 with BUILD/HOST evidence
 ([toolchain](../toolchain.md)); Stage-0 hardware-dependent acceptance still
 waits for identified parts and an appropriate authorized bench assignment.
-The next implementation assignments are 0.6 contract/schema/fixture work,
-with 0.3/0.4 actual-part and wiring/cost preparation in parallel. Stage 1–4
+The next implementation assignments are 0.9 PR CI/tagged installation releases
+and 0.6 media/API contract/schema/fixture work in parallel, alongside 0.3/0.4
+actual-part and wiring/cost preparation. Stage 1–4
 application/hardware work remains unexecuted; do not report the recorder or
 full Stage 0 as complete.

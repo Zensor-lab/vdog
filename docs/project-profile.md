@@ -8,8 +8,12 @@ The local `.agent/PROJECT.md` points here. Operating rules remain in
 
 - vdog: affordable open-source dog camera, local recording, owner-controlled
   footage, optional self-hosted processing; for owners, builders and self-hosters.
-- Current state: agent starter and documentation only. No firmware/app/backend,
-  application dependencies, CI or hardware designs. No application checks passed.
+- Current state: minimal pinned firmware and portable host tests exist with
+  package 0.2 BUILD/HOST evidence. Camera/SD/network runtime, app/backend and
+  hardware qualification remain pending. No GitHub CI/release workflow exists yet.
+- Stage 0.9 now has a [detailed implementation plan](plans/0.9-firmware-ci-release.md)
+  for every-PR builds, head-hash artifact names and exact-main tags/releases with
+  full install assets. Planning is complete; workflow/installer execution is not.
 - User priorities (2026-11-16): Seeed Studio XIAO ESP32S3 Sense and 32GB FAT32
   first. The acquired camera/revision is identified before configuration; current
   shipments may be fixed-focus OV5640 or OV3660, with OV2640 historical.

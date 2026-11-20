@@ -21,7 +21,9 @@ device operation remains unverified here. For setup and USB flashing, follow the
 5. [Flutter frontend](specs/frontend.md) and [Rust backend](specs/backend.md).
 6. [Implementation plan](plans/implementation-plan.md): ordered stages and
    numbered work packages, including inputs, outputs, tests, and handoffs.
-7. [Validation](validation.md), [security](security.md), and
+7. [Stage 0.9 CI and release plan](plans/0.9-firmware-ci-release.md): PR head-hash
+   builds, main tags/releases and complete installation bundles; implementation pending.
+8. [Validation](validation.md), [security](security.md), and
    [references](references.md).
 
 ## How to use the baseline

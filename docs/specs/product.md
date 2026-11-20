@@ -1,6 +1,6 @@
 # Product requirements
 
-Status: implementation baseline revised 2026-11-16. Requirement IDs below are
+Status: implementation baseline updated 2026-11-20. Requirement IDs below are
 stable; acceptance requires recorded evidence under [validation](../validation.md).
 
 ## 1. Purpose and motivation
@@ -38,6 +38,12 @@ pack after removing the camera, below-8kg owner's dog/chest mount and dry weathe
 Basic protective housing precedes wear; weather sealing is a later revision.
 The XIAO physically has onboard charging hardware; the external-charge workflow
 requires pack disconnection before USB service unless isolation is reviewed.
+
+The owner's 2026-11-20 delivery requirements add firmware CI on every PR, the
+latest PR head hash in build names, and automatic Git tags plus installable
+GitHub Releases after successful main builds. The detailed
+[Stage 0.9 plan](../plans/0.9-firmware-ci-release.md) defines the implementation;
+these workflows and packaged installers are not yet present.
 
 | Classification | Decision | Treatment |
 | --- | --- | --- |
@@ -90,6 +96,8 @@ requires pack disconnection before USB service unless isolation is reviewed.
 | PR-17 | Record with Wi-Fi off by default; enable it through physical local access | No remote-wake assumption; recording survives radio/session transitions |
 | PR-18 | Charge the unplugged pack externally after taking camera off harness | Compatible separate charger and USB/pack isolation despite onboard charging circuit; unplug/reconnect/recovery tests |
 | PR-19 | Design first for the owner's below-8kg dog's chest harness in dry weather | Exact measurements, fit/ground view and basic housing before wear; no universal small/large-dog or weather-rating claim |
+| PR-20 | Build firmware for every PR and include the latest PR head commit hash in build/artifact names | Stage 0.9 CI-T01–CI-T03; exact head checkout, including docs-only and draft PRs |
+| PR-21 | After a successful main build, create an immutable Git tag and publish a complete prebuilt installation Release | Stage 0.9 CI-T04–CI-T14; exact main source, firmware/flash layout, install guide/scripts, pinned prerequisites and checksums; DEVICE installation evidence remains CI-T15 |
 
 ## 5. Performance and capacity targets
 
