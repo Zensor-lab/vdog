@@ -848,7 +848,7 @@ incomplete. Documentation review does not replace the outputs below.
 | 0.3 Wiring | Candidate only | Reference pin table exists; actual PCB identity, reviewed pin-map.csv/assembly diagram and electrical signoff absent |
 | 0.4 Cost | Allocation only | CNY149 ceiling exists; exact-part BOM and dated supplier quote evidence absent |
 | 0.5 Acceptance rubrics | Draft | General test method exists; repeatable scenes/scoring, measurable limits and reviewed physical procedure not frozen |
-| 0.6 Contracts | Written baseline only | Media/API prose exists; schemas, OpenAPI files, real golden fixtures and validator absent |
+| 0.6 Contracts | **IN PROGRESS** — implemented on `opencode/0.6-contracts`; Orchestrator handoff review pending | [`contracts/`](../contracts/README.md): `device-v1.yaml` and `backend-v1.yaml` (43 operations), `media-v1/` frame/manifest/active JSON Schemas, and 338 committed golden fixtures (67 media segments with 56 single-defect vectors, 271 API vectors) generated from `tools/contracts/fixture_spec.py`; offline validator plus its host suite, both qualified commands PASS locally (HOST). Consumer conformance for firmware/app/backend, CI wiring and every DEVICE claim remain absent; the OTA envelope is deliberately deferred to 2.10 |
 | 0.7 Card/bench | Planned, unverified | FAT32/no-autoformat policy exists; actual card/preparation and authorized identified-device bench record absent |
 | 0.8 Role ownership | Not established | Flutter/Dart and qualified hardware implementation/review routing still needs a concrete recorded assignment |
 | 0.9 CI and installation releases | **IN PROGRESS** — implemented on `opencode/0.9-ci-release`; hosted run pending | [0.9.1–0.9.16](0.9-firmware-ci-release.md): both workflows, `publish.py`, isolated installer wrappers and the prebuilt guide exist with 422 host tests (BUILD/HOST). `actionlint`, `pwsh`, GitHub credentials and a device are absent, so CI-T08/T11/T14 hosted visibility and CI-T15 remain unverified; 0.9.15 (device install) is deliberately deferred |
@@ -856,8 +856,9 @@ incomplete. Documentation review does not replace the outputs below.
 Package 0.2 completed 2026-11-19 with BUILD/HOST evidence
 ([toolchain](../toolchain.md)); Stage-0 hardware-dependent acceptance still
 waits for identified parts and an appropriate authorized bench assignment.
-The next implementation assignments are 0.9 PR CI/tagged installation releases
-and 0.6 media/API contract/schema/fixture work in parallel, alongside 0.3/0.4
+The next implementation assignments are the 0.6 contract handoff review plus its
+cross-language consumer conformance (C++/Dart/Rust readers over the committed
+fixtures, T-04) and 0.9 PR CI/tagged installation releases, alongside 0.3/0.4
 actual-part and wiring/cost preparation. Stage 1–4
 application/hardware work remains unexecuted; do not report the recorder or
 full Stage 0 as complete.

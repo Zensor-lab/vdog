@@ -1,0 +1,15 @@
+# Input for tools/contracts/requirements-dev.lock — regenerate with:
+#   uv pip compile --generate-hashes --python-version 3.12 \
+#     --python $(uv python find 3.12) tools/contracts/requirements-dev.in \
+#     -o tools/contracts/requirements-dev.lock
+# Purpose: the single documented host environment for the 0.6 contract validator
+# (tools/validate_contracts.py) and the tools/contracts/tests suite. Keep
+# dependencies minimal: nothing here may reach the network at validation time.
+# pytest   — the fixture/vector test suite
+# jsonschema — Draft 2020-12 metaschema checks and instance validation
+# pyyaml   — the two OpenAPI 3.1 documents are YAML
+# Pillow   — real JPEG encode in the generator and a real decode in the validator
+pytest
+jsonschema
+pyyaml
+Pillow

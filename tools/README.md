@@ -1,5 +1,10 @@
 # vdog firmware release tooling (Stage 0.9)
 
+`tools/` holds two independent host-side Python suites. This page documents the
+release tooling below; the Stage 0.6 contract validator and golden-fixture generator
+live in `tools/contracts/` and share nothing with it except the qualified
+interpreter — see [Contract validation (Stage 0.6)](#contract-validation-stage-06).
+
 Host-side Python 3.12 tools that turn a plain `pio run` build directory into
 a validated, deterministic, self-contained installation ZIP for the vdog
 XIAO ESP32S3 Sense prototype firmware, a stdlib-only installer CLI that end
@@ -168,3 +173,40 @@ deliberately unfiltered by path, build the immutable event SHA, pin every
 third-party action to a full commit SHA, and never persist checkout
 credentials. `tests/test_workflows.py` asserts these invariants; the hosted run
 is still the authoritative evidence.
+
+## Contract validation (Stage 0.6)
+
+`tools/contracts/` is the host-side validator for the published wire contract in
+[`contracts/`](../contracts/README.md): the two OpenAPI 3.1 documents, the three
+media JSON Schemas, and the 338 committed golden fixtures. It shares no code with
+the release tooling above and needs no firmware toolchain.
+
+| Path | Role |
+| --- | --- |
+| `validate_contracts.py` | the documented entry script (thin shim onto `tools.contracts.cli.main`; exit 0 pass / 1 check failed / 2 validator error) |
+| `contracts/bounds.py` | every numeric limit in the contract, in one place (payload, index, frame, manifest, active, body, chunk, page, duration, dimension) |
+| `contracts/errors.py` | the 100 registered validator diagnostics and `Violation` |
+| `contracts/jpeg.py` | marker-level structure checks plus a real decode through Pillow (encode in the generator, decode in the validator) |
+| `contracts/media_model.py` | canonical serialization of a segment, shared by generator and validator so committed bytes are byte-stable |
+| `contracts/media_validate.py` / `api_validate.py` / `openapi_check.py` | the three check families: media fixtures, API vectors, contract documents |
+| `contracts/api_model.py` | the executable table of 43 operations and the documented wire error codes |
+| `contracts/fixture_spec.py` / `generate_fixtures.py` | declarative corpus and its deterministic writer (`python -m tools.contracts.generate_fixtures`) |
+| `contracts/validate.py` / `cli.py` | orchestration, the `Report`/`FixtureResult` shape and the deterministic summary |
+| `contracts/tests/` | pytest suite (its size is quoted in `contracts/README.md`, which pins it) guarding the corpus, the schemas, the documents, the code registry and the CLI |
+| `contracts/requirements-dev.{in,lock}` | hashed host-environment pins: pytest, jsonschema, PyYAML, Pillow |
+
+Run both from the repository root on the qualified interpreter (the system
+`python3` here is 3.14 and is not qualified):
+
+```sh
+uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
+  python tools/validate_contracts.py
+uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
+  pytest tools/contracts/tests
+```
+
+The validator is offline and deterministic: no sockets, no clock read, no
+environment read, and `fixtures.json` plus every fixture byte must be reproducible
+from `fixture_spec.py` (`GENERATOR_DRIFT` otherwise). It is HOST evidence only —
+it proves the contract documents and the fixtures agree, not that a device, the
+Flutter app or the Rust backend implements them.
