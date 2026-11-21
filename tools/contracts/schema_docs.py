@@ -123,5 +123,3 @@ def _pointer(document: Mapping[str, Any], ref: str) -> Any:
 
 def _error_sort_key(error: ValidationError) -> tuple[str, ...]:
     return tuple(str(part) for part in error.absolute_path)
-
-

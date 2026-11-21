@@ -43,7 +43,7 @@ _ACTIVE_ABSENT_FIELDS = ("close_reason", "duration_us", "frame_count")
 
 INDEX_NAME = CLIP_FILE_NAMES[1]
 PAYLOAD_NAME = CLIP_FILE_NAMES[0]
-LOWER_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+LOWER_HEX_64 = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
 @pytest.fixture(scope="module")
@@ -539,9 +539,12 @@ def test_a_suppressed_active_keyword_is_still_refused(tmp_path, schemas, pair) -
     node = _find_property(_resolved(schemas["active"]), property_name)
     if node is None:
         # The active record is a manifest-shaped record that omits the finalization
-        # fields, so a pair can legitimately have nothing to suppress here.
-        missing = [name for name in _ACTIVE_ABSENT_FIELDS if name in property_name]
-        assert missing, f"active record has {property_name} but no {keyword} keyword"
+        # fields, so a pair can legitimately have nothing to suppress here — but only
+        # for a field on this list, never for one the record does contain.
+        assert property_name in _ACTIVE_ABSENT_FIELDS, (
+            f"the active record has no {property_name} and that field is not a known"
+            " finalization-only field"
+        )
         pytest.skip(f"active record has no {property_name} field")
     assert keyword in node, f"{property_name} carries no {keyword} keyword to suppress"
 

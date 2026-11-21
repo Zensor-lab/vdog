@@ -137,9 +137,11 @@ def validate_api_fixture(
     headers, header_violations = _load_headers(root, entry)
     violations.extend(header_violations)
     if file_violations or header_violations:
-        # Nothing on disk to check the wire rules against; the index finding above
-        # is the whole story for this vector.
-        return violations
+        # The index names a wire file that is absent or unreadable, so its bytes cannot
+        # be decoded — but that is no licence to skip the wire rules that do not need
+        # the bytes: the required-header walk below still runs, against the empty map
+        # this vector effectively presents.
+        body_bytes = None
     body: dict[str, Any] | None = None
 
     if body_bytes is not None:
@@ -214,24 +216,26 @@ def validate_api_fixture(
             ]
         violations.extend(binding)
 
-    if headers is not None:
-        context = _HeaderContext(
-            location=str(entry["id"]),
-            operation=operation,
-            direction=direction,
-            status=status if isinstance(status, int) else None,
-            headers=headers,
-        )
-        required = _required_headers(operation, direction, status)
-        for name in required:
-            if _lookup_header(headers, name) is None:
-                violations.append(
-                    Violation(
-                        E.HEADER_MISSING,
-                        f"{context.location}: {name}",
-                        f"{operation.key} requires this header",
-                    )
+    context = _HeaderContext(
+        location=str(entry["id"]),
+        operation=operation,
+        direction=direction,
+        status=status if isinstance(status, int) else None,
+        # A vector that ships no sidecar still owes every header the contract marks
+        # required for this operation and status: absence is a finding, not a pass, so
+        # the required-name walk runs against an empty map rather than being skipped.
+        headers=headers or {},
+    )
+    for name in _required_headers(operation, direction, status):
+        if _lookup_header(context.headers, name) is None:
+            violations.append(
+                Violation(
+                    E.HEADER_MISSING,
+                    f"{context.location}: {name}",
+                    f"{operation.key} requires this header",
                 )
+            )
+    if headers is not None:
         for name, value in headers.items():
             rule = HEADER_RULES.get(name.lower())
             if rule is None:
@@ -245,7 +249,16 @@ def validate_api_fixture(
                 continue
             violations.extend(rule(context, name, value))
 
-    if not operation.required_request_headers and direction == "request" and body is None and headers is None:
+    if (
+        not operation.required_request_headers
+        and direction == "request"
+        and body is None
+        and headers is None
+        and not file_violations
+        and not header_violations
+    ):
+        # Only a vector that really declares nothing is empty: a named-but-absent file
+        # has already been reported as FIXTURE_FILE_MISSING above.
         violations.append(
             Violation(E.FIXTURE_INDEX_INVALID, str(entry["id"]), "vector carries neither body nor headers")
         )
@@ -751,4 +764,3 @@ def validate_manifest_binding(entry: Mapping[str, Any], body: Mapping[str, Any],
             )
         )
     return found
-

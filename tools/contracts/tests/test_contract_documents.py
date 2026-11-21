@@ -7,6 +7,7 @@ notices when they weaken, and that the deferred OTA envelope stays deferred.
 
 from __future__ import annotations
 
+import ast
 import copy
 import pathlib
 import json
@@ -275,6 +276,19 @@ def test_a_broken_document_is_named(index: int, code: str, mutation_codes) -> No
     assert code in mutation_codes[f"{index}:{code}"], sorted(mutation_codes[f"{index}:{code}"])
 
 
+def test_a_tree_level_scenario_code_is_never_routine(clean_codes) -> None:
+    """Attribution for a document scenario is the whole tree, so it needs a guard.
+
+    A vector scenario must name its code on the damaged vector. A document scenario
+    damages the tree as a whole, so its evidence is only sound while the code it claims
+    is one the committed tree never emits — which is exactly what this pins.
+    """
+    tree_level = [code for group, code, _mutate in CORPUS_MUTATIONS if group == "documents"]
+    tree_level.append("SPEC_STATUS_NOT_ALLOWED")
+    routine = [code for code in tree_level if code in clean_codes]
+    assert not routine, sorted(routine)
+
+
 def test_a_status_outside_the_documented_set_is_refused(mutation_codes) -> None:
     """Decision 7: the documented status set is a ceiling, not a suggestion.
 
@@ -346,58 +360,60 @@ def test_the_documents_and_the_bound_table_agree(device: dict, backend: dict) ->
         assert observed == expected, f"{name}: document says {observed!r}, bounds.py says {expected!r}"
 
 
-#: bounds.py names that describe the *fixture shapes* the generator draws rather than
-#: a rule the contract enforces, so only the generator side may read them.
+#: bounds.py names that describe the *fixture shapes* the generator draws rather than a
+#: rule the contract enforces, so only the generator side may read them. Listed by hand:
+#: a new `FIXTURE_*`-looking limit must be argued for here, not exempted by its name.
 GENERATOR_ONLY_BOUNDS: Final[frozenset[str]] = frozenset(
-    {name for name in dir(bounds_module) if name.startswith("FIXTURE_")}
+    {
+        "FIXTURE_FRAME_WIDTH",
+        "FIXTURE_FRAME_HEIGHT",
+        "FIXTURE_JPEG_QUALITY",
+        "FIXTURE_NOMINAL_FPS",
+    }
 )
+
+
+def _loaded_names(path: pathlib.Path) -> set[str]:
+    """Every identifier a module *loads*, ignoring imports, strings and comments.
+
+    Text matching would credit a mention in a docstring or an unused import, so the
+    guard reads syntax: a bound counts as read only where the code actually uses it.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    loaded: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            # An import binds an ``alias``, never a ``Name``, so what is reached here is
+            # a real load site: the bound is used, not merely mentioned.
+            loaded.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            base = node
+            while isinstance(base, ast.Attribute):
+                base = base.value
+            if isinstance(base, ast.Name):
+                loaded.add(node.attr)
+    return loaded
 
 
 def test_no_bound_constant_is_left_unread() -> None:
     """A limit in bounds.py that nothing reads is a limit nobody enforces.
 
-    Matching is on whole identifiers, so ``API_VERSION`` cannot be credited to an
-    unrelated ``API_VERSION_MISSING`` diagnostic name, and every constant type counts:
-    a marker byte or a file name drifts just as quietly as a maximum does.
+    Every constant type counts: a marker byte or a file name drifts just as quietly as
+    a maximum does, and an identifier in a comment is not an enforcement site.
     """
-    from tools.contracts import (
-        api_model,
-        api_validate,
-        bounds,
-        fixture_spec,
-        generate_fixtures,
-        jpeg,
-        media_model,
-        media_validate,
-        openapi_check,
-    )
-
-    modules = (
-        media_validate,
-        api_validate,
-        api_model,
-        media_model,
-        openapi_check,
-        jpeg,
-        fixture_spec,
-        generate_fixtures,
-    )
-    # The test module counts as a reader because it pins the YAML keywords that carry
-    # the limits the documents express as schema keywords alone (page size, event
-    # clips, upload expiry) to the constant they must equal.
-    readers = "\n".join(
-        pathlib.Path(module.__file__).read_text(encoding="utf-8") for module in modules
-    ) + "\n" + pathlib.Path(__file__).read_text(encoding="utf-8")
-    unenforced = [
+    package = pathlib.Path(bounds_module.__file__).parent
+    readers: set[str] = set()
+    for source in sorted(package.glob("*.py")):
+        if source.name != "bounds.py":
+            readers |= _loaded_names(source)
+    readers |= _loaded_names(pathlib.Path(__file__))
+    declared = {
         name
-        for name in dir(bounds)
-        if name.isupper()
-        and not name.startswith("_")
-        and not isinstance(getattr(bounds, name), type)
-        and name not in GENERATOR_ONLY_BOUNDS
-        and re.search(rf"\b{re.escape(name)}\b", readers) is None
-    ]
-    assert not unenforced, sorted(unenforced)
+        for name in dir(bounds_module)
+        if name.isupper() and not name.startswith("_")
+    }
+    unenforced = sorted(declared - readers - GENERATOR_ONLY_BOUNDS)
+    assert not unenforced, unenforced
 
 
 def test_whole_corpus_has_no_contract_findings(report) -> None:

@@ -243,6 +243,36 @@ def test_every_required_response_header_can_be_represented() -> None:
     assert _completion_headers(ALL_OPERATIONS["device.pair"], 429) is None
 
 
+def _completion_header_table() -> dict[str, str]:
+    from tools.contracts.fixture_spec import _COMPLETION_HEADER_VALUE
+
+    return dict(_COMPLETION_HEADER_VALUE)
+
+
+@pytest.mark.parametrize(("name", "value"), sorted(_completion_header_table().items()))
+def test_a_completion_header_value_is_conformant(name: str, value: str) -> None:
+    """The generator's canned refusal headers have to satisfy the rules they claim to.
+
+    ``_completion_headers`` is only reachable when a document demands a header, so its
+    values would otherwise never be checked; running them through the same
+    :data:`HEADER_RULES` a committed vector goes through makes them a pinned fact.
+    """
+    from tools.contracts.api_validate import HEADER_RULES, _HeaderContext
+
+    operation = ALL_OPERATIONS["backend.patch_upload_file"]
+    rule = HEADER_RULES.get(name.lower())
+    assert rule is not None, f"{name} has no documented rule"
+    context = _HeaderContext(
+        location=f"completion:{operation.key}",
+        operation=operation,
+        direction="response",
+        status=409,
+        headers={name: value},
+    )
+    violations = rule(context, name, value)
+    assert not violations, [violation.render() for violation in violations]
+
+
 def test_every_success_status_has_a_vector(index: list[dict]) -> None:
     """Every documented 2xx of every operation is exercised by a response vector."""
     for key, operation in ALL_OPERATIONS.items():

@@ -111,26 +111,52 @@ def oversized_codes(tmp_path_factory) -> set[str]:
 
 #: --- Broken-copy scenarios ---------------------------------------------------
 #: Each scenario is a *detection* test: the validator has to name the defect with its
-#: own code, never crash and never stay silent. ``mutation_codes`` runs them once and
-#: the corpus, document and code-registry tests assert against that evidence.
+#: own code, never crash and never stay silent. A mutator returns the id of the vector
+#: it damaged, so the evidence is attributed to that vector instead of to "somewhere in
+#: the run" — a code some unrelated negative vector already produces cannot satisfy a
+#: scenario. A mutator that returns ``None`` damaged the tree as a whole (a contract
+#: document, the index), and ``test_a_tree_level_scenario_codes_is_never_routine`` then
+#: proves the code is one the clean tree never emits.
+
+Mutator = Callable[[Path], "str | None"]
 
 
-def _drop_indexed_file(fixtures: Path, name: str) -> None:
-    (fixtures / name).unlink()
+def _drop_indexed_file(name: str, subject: str) -> Mutator:
+    def mutate(fixtures: Path) -> str:
+        (fixtures / name).unlink()
+        return subject
+
+    return mutate
 
 
-def _write_headers(fixtures: Path, name: str, data: bytes) -> None:
-    (fixtures / name).write_bytes(data)
+def _drop_sidecar(name: str, subject: str) -> Mutator:
+    """Delete a header sidecar the contract requires, leaving the body in place.
+
+    The vector then claims to be conformant while omitting a header the operation
+    demands, which is the case a validator must not read as "no headers to check".
+    """
+
+    def mutate(fixtures: Path) -> str:
+        (fixtures / name).unlink()
+        return subject
+
+    return mutate
 
 
-def _write_stray_clip_file(fixtures: Path) -> None:
+def _write_stray_clip_file(fixtures: Path) -> str:
     (fixtures / "media" / "valid" / "baseline" / "stray.bin").write_bytes(b"not declared\n")
+    return "media/valid/baseline"
 
 
-def _set_index_field(field: str, value: object) -> Callable[[Path], None]:
+def _write_headers(fixtures: Path, name: str, data: bytes, subject: str) -> str:
+    (fixtures / name).write_bytes(data)
+    return subject
+
+
+def _set_index_field(field: str, value: object) -> Mutator:
     """Change one field of one API entry so a single integrity rule has to speak."""
 
-    def mutate(fixtures: Path) -> None:
+    def mutate(fixtures: Path) -> str:
         name = field.removeprefix("set_")
         path = fixtures / "fixtures.json"
         document = json.loads(path.read_bytes().decode("utf-8"))
@@ -140,14 +166,15 @@ def _set_index_field(field: str, value: object) -> Callable[[Path], None]:
             if name == "status" and item["direction"] != "response":
                 continue
             item[name] = value
-            break
-        path.write_bytes(json.dumps(document).encode("utf-8"))
+            path.write_bytes(json.dumps(document).encode("utf-8"))
+            return str(item["id"])
+        raise AssertionError("no API vector available to mutate")  # pragma: no cover
 
     return mutate
 
 
-def _set_entry_field(fixture_id: str, field: str, value: object) -> Callable[[Path], None]:
-    def mutate(fixtures: Path) -> None:
+def _set_entry_field(fixture_id: str, field: str, value: object) -> Mutator:
+    def mutate(fixtures: Path) -> str:
         path = fixtures / "fixtures.json"
         document = json.loads(path.read_bytes().decode("utf-8"))
         for item in document["fixtures"]:
@@ -157,23 +184,22 @@ def _set_entry_field(fixture_id: str, field: str, value: object) -> Callable[[Pa
         else:  # pragma: no cover - the id is part of the committed corpus
             raise KeyError(fixture_id)
         path.write_bytes(json.dumps(document).encode("utf-8"))
+        return fixture_id
 
     return mutate
 
 
-def _duplicate_first_index_entry(fixtures: Path) -> None:
+def _duplicate_first_index_entry(fixtures: Path) -> str:
     path = fixtures / "fixtures.json"
     document = json.loads(path.read_bytes().decode("utf-8"))
-    document["fixtures"].insert(0, dict(document["fixtures"][0]))
+    first = dict(document["fixtures"][0])
+    document["fixtures"].insert(0, first)
     path.write_bytes(json.dumps(document).encode("utf-8"))
+    return str(first["id"])
 
 
 def _corrupt_device_yaml(fixtures: Path) -> None:
     (fixtures.parent / "device-v1.yaml").write_text("openapi: [unclosed\n  broken", encoding="utf-8")
-
-
-def _drop_error_schema(fixtures: Path) -> None:
-    _edit_device_yaml(fixtures, lambda document: document["components"]["schemas"].pop("Error"))
 
 
 def _drop_frame_schema(fixtures: Path) -> None:
@@ -194,47 +220,81 @@ def _edit_device_yaml(fixtures: Path, mutate: Callable[[dict], None]) -> None:
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
 
 
-def _device_yaml(mutate: Callable[[dict], None]) -> Callable[[Path], None]:
-    return lambda fixtures: _edit_device_yaml(fixtures, mutate)
+def _device_yaml(mutate: Callable[[dict], None]) -> Mutator:
+    def run(fixtures: Path) -> None:
+        _edit_device_yaml(fixtures, mutate)
+
+    return run
 
 
-CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Callable[[Path], None]], ...]] = (
+def _drop_error_schema(fixtures: Path) -> None:
+    _edit_device_yaml(fixtures, lambda document: document["components"]["schemas"].pop("Error"))
+
+
+CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
     # The corpus itself: a vector, its file or its index record is wrong.
     (
         "corpus",
         "FIXTURE_FILE_MISSING",
-        lambda r: (r / "media" / "valid" / "baseline" / "frames.jsonl").unlink(),
+        lambda r: (r / "media" / "valid" / "baseline" / "frames.jsonl").unlink()
+        or "media/valid/baseline",
     ),
     (
         "corpus",
         "FIXTURE_FILE_MISSING",
-        lambda r: _drop_indexed_file(r, "backend/invalid/clip-detail-response-missing-version.json"),
+        _drop_indexed_file(
+            "backend/invalid/clip-detail-response-missing-version.json",
+            "backend/invalid/clip-detail-response-missing-version",
+        ),
     ),
     (
         "corpus",
         "API_SCHEMA",
         lambda r: _write_headers(
-            r, "backend/invalid/clips-page-request-cursor-too-long.headers.json", b"[1,2]\n"
+            r,
+            "backend/invalid/clips-page-request-cursor-too-long.headers.json",
+            b"[1,2]\n",
+            "backend/invalid/clips-page-request-cursor-too-long",
         ),
     ),
     ("corpus", "CLIP_FILE_UNEXPECTED", _write_stray_clip_file),
-    ("corpus", "FIXTURE_INDEX_INVALID", _set_index_field("set_expected", "maybe")),
-    ("corpus", "API_DIRECTION_MISMATCH", _set_index_field("set_direction", "sideways")),
-    ("corpus", "API_DIRECTION_MISMATCH", _set_index_field("set_contract", "device-v1")),
-    ("corpus", "API_OPERATION_UNKNOWN", _set_index_field("set_operation", "device.nope")),
-    ("corpus", "API_STATUS_UNDOCUMENTED", _set_index_field("set_status", 418)),
+    # A required header that is simply absent is a finding, not "nothing to check":
+    # both the response and the request side have to say so.
+    (
+        "corpus",
+        "HEADER_MISSING",
+        _drop_sidecar(
+            "backend/valid/upload-head-response-200.headers.json",
+            "backend/valid/upload-head-response-200",
+        ),
+    ),
+    (
+        "corpus",
+        "HEADER_MISSING",
+        _drop_sidecar(
+            "backend/valid/upload-patch-request-valid.headers.json",
+            "backend/valid/upload-patch-request-valid",
+        ),
+    ),
+    ("corpus", "FIXTURE_INDEX_INVALID", _set_index_field("expected", "maybe")),
+    ("corpus", "API_DIRECTION_MISMATCH", _set_index_field("direction", "sideways")),
+    ("corpus", "API_DIRECTION_MISMATCH", _set_index_field("contract", "device-v1")),
+    ("corpus", "API_OPERATION_UNKNOWN", _set_index_field("operation", "device.nope")),
+    ("corpus", "API_STATUS_UNDOCUMENTED", _set_index_field("status", 418)),
     ("corpus", "FIXTURE_DUPLICATE", _duplicate_first_index_entry),
     (
         "corpus",
         "FIXTURE_MISSING_CODE",
-        _set_entry_field("media/invalid/frame-crc-mismatch", "expected_error_codes",
-                         ["FRAME_SEQ_NOT_CONSECUTIVE"]),
+        _set_entry_field(
+            "media/invalid/frame-crc-mismatch", "expected_error_codes", ["FRAME_SEQ_NOT_CONSECUTIVE"]
+        ),
     ),
     (
         "corpus",
         "FIXTURE_UNEXPECTED_CODE",
-        _set_entry_field("media/invalid/frame-crc-mismatch", "expected_error_codes",
-                         ["FRAME_SEQ_NOT_CONSECUTIVE"]),
+        _set_entry_field(
+            "media/invalid/frame-crc-mismatch", "expected_error_codes", ["FRAME_SEQ_NOT_CONSECUTIVE"]
+        ),
     ),
     (
         "corpus",
@@ -249,9 +309,17 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Callable[[Path], None]], ...]] = (
     (
         "documents",
         "SPEC_COMPONENT_DRIFT",
-        _device_yaml(lambda d: d["components"]["schemas"]["ManifestFile"]["properties"]["bytes"].__setitem__("maximum", 1024)),
+        _device_yaml(
+            lambda d: d["components"]["schemas"]["ManifestFile"]["properties"]["bytes"].__setitem__(
+                "maximum", 1024
+            )
+        ),
     ),
-    ("documents", "SPEC_SECURITY_MISSING", _device_yaml(lambda d: d["paths"]["/status"]["get"].__setitem__("security", []))),
+    (
+        "documents",
+        "SPEC_SECURITY_MISSING",
+        _device_yaml(lambda d: d["paths"]["/status"]["get"].__setitem__("security", [])),
+    ),
     (
         "documents",
         "SPEC_STATUS_MISSING",
@@ -260,19 +328,42 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Callable[[Path], None]], ...]] = (
     (
         "documents",
         "SPEC_STATUS_UNDOCUMENTED",
-        _device_yaml(lambda d: d["paths"]["/status"]["get"]["responses"].__setitem__("418", {"description": "teapot"})),
+        _device_yaml(
+            lambda d: d["paths"]["/status"]["get"]["responses"].__setitem__("418", {"description": "teapot"})
+        ),
     ),
     ("documents", "OTA_SCHEMA_PRESENT", _ship_ota_schema),
-    ("documents", "OTA_DEFERRAL_MISSING", _device_yaml(lambda d: d["paths"]["/ota"]["post"].pop("x-deferred"))),
+    (
+        "documents",
+        "OTA_DEFERRAL_MISSING",
+        _device_yaml(lambda d: d["paths"]["/ota"]["post"].pop("x-deferred")),
+    ),
 )
 
 
 def _report_codes(report: Report) -> set[str]:
+    """Every code the run emitted, vector findings and contract findings alike."""
     codes = {violation.code for violation in report.contract_violations}
     for result in report.results:
         codes |= {violation.code for violation in result.violations}
         codes |= {violation.code for violation in result.failures}
     return codes
+
+
+def _codes_by_subject(report: Report) -> dict[str | None, set[str]]:
+    """Codes grouped by the vector that produced them, with ``None`` for tree findings.
+
+    Grouping is what makes scenario evidence attributable: a code an unrelated negative
+    vector emits on purpose cannot be credited to the defect a scenario introduced.
+    """
+    grouped: dict[str | None, set[str]] = {
+        None: {violation.code for violation in report.contract_violations}
+    }
+    for result in report.results:
+        bucket = grouped.setdefault(result.id, set())
+        bucket |= {violation.code for violation in result.violations}
+        bucket |= {violation.code for violation in result.failures}
+    return grouped
 
 
 def _status_ceiling_codes(target: Path) -> dict[str, set[str]]:
@@ -302,15 +393,34 @@ def _status_ceiling_codes(target: Path) -> dict[str, set[str]]:
 
 @pytest.fixture(scope="session")
 def mutation_codes(tmp_path_factory) -> dict[str, set[str]]:
-    """Every code the broken copies of the tree actually produced, keyed by scenario."""
+    """Every code the broken copies actually produced, keyed by scenario.
+
+    Evidence is attributed: a vector scenario has to produce its code on that very
+    vector, and the finding set is the *difference* from the clean tree, so an
+    unrelated vector's routine finding can never stand in for the defect under test.
+    """
+    clean = _codes_by_subject(validate_contracts(REPO_ROOT))
     observed: dict[str, set[str]] = {}
     for position, (_group, code, mutate) in enumerate(CORPUS_MUTATIONS):
         root = tmp_path_factory.mktemp(f"mutation{position}")
         shutil.copytree(CONTRACTS, root / "contracts")
-        mutate(root / "contracts" / "fixtures")
-        observed[f"{position}:{code}"] = _report_codes(validate_contracts(root))
+        subject = mutate(root / "contracts" / "fixtures")
+        damaged = _codes_by_subject(validate_contracts(root))
+        # Only what this subject did *not* already say counts as evidence, so a
+        # negative vector's own expected codes cannot masquerade as the new defect.
+        # Index-level damage is a tree finding, so the tree bucket is differenced too.
+        observed[f"{position}:{code}"] = (
+            (damaged.get(subject, set()) | damaged.get(None, set()))
+            - (clean.get(subject, set()) | clean.get(None, set()))
+        )
     observed.update(_status_ceiling_codes(tmp_path_factory.mktemp("ceiling")))
     return observed
+
+
+@pytest.fixture(scope="session")
+def clean_codes() -> set[str]:
+    """Every code the committed tree emits, expected findings on negatives included."""
+    return _report_codes(validate_contracts(REPO_ROOT))
 
 
 @pytest.fixture(scope="session")
