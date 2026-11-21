@@ -4,5 +4,9 @@
 #     -o tools/firmware/requirements-dev.lock
 # Purpose: the single documented host test environment for the
 # tools/firmware/tests suite (master plan 0.9.8). Keep dependencies minimal.
+# pyserial/esptool are NOT here: they belong to the end-user installer lock.
+# pyyaml backs the structural workflow invariants in tests/test_workflows.py
+# (the authoritative CI-T13/CI-T14 check); nothing at runtime parses YAML.
 pytest
 jsonschema
+pyyaml

@@ -424,11 +424,20 @@ def default_payload_sources(
     install_ps1_path: Path | None,
     requirements_lock_path: Path | None,
 ) -> dict[str, Path]:
-    """Resolve payload source paths; round-2 replaces the placeholder wrappers."""
+    """Resolve payload source paths.
+
+    Round 2 (master plan 0.9.7) points ``INSTALL.md`` at the versioned
+    prebuilt guide and ``RELEASE_NOTES.md`` at the release-notes template in
+    ``docs/``. Both are the authoritative sources the CI workflows pass
+    explicitly (``--install-md``/``--release-notes-md`` remain required on the
+    CLI); these defaults keep library callers on the same text the workflows
+    ship.
+    """
     return {
-        "install_md_path": install_md_path or (REPO_ROOT / "docs/installation.md"),
+        "install_md_path": install_md_path
+        or (REPO_ROOT / "docs/release-installation.md"),
         "release_notes_md_path": release_notes_md_path
-        or (TEMPLATES_DIR / "RELEASE_NOTES.md"),
+        or (REPO_ROOT / "docs/release-notes-template.md"),
         "license_path": license_path or (REPO_ROOT / "LICENSE"),
         "third_party_notices_path": third_party_notices_path
         or (TEMPLATES_DIR / "THIRD_PARTY_NOTICES.md"),

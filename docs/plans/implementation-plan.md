@@ -1,10 +1,11 @@
 # vdog implementation plan
 
-Status: **IN PROGRESS — 0.2 qualified; 0.9 CI/release plan ready**, revised
-2026-11-20. This is the master backlog, not authorization to execute every stage
-in one assignment. The minimal firmware and portable host tests exist with
-BUILD/HOST evidence. Recording, device operation and automated CI/releases are
-not delivered merely by this plan.
+Status: **IN PROGRESS — 0.2 qualified; 0.9 implemented on
+`opencode/0.9-ci-release`, hosted run pending**, revised 2026-11-21. This is the
+master backlog, not authorization to execute every stage in one assignment. The
+minimal firmware and portable host tests exist with BUILD/HOST evidence.
+Recording, device operation and every hosted CI/tag/Release result are not
+delivered merely by this plan or by the branch implementing it.
 
 ## Goal, background and scope
 
@@ -850,7 +851,7 @@ incomplete. Documentation review does not replace the outputs below.
 | 0.6 Contracts | Written baseline only | Media/API prose exists; schemas, OpenAPI files, real golden fixtures and validator absent |
 | 0.7 Card/bench | Planned, unverified | FAT32/no-autoformat policy exists; actual card/preparation and authorized identified-device bench record absent |
 | 0.8 Role ownership | Not established | Flutter/Dart and qualified hardware implementation/review routing still needs a concrete recorded assignment |
-| 0.9 CI and installation releases | Detailed plan ready; implementation pending | [0.9.1–0.9.16](0.9-firmware-ci-release.md): PR head-hash builds; exact-main rebuild, immutable tag and complete install Release; workflows/tools not yet created |
+| 0.9 CI and installation releases | **IN PROGRESS** — implemented on `opencode/0.9-ci-release`; hosted run pending | [0.9.1–0.9.16](0.9-firmware-ci-release.md): both workflows, `publish.py`, isolated installer wrappers and the prebuilt guide exist with 383 host tests (BUILD/HOST). `actionlint`, `pwsh`, GitHub credentials and a device are absent, so CI-T08/T11/T14 hosted visibility and CI-T15 remain unverified; 0.9.15 (device install) is deliberately deferred |
 
 Package 0.2 completed 2026-11-19 with BUILD/HOST evidence
 ([toolchain](../toolchain.md)); Stage-0 hardware-dependent acceptance still

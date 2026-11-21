@@ -1,9 +1,10 @@
 # Validation and evidence plan
 
-Status: updated 2026-11-20. Package 0.2 records firmware BUILD and portable
-HOST evidence in [toolchain](toolchain.md). Device/app/backend/recording and
-CI/release execution remain unverified. Documentation inspection supplies none
-of those runtime or deployment results.
+Status: updated 2026-11-21. Package 0.2 records firmware BUILD and portable
+HOST evidence in [toolchain](toolchain.md); Stage 0.9 round 2 adds the CI,
+publish and prebuilt-installer HOST evidence in section 5. Device/app/backend/
+recording evidence and every hosted Actions run remain unverified. Documentation
+inspection supplies none of those runtime or deployment results.
 
 ## 1. Evidence levels and record format
 
@@ -94,6 +95,31 @@ cargo test --manifest-path backend/Cargo.toml --locked
 git diff --check
 ```
 
+The host release-tooling suite runs on the qualified CPython 3.12 through `uv`
+(the system `python3` here is 3.14 and is not the qualified interpreter):
+
+```sh
+uv run --python 3.12 --with-requirements tools/firmware/requirements-dev.lock \
+  pytest tools/firmware/tests
+VDOG_SKIP_REAL_BUILD=1 uv run --python 3.12 \
+  --with-requirements tools/firmware/requirements-dev.lock \
+  pytest tools/firmware/tests                       # skips only the real-build group
+uv run --python 3.12 --with-requirements tools/firmware/requirements-dev.lock \
+  python -m tools.firmware.publish --zip <bundle.zip> --expected-sha <40-hex> --dry-run
+```
+
+`--dry-run` makes no network calls and mutates nothing; the publish state machine
+is otherwise covered by fake-adapter tests, not by a live GitHub run.
+
+Commands actually available in this environment: `pio`, `uv`, `pytest`, `shasum`,
+`git`, `unzip`. **Not available here, so their checks did not run locally and are
+recorded as UNVERIFIED rather than passed:** `pwsh` (so `install.ps1` has
+structural/text coverage only, never an execution), `actionlint`/`yamllint` (so
+workflow linting is the structural parse and invariant assertions in
+`tools/firmware/tests/test_workflows.py` plus the first real hosted run), and any
+GitHub credential or device (no workflow, tag or Release has been executed from
+this checkout).
+
 Run Flutter commands from `app/`; others from repository root. The embedded
 build-only test command does not execute tests. `pio test` without those flags
 may upload; use only the plan's identified authorized device/port.
@@ -102,9 +128,37 @@ may upload; use only the plan's identified authorized device/port.
 
 Stage 0.9's [CI-T01–CI-T15 matrix](plans/0.9-firmware-ci-release.md) owns PR head
 identity, exact-main build/tag/release, archive integrity, installer behavior,
-permissions, retry/concurrency and device-install evidence. Current status is
-plan ready, not deployed. Hosted dry runs are HOST evidence; actual flashing
-needs the identified authorized unit/port and separate DEVICE evidence.
+permissions, retry/concurrency and device-install evidence. Hosted dry runs are
+HOST evidence; actual flashing needs the identified authorized unit/port and
+separate DEVICE evidence.
+
+Round 2 implemented the workflows, the publish pipeline and the real installer
+wrappers on `opencode/0.9-ci-release`. The definitions stay in the master plan;
+this is the evidence status of each row:
+
+| Test | Status | Evidence on this branch / what is still missing |
+| --- | --- | --- |
+| CI-T01 no path filters | PASS (HOST, structural) | `tests/test_workflows.py` asserts neither workflow declares `on.*.paths` |
+| CI-T02 PR builds head SHA | PASS (HOST, structural) | checkout `ref: github.event.pull_request.head.sha` + a step that fails unless `git rev-parse HEAD` equals it |
+| CI-T03 complete hash-named package | PASS (HOST) | the `firmware-build` job *definition* packages, validates, uploads a 14-day artifact and runs `install.py check` on the extracted ZIP with the digest re-verified (asserted structurally); the equivalent local chain actually ran end to end — the hosted run of that job is still pending |
+| CI-T04 stable check names | PASS (HOST, structural) | three job names, no variable in any `name:` |
+| CI-T05 main rebuild from source | PASS (HOST, structural) | no `download-artifact` outside the publish job; publish can only reach its own `run-id` |
+| CI-T06 exact tested SHA tag | PASS (HOST) | `publish.py` tags the full SHA, re-peels it, reuses only on exact match; conflict paths tested |
+| CI-T07 manifest agrees | PASS (HOST) | `load_publish_inputs` validates the package and tag/title identity before any adapter call |
+| CI-T08 assets + digest downloadable | UNVERIFIED (host) | asset set built from the validated ZIP and re-uploaded wholesale on repair; needs one real Release |
+| CI-T09 wrappers set up isolated env | PARTIAL (HOST) | fake-`uv` tests and a real `install.sh` setup against a locally packaged ZIP pass; real Windows host run pending (no `pwsh` here) |
+| CI-T10 idempotent rerun | PASS (HOST) | same-SHA rerun, two rapid SHAs, interrupted upload, foreign published manifest and missing asset tested against the fake adapter |
+| CI-T11 prerelease, never latest | PASS (HOST) | `prerelease=true`, `make_latest=false`, exact title asserted; Release-page visibility needs a real publication |
+| CI-T12 least privilege | PASS (HOST, structural) | top level and every build job `contents: read`; only `publish` gets `contents: write` + `actions: read`; all actions pinned to full SHAs; no `pull_request_target`/`workflow_run` |
+| CI-T13 concurrency | PASS (HOST, structural) | main grouped per SHA with `cancel-in-progress: false`; PR grouped per PR number with cancellation |
+| CI-T14 artifact ZIP downloadable | UNVERIFIED (host) | `if-no-files-found: error` and the embedded digest are asserted; the Actions outer-ZIP download path needs a real PR run |
+| CI-T15 real device install | UNVERIFIED (deferred) | out of scope by decision D-17; needs the identified authorized unit/port and DEVICE evidence |
+
+Structural rows are asserted by `tools/firmware/tests/test_workflows.py`, adapter
+rows by `test_publish.py`, wrapper rows by `test_install_wrappers.py`. The
+authoritative gate for every hosted row is the first real PR run and the first
+real main publication after the Orchestrator pushes this branch; nothing here
+claims a hosted run happened.
 
 CI runs available portable tests and the pinned normal firmware build, then
 schemas/fixtures, Flutter and Rust checks when their implementations exist. Hardware/mobile-device/field
