@@ -1,0 +1,4 @@
+# Isolated installer environment created by install.sh / install.ps1
+# (master plan 0.9.6) when the wrapper is run from a repository checkout.
+# End users get the same directory inside their extracted release bundle.
+.venv-installer/

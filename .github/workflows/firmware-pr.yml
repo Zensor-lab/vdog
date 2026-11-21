@@ -1,0 +1,274 @@
+# vdog firmware PR checks (master plan 0.9.9 / 0.9.14)
+#
+# Stable required-check names: firmware-build, firmware-host-tests and
+# firmware-package-tests. Variable hashes live only in run/artifact/build IDs,
+# never in check names, so branch protection needs no new rule per commit.
+#
+# Security posture (0.9.14):
+#   * top level permissions are `contents: read` ONLY - no tag/release
+#     credentials anywhere in this workflow;
+#   * every third-party action is pinned to a full commit SHA (resolved commit
+#     recorded in the comment; re-resolve deliberately, never auto-follow tags);
+#   * checkouts never persist credentials;
+#   * no `pull_request_target`, no privileged `workflow_run`, no promotion of
+#     PR artifacts into trusted jobs.
+#
+# The PR check runs on `github.event.pull_request.head.sha` - the immutable
+# head commit - not on the synthetic merge ref, so the built source and the
+# artifact name always agree (CI-02). PR builds never create tags or releases.
+#
+# Branch protection/merge policy remains an OWNER decision: `main` is
+# currently unprotected and this file changes nothing there. The three stable
+# check names above are what to require.
+
+name: firmware-pr
+
+# Full event SHA in the run name (evaluated before jobs run); the short SHA
+# for build/artifact IDs is derived in the validated identity step.
+run-name: "Firmware PR #${{ github.event.pull_request.number }} @ ${{ github.event.pull_request.head.sha }}"
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    # Deliberately NO `paths:` filter (CI-01): documentation-only PRs must run
+    # the same firmware build, and drafts are not skipped - GitHub does not
+    # fire `opened` for a draft, so `synchronize` covers draft updates and
+    # `ready_for_review` covers the transition. Do not add a draft condition.
+
+permissions:
+  contents: read
+
+concurrency:
+  # Superseded runs for the same PR are cancelled; the newest head always
+  # produces its own artifact.
+  group: firmware-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  VDOG_PYTHON: "3.12"
+  VDOG_PLATFORMIO_CORE: "6.2.0"
+  UV_PYTHON: "3.12"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # firmware-build: cross-build the exact head SHA, then export -> package ->
+  # validate -> extracted `install.py check`. This job is the CI-T03 real-image
+  # evidence, so `pio test` must never run here before packaging.
+  # ---------------------------------------------------------------------------
+  firmware-build:
+    name: firmware-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      artifact-name: ${{ steps.identity.outputs.artifact_name }}
+      package-zip: ${{ steps.identity.outputs.package_zip }}
+      build-id: ${{ steps.identity.outputs.build_id }}
+    steps:
+      - name: Checkout the immutable PR head SHA
+        # actions/checkout v5.0.0
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate and record PR source identity
+        id: identity
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          printf 'PR head SHA    : %s\n' "$HEAD_SHA"
+          printf 'PR base SHA    : %s\n' "$BASE_SHA"
+          printf 'PR number      : %s\n' "$PR_NUMBER"
+          printf 'Event SHA      : %s\n' "${GITHUB_SHA}"
+          case "$HEAD_SHA" in
+            *[!0-9a-f]*) echo "::error::PR head SHA is not lowercase hex" >&2; exit 1 ;;
+          esac
+          if [ "${#HEAD_SHA}" -ne 40 ]; then
+            echo "::error::PR head SHA must be a full 40-hex object ID" >&2
+            exit 1
+          fi
+          case "$BASE_SHA" in
+            *[!0-9a-f]*) echo "::error::PR base SHA is not lowercase hex" >&2; exit 1 ;;
+          esac
+          if [ "${#BASE_SHA}" -ne 40 ]; then
+            echo "::error::PR base SHA must be a full 40-hex object ID" >&2
+            exit 1
+          fi
+          checked_out="$(git rev-parse HEAD)"
+          if [ "$checked_out" != "$HEAD_SHA" ]; then
+            echo "::error::checkout HEAD $checked_out != requested head $HEAD_SHA" >&2
+            exit 1
+          fi
+          sha12="${HEAD_SHA:0:12}"
+          build_id="pr-${PR_NUMBER}-${sha12}"
+          zip_name="vdog-xiao-sense-${build_id}.zip"
+          artifact_name="vdog-xiao-sense-pr-${PR_NUMBER}-${sha12}-run${RUN_ID}-a${ATTEMPT}"
+          {
+            echo "sha12=${sha12}"
+            echo "build_id=${build_id}"
+            echo "package_zip=${zip_name}"
+            echo "artifact_name=${artifact_name}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## PR firmware build identity"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| PR head SHA (built) | \`$HEAD_SHA\` |"
+            echo "| PR base SHA | \`$BASE_SHA\` |"
+            echo "| Build ID | \`$build_id\` |"
+            echo "| Artifact | \`$artifact_name\` |"
+            echo ""
+            echo "GitHub's default merge SHA (\`${GITHUB_SHA}\`) is intentionally not built."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install uv and the qualified CPython 3.12
+        # astral-sh/setup-uv v7.6.0. No cache on PR jobs (trusted-main only).
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+          python-version: ${{ env.VDOG_PYTHON }}
+
+      - name: Install pinned PlatformIO Core 6.2.0
+        run: |
+          set -euo pipefail
+          uv tool install --python "$VDOG_PYTHON" "platformio==${VDOG_PLATFORMIO_CORE}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/pio" --version
+          "$HOME/.local/bin/pio" --version | grep -F "$VDOG_PLATFORMIO_CORE"
+
+      - name: Build the prototype environment
+        env:
+          VDOG_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          VDOG_BUILD_ID: ${{ steps.identity.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          pio run -d firmware -e vdog_xiao_sense_proto
+          pio run -d firmware -e vdog_xiao_sense_proto -t size
+
+      - name: Export, package and validate the installation ZIP
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PACKAGE_ZIP: ${{ steps.identity.outputs.package_zip }}
+        run: |
+          set -euo pipefail
+          uv run --python "$VDOG_PYTHON" \
+            --with-requirements tools/firmware/requirements-dev.lock \
+            python -m tools.firmware.package \
+              --install-md docs/release-installation.md \
+              --release-notes-md docs/release-notes-template.md \
+              --metadata firmware/.vdog-build-metadata.json \
+              --release-kind pr \
+              --pr-number "$PR_NUMBER" \
+              --base-sha "$BASE_SHA" \
+              --run-id "$GITHUB_RUN_ID" \
+              --attempt "$GITHUB_RUN_ATTEMPT" \
+              --zip-name "$PACKAGE_ZIP"
+          test -f "tools/firmware/dist/$PACKAGE_ZIP"
+          test -f "tools/firmware/dist/$PACKAGE_ZIP.sha256"
+
+      - name: Run the packaged installer's offline check (never opens a port)
+        env:
+          PACKAGE_ZIP: ${{ steps.identity.outputs.package_zip }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          unzip -q "tools/firmware/dist/$PACKAGE_ZIP" -d "$work"
+          root="$(find "$work" -mindepth 1 -maxdepth 1 -type d)"
+          uv run --python "$VDOG_PYTHON" python "$root/install.py" check
+          uv run --python "$VDOG_PYTHON" python "$root/install.py" plan \
+            --board seeed-xiao-esp32s3-sense
+
+      - name: Upload the complete hash-named bundle
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.identity.outputs.artifact_name }}
+          path: |
+            tools/firmware/dist/${{ steps.identity.outputs.package_zip }}
+            tools/firmware/dist/${{ steps.identity.outputs.package_zip }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # firmware-host-tests: portable native firmware tests only (7 tests).
+  # ---------------------------------------------------------------------------
+  firmware-host-tests:
+    name: firmware-host-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout the immutable PR head SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install uv and the qualified CPython 3.12
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+          python-version: ${{ env.VDOG_PYTHON }}
+
+      - name: Install pinned PlatformIO Core 6.2.0
+        run: |
+          set -euo pipefail
+          uv tool install --python "$VDOG_PYTHON" "platformio==${VDOG_PLATFORMIO_CORE}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/pio" --version
+
+      - name: Native firmware tests
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          # Separate build directory (scripts/test_build_isolation.py): the
+          # release build in firmware-build is never touched by pio test.
+          pio test -d firmware -e native | tee "$RUNNER_TEMP/native-tests.log"
+          grep -E "[0-9]+ test cases: [0-9]+ succeeded" \
+            "$RUNNER_TEMP/native-tests.log"
+          if grep -E "\[(FAILED|Errored)\]|Status +FAILED" "$RUNNER_TEMP/native-tests.log"; then
+            echo "::error::native firmware tests did not all pass" >&2
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # firmware-package-tests: host-side release tooling suite. The real-baseline
+  # group needs a full cross-build and runs locally/in firmware-build, so it is
+  # skipped here explicitly rather than silently passing.
+  # ---------------------------------------------------------------------------
+  firmware-package-tests:
+    name: firmware-package-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout the immutable PR head SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install uv and the qualified CPython 3.12
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+          python-version: ${{ env.VDOG_PYTHON }}
+
+      - name: Release tooling tests (pinned CPython 3.12 environment)
+        env:
+          VDOG_SKIP_REAL_BUILD: "1"
+        run: |
+          set -euo pipefail
+          uv run --python "$VDOG_PYTHON" \
+            --with-requirements tools/firmware/requirements-dev.lock \
+            pytest tools/firmware/tests

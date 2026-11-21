@@ -10,10 +10,18 @@ The local `.agent/PROJECT.md` points here. Operating rules remain in
   footage, optional self-hosted processing; for owners, builders and self-hosters.
 - Current state: minimal pinned firmware and portable host tests exist with
   package 0.2 BUILD/HOST evidence. Camera/SD/network runtime, app/backend and
-  hardware qualification remain pending. No GitHub CI/release workflow exists yet.
-- Stage 0.9 now has a [detailed implementation plan](plans/0.9-firmware-ci-release.md)
-  for every-PR builds, head-hash artifact names and exact-main tags/releases with
-  full install assets. Planning is complete; workflow/installer execution is not.
+  hardware qualification remain pending.
+- Stage 0.9 is implemented on `opencode/0.9-ci-release`: PR/main firmware
+  workflows with the stable checks `firmware-build`, `firmware-host-tests` and
+  `firmware-package-tests`, an isolated `publish` job that creates the
+  immutable `firmware-main-<sha12>` tag and a prototype pre-release, the
+  `tools/firmware/publish.py` state machine, the isolated-environment
+  `install.sh`/`install.ps1` setup wrappers and the prebuilt
+  [installation guide](release-installation.md). See the
+  [release plan](plans/0.9-firmware-ci-release.md) and
+  [validation section 5](validation.md) for per-check evidence. No hosted
+  Actions run, tag or Release has executed yet, and device installation
+  (CI-T15) stays deferred and unverified.
 - User priorities (2026-11-16): Seeed Studio XIAO ESP32S3 Sense and 32GB FAT32
   first. The acquired camera/revision is identified before configuration; current
   shipments may be fixed-focus OV5640 or OV3660, with OV2640 historical.
@@ -61,7 +69,19 @@ commands from package 0.2 (run from repository root, verified 2026-11-19):
 (build-only; does not execute tests). Pinned toolchain, resolved versions,
 partition budget and full command evidence: [toolchain](toolchain.md).
 Remaining commands in [validation](validation.md) stay planned until their
-packages exist. Official board support was checked from upstream
+packages exist. Stage 0.9 round 2 adds the release-tooling commands (documented
+in [`tools/README.md`](../tools/README.md) and
+[validation](validation.md) section 4): the host suite
+`uv run --python 3.12 --with-requirements tools/firmware/requirements-dev.lock
+pytest tools/firmware/tests` (366 tests; qualified CPython 3.12.12 via `uv` —
+the host `python3` is 3.14 and is not qualified), the offline
+`python -m tools.firmware.validate_package <zip>` check, and
+`python -m tools.firmware.publish ... --dry-run`, which performs no network
+calls. `.github/workflows/firmware-pr.yml` and `firmware-main.yml` exist on
+`opencode/0.9-ci-release` but have not run hosted, and `actionlint`, `pwsh` and
+any GitHub credential or device are absent here, so workflow linting, the
+Windows wrapper and every hosted/tag/Release/device result are recorded as
+unverified rather than passed. Official board support was checked from upstream
 documentation and is now backed by a vdog cross-build (BUILD/HOST evidence
 only); memory detection and all other hardware qualification remain
 unperformed.

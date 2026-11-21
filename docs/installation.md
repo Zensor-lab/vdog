@@ -10,13 +10,29 @@ The build passed on 2026-11-20; upload and runtime operation have not yet been
 verified in this guide. See the [toolchain matrix](toolchain.md) for dependency
 pins and earlier BUILD/HOST evidence.
 
-## Planned prebuilt release installation
+## Two ways to install
 
-[Stage 0.9](plans/0.9-firmware-ci-release.md) specifies downloadable images,
-validated flash layout, checksums, a versioned installation guide and Python/
-shell/PowerShell installer for each tagged main release. PR packages will carry
-the PR head commit hash. That pipeline is not implemented by the plan; this
-page currently describes the source-build/PlatformIO installation method.
+| | Prebuilt release bundle | Source build (this page) |
+| --- | --- | --- |
+| For | Testers installing a shipped prototype | Developing and building the firmware |
+| Needed on the host | Python 3.12 + [`uv`](https://docs.astral.sh/uv/) | PlatformIO Core 6.2.0 + Python 3.12, a compiler toolchain, a clone of this repository |
+| Where the images come from | A GitHub Release ZIP built and validated by CI from one exact commit | `pio run` on your machine |
+| How the board is written | `install.py` via `install.sh` / `install.ps1`, four validated segments | PlatformIO's `upload` target |
+| Guide | [Prebuilt release installation](release-installation.md) | the rest of this page |
+
+Follow [Prebuilt release installation](release-installation.md) to download a
+CI-built bundle, verify its `.sha256`, and install it with the bundled wrapper.
+That route needs no PlatformIO, no ESP-IDF and no source clone, and it is the
+route the [Stage 0.9 pipeline](plans/0.9-firmware-ci-release.md) produces: an
+immutable `firmware-main-<sha12>` tag, a pre-release with the validated ZIP,
+its external digest, `INSTALL.md`, `RELEASE_NOTES.md`,
+`THIRD_PARTY_NOTICES.md` and `manifest.json`. Pull-request builds are
+development artifacts (14-day retention), not releases.
+
+Everything below stays the documented **source-build** route for development.
+Both routes install the same four segments and neither provides device OTA or a
+recording feature; the firmware logs its version and links the camera driver,
+but does not initialize the camera, record to SD, or provide Wi-Fi/app features.
 
 ## 1. Prepare the computer and board
 
@@ -101,9 +117,12 @@ pio device monitor --port /dev/cu.usbmodemXXXX --baud 115200
 ```
 
 Press RESET with BOOT released to capture startup messages. The current source
-logs `vdog firmware ... (0.2 proto build)` and `esp32-camera linked: yes`.
-These are expected messages from the source, not a recorded device test result;
-they do not prove camera capture or SD recording. Exit the monitor with Ctrl+C.
+logs `vdog firmware ... (0.2 proto build)`, the build identity line
+`build identity: build_id=... source_sha=...` (for a source build without CI
+context that reads `build_id=local source_sha=local`) and
+`esp32-camera linked: yes`. These are expected messages from the source, not a
+recorded device test result; they do not prove camera capture or SD recording.
+Exit the monitor with Ctrl+C.
 
 ## Troubleshooting the Python environment
 
