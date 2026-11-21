@@ -87,9 +87,29 @@ def test_a_corpus_scenario_code_is_attributable(index: int, code: str, mutation_
     evidence = mutation_evidence[f"{index}:{code}"]
     if code in TREE_LEVEL_CORPUS_CODES:
         assert code in evidence.tree, sorted(evidence.tree)
+        # Even here the code has to be one the clean tree never emits, so the
+        # allow-list cannot hide a finding that any healthy vector already reports.
+        assert code not in clean_codes or code in evidence.subject
         return
     assert code in evidence.subject, (sorted(evidence.subject), sorted(evidence.tree))
-    assert code not in clean_codes or code in evidence.subject
+
+
+def test_the_tree_level_allow_list_is_still_earned(mutation_evidence) -> None:
+    """Every admitted tree-level code must still be claimed by a corpus scenario.
+
+    An allow-list nobody uses is a way to hide a future scenario's unattributed
+    finding, so it may not outlive the scenarios that justified it.
+    """
+    claimed = {
+        code
+        for position, (group, code, _mutate) in enumerate(CORPUS_MUTATIONS)
+        if group == "corpus" and f"{position}:{code}" in mutation_evidence
+        and code in mutation_evidence[f"{position}:{code}"].tree
+    }
+    assert claimed == set(TREE_LEVEL_CORPUS_CODES), (
+        sorted(TREE_LEVEL_CORPUS_CODES - claimed),
+        sorted(claimed - TREE_LEVEL_CORPUS_CODES),
+    )
 
 
 def test_the_docs_quote_the_actual_corpus_and_suite_counts(index: list[dict]) -> None:

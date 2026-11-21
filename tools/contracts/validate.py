@@ -215,7 +215,9 @@ def validate_contracts(repository_root: Path) -> Report:
                 # missing" would be the same vector to the index.
                 for code in sorted(expected_codes):
                     declared_times = declared.count(code)
-                    if declared_times < 2:
+                    if declared_times < 2 or code in missing:
+                        # An absent code is already reported once above; a second line
+                        # for the same root cause would only make the report noisy.
                         continue
                     sites = {
                         violation.location for violation in violations if violation.code == code

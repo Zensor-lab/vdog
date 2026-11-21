@@ -430,11 +430,14 @@ TREE_LEVEL_CORPUS_CODES: Final[frozenset[str]] = frozenset(
 class ScenarioEvidence:
     """What a broken copy produced, split by where the finding was attributed."""
 
+    #: Codes the damaged vector itself reported: the only evidence a corpus scenario
+    #: may rely on, except for the index-integrity codes in TREE_LEVEL_CORPUS_CODES.
     subject: frozenset[str]
+    #: Codes the run reported against the tree as a whole (contract findings).
     tree: frozenset[str]
 
-    def __contains__(self, code: object) -> bool:
-        return code in self.subject or code in self.tree
+    # Deliberately no ``__contains__``: a union membership test would re-admit the
+    # free-riding this split exists to prevent, so callers have to name the bucket.
 
 
 @pytest.fixture(scope="session")
