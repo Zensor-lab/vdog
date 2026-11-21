@@ -249,6 +249,26 @@ def _completion_header_table() -> dict[str, str]:
     return dict(_COMPLETION_HEADER_VALUE)
 
 
+def test_the_three_header_vector_names_all_three_headers(by_id: dict, specs: dict) -> None:
+    """A vector that declares three absent headers has to be missing three, by name.
+
+    ``expected_error_codes`` is a set to the comparison in :mod:`tools.contracts.validate`,
+    so the promise that this vector exercises three distinct required headers lives in
+    the finding *locations*, which is what this pins.
+    """
+    from tools.contracts.api_validate import validate_api_fixture
+
+    entry = by_id["device/invalid/clip-file-response-missing-required-headers"]
+    assert entry["expected_error_codes"].count(E.HEADER_MISSING) == 3
+    violations = validate_api_fixture(FIXTURES, entry, specs, {})
+    named = {
+        violation.location.rsplit(": ", 1)[-1]
+        for violation in violations
+        if violation.code == E.HEADER_MISSING
+    }
+    assert named == {"Accept-Ranges", "Content-Range", "ETag"}, sorted(named)
+
+
 @pytest.mark.parametrize(("name", "value"), sorted(_completion_header_table().items()))
 def test_a_completion_header_value_is_conformant(name: str, value: str) -> None:
     """The generator's canned refusal headers have to satisfy the rules they claim to.
@@ -270,6 +290,30 @@ def test_a_completion_header_value_is_conformant(name: str, value: str) -> None:
         headers={name: value},
     )
     violations = rule(context, name, value)
+    assert not violations, [violation.render() for violation in violations]
+
+
+def test_the_completion_range_and_length_pair_agree() -> None:
+    """``Content-Range`` is cross-checked against ``Content-Length``, so the pair is pinned.
+
+    Checked one header at a time, the range rule always sees no declared length; the
+    two canned values only mean something together.
+    """
+    from tools.contracts.api_validate import HEADER_RULES, _HeaderContext
+
+    operation = ALL_OPERATIONS["backend.get_clip_file"]
+    table = _completion_header_table()
+    headers = {"Content-Range": table["Content-Range"], "Content-Length": table["Content-Length"]}
+    context = _HeaderContext(
+        location="completion:pair",
+        operation=operation,
+        direction="response",
+        status=206,
+        headers=headers,
+    )
+    violations: list = []
+    for name, value in headers.items():
+        violations.extend(HEADER_RULES[name.lower()](context, name, value))
     assert not violations, [violation.render() for violation in violations]
 
 

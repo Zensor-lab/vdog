@@ -153,7 +153,8 @@ def validate_contracts(repository_root: Path) -> Report:
             violations = [Violation(E.SCHEMA_DOCUMENT_INVALID, fixture_id, "no media schema loaded")]
 
         expected = str(entry["expected"])
-        expected_codes = {str(code) for code in entry.get("expected_error_codes", [])}
+        declared = [str(code) for code in entry.get("expected_error_codes", [])]
+        expected_codes = set(declared)
         observed_codes = {violation.code for violation in violations}
         result = FixtureResult(
             id=fixture_id,
@@ -209,6 +210,26 @@ def validate_contracts(repository_root: Path) -> Report:
                             "unexpected " + ", ".join(sorted(extra)),
                         )
                     )
+                # A code declared k times is a promise of k *distinct* defects, not a
+                # repeated word: without this, "one header missing" and "three headers
+                # missing" would be the same vector to the index.
+                for code in sorted(expected_codes):
+                    declared_times = declared.count(code)
+                    if declared_times < 2:
+                        continue
+                    sites = {
+                        violation.location for violation in violations if violation.code == code
+                    }
+                    if len(sites) < declared_times:
+                        result.failures.append(
+                            Violation(
+                                E.FIXTURE_MISSING_CODE,
+                                fixture_id,
+                                f"{code} is declared {declared_times} times but demonstrated at"
+                                f" {len(sites)} distinct site(s): "
+                                + ", ".join(sorted(sites)),
+                            )
+                        )
         else:
             # The index record was already reported malformed; a vector with no
             # declared outcome must never print PASS in an otherwise failing run.

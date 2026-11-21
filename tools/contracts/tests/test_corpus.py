@@ -18,7 +18,12 @@ from tools.contracts.validate import validate_contracts
 
 from tools.contracts.bounds import CLOSE_REASONS
 
-from conftest import CORPUS_MUTATIONS, FIXTURES, REPO_ROOT
+from conftest import (
+    CORPUS_MUTATIONS,
+    FIXTURES,
+    REPO_ROOT,
+    TREE_LEVEL_CORPUS_CODES,
+)
 
 
 @pytest.mark.parametrize(
@@ -63,6 +68,28 @@ def test_categories_required_by_ac06_are_present(index: list[dict]) -> None:
 
 
 DOCS = REPO_ROOT
+
+
+@pytest.mark.parametrize(
+    "index,code",
+    [(i, code) for i, (group, code, _mutate) in enumerate(CORPUS_MUTATIONS) if group == "corpus"],
+    ids=[f"{code}-{i}" for i, (group, code, _mutate) in enumerate(CORPUS_MUTATIONS) if group == "corpus"],
+)
+def test_a_corpus_scenario_code_is_attributable(index: int, code: str, mutation_evidence, clean_codes) -> None:
+    """A corpus scenario must be able to point at the vector it broke.
+
+    Tree-level findings are admitted only for the index-integrity codes listed in
+    :data:`TREE_LEVEL_CORPUS_CODES`, and a code the clean tree already emits somewhere
+    must appear on the damaged vector itself. Without this, a scenario could pass on
+    ``GENERATOR_DRIFT`` (which any file edit produces) or on another vector's routine
+    finding, which is exactly how two earlier scenarios were falsely green.
+    """
+    evidence = mutation_evidence[f"{index}:{code}"]
+    if code in TREE_LEVEL_CORPUS_CODES:
+        assert code in evidence.tree, sorted(evidence.tree)
+        return
+    assert code in evidence.subject, (sorted(evidence.subject), sorted(evidence.tree))
+    assert code not in clean_codes or code in evidence.subject
 
 
 def test_the_docs_quote_the_actual_corpus_and_suite_counts(index: list[dict]) -> None:

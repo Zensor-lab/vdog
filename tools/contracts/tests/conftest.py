@@ -7,6 +7,7 @@ import json
 import shutil
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -115,7 +116,7 @@ def oversized_codes(tmp_path_factory) -> set[str]:
 #: it damaged, so the evidence is attributed to that vector instead of to "somewhere in
 #: the run" — a code some unrelated negative vector already produces cannot satisfy a
 #: scenario. A mutator that returns ``None`` damaged the tree as a whole (a contract
-#: document, the index), and ``test_a_tree_level_scenario_codes_is_never_routine`` then
+#: document, the index), and ``test_a_tree_level_scenario_code_is_never_routine`` then
 #: proves the code is one the clean tree never emits.
 
 Mutator = Callable[[Path], "str | None"]
@@ -151,6 +152,17 @@ def _write_stray_clip_file(fixtures: Path) -> str:
 def _write_headers(fixtures: Path, name: str, data: bytes, subject: str) -> str:
     (fixtures / name).write_bytes(data)
     return subject
+
+
+def _replace_file(name: str, data: bytes, subject: str) -> Mutator:
+    """Overwrite one committed wire file, so a scenario can change *how many* defects
+    a vector carries without changing which codes it declares."""
+
+    def mutate(fixtures: Path) -> str:
+        (fixtures / name).write_bytes(data)
+        return subject
+
+    return mutate
 
 
 def _set_index_field(field: str, value: object) -> Mutator:
@@ -236,8 +248,7 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
     (
         "corpus",
         "FIXTURE_FILE_MISSING",
-        lambda r: (r / "media" / "valid" / "baseline" / "frames.jsonl").unlink()
-        or "media/valid/baseline",
+        _drop_indexed_file("media/valid/baseline/frames.jsonl", "media/valid/baseline"),
     ),
     (
         "corpus",
@@ -282,6 +293,21 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
     ("corpus", "API_OPERATION_UNKNOWN", _set_index_field("operation", "device.nope")),
     ("corpus", "API_STATUS_UNDOCUMENTED", _set_index_field("status", 418)),
     ("corpus", "FIXTURE_DUPLICATE", _duplicate_first_index_entry),
+    # Three declared findings have to be three *distinct* defects: restoring one of the
+    # three absent headers leaves the code set intact and can only be caught by count.
+    (
+        "corpus",
+        "FIXTURE_MISSING_CODE",
+        _replace_file(
+            "device/invalid/clip-file-response-missing-required-headers.headers.json",
+            json.dumps(
+                {"Content-Length": "1024", "ETag": '"' + "a" * 64 + '"'},
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n",
+            "device/invalid/clip-file-response-missing-required-headers",
+        ),
+    ),
     (
         "corpus",
         "FIXTURE_MISSING_CODE",
@@ -391,36 +417,65 @@ def _status_ceiling_codes(target: Path) -> dict[str, set[str]]:
     return {f"{len(CORPUS_MUTATIONS)}:SPEC_STATUS_NOT_ALLOWED": _report_codes(report)}
 
 
+#: Codes a corpus scenario may prove through a *tree-level* finding rather than one on
+#: the damaged vector, because damaging ``fixtures.json`` is what those scenarios do.
+#: Kept small on purpose: ``GENERATOR_DRIFT`` is emitted for any file edit, so admitting
+#: it would let a corpus scenario pass on unrelated damage.
+TREE_LEVEL_CORPUS_CODES: Final[frozenset[str]] = frozenset(
+    {"FIXTURE_DUPLICATE", "FIXTURE_INDEX_INVALID"}
+)
+
+
+@dataclass(frozen=True)
+class ScenarioEvidence:
+    """What a broken copy produced, split by where the finding was attributed."""
+
+    subject: frozenset[str]
+    tree: frozenset[str]
+
+    def __contains__(self, code: object) -> bool:
+        return code in self.subject or code in self.tree
+
+
 @pytest.fixture(scope="session")
-def mutation_codes(tmp_path_factory) -> dict[str, set[str]]:
+def mutation_evidence(tmp_path_factory, report: Report) -> dict[str, ScenarioEvidence]:
+    """The attributed evidence behind :func:`mutation_codes`, per bucket."""
+    clean = _codes_by_subject(report)
+    observed: dict[str, ScenarioEvidence] = {}
+    for position, (_group, code, mutate) in enumerate(CORPUS_MUTATIONS):
+        root = tmp_path_factory.mktemp(f"evidence{position}")
+        shutil.copytree(CONTRACTS, root / "contracts")
+        subject = mutate(root / "contracts" / "fixtures")
+        damaged = _codes_by_subject(validate_contracts(root))
+        observed[f"{position}:{code}"] = ScenarioEvidence(
+            subject=frozenset(damaged.get(subject, set()) - clean.get(subject, set())),
+            tree=frozenset(damaged.get(None, set()) - clean.get(None, set())),
+        )
+    return observed
+
+
+@pytest.fixture(scope="session")
+def mutation_codes(
+    mutation_evidence: dict[str, ScenarioEvidence], tmp_path_factory
+) -> dict[str, set[str]]:
     """Every code the broken copies actually produced, keyed by scenario.
 
     Evidence is attributed: a vector scenario has to produce its code on that very
     vector, and the finding set is the *difference* from the clean tree, so an
     unrelated vector's routine finding can never stand in for the defect under test.
     """
-    clean = _codes_by_subject(validate_contracts(REPO_ROOT))
-    observed: dict[str, set[str]] = {}
-    for position, (_group, code, mutate) in enumerate(CORPUS_MUTATIONS):
-        root = tmp_path_factory.mktemp(f"mutation{position}")
-        shutil.copytree(CONTRACTS, root / "contracts")
-        subject = mutate(root / "contracts" / "fixtures")
-        damaged = _codes_by_subject(validate_contracts(root))
-        # Only what this subject did *not* already say counts as evidence, so a
-        # negative vector's own expected codes cannot masquerade as the new defect.
-        # Index-level damage is a tree finding, so the tree bucket is differenced too.
-        observed[f"{position}:{code}"] = (
-            (damaged.get(subject, set()) | damaged.get(None, set()))
-            - (clean.get(subject, set()) | clean.get(None, set()))
-        )
+    observed = {
+        key: set(evidence.subject) | set(evidence.tree)
+        for key, evidence in mutation_evidence.items()
+    }
     observed.update(_status_ceiling_codes(tmp_path_factory.mktemp("ceiling")))
     return observed
 
 
 @pytest.fixture(scope="session")
-def clean_codes() -> set[str]:
+def clean_codes(report: Report) -> set[str]:
     """Every code the committed tree emits, expected findings on negatives included."""
-    return _report_codes(validate_contracts(REPO_ROOT))
+    return _report_codes(report)
 
 
 @pytest.fixture(scope="session")
