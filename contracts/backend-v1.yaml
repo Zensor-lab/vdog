@@ -917,10 +917,12 @@ components:
         type: integer
         minimum: 0
     ContentRange:
-      description: '`bytes <first>-<last>/<total>` for the single granted range.'
+      description: >-
+        `bytes <first>-<last>/<total>` for the single granted range, or
+        `bytes */<total>` on the 416 that refuses an unsatisfiable one.
       schema:
         type: string
-        pattern: '^bytes [0-9]+-[0-9]+/[0-9]+$'
+        pattern: '^bytes ([0-9]+-[0-9]+|\*)/[0-9]+$'
     UploadOffset:
       description: >-
         Authoritative committed offset for this file, returned on 204, on the
@@ -1760,7 +1762,7 @@ components:
             video.mjpg:
               $ref: '#/components/schemas/ManifestFile'
             frames.jsonl:
-              $ref: '#/components/schemas/ManifestFile'
+              $ref: '#/components/schemas/ManifestIndexFile'
     BootId:
       description: 32 random lowercase hexadecimal characters per boot.
       type: string
@@ -1774,6 +1776,20 @@ components:
           type: integer
           minimum: 1
           maximum: 268435456
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+    ManifestIndexFile:
+      description: >-
+        The frames.jsonl entry of Manifest: media-format.md section 2 bounds the
+        index at 1,843,200 bytes, far below the payload ceiling ManifestFile states.
+      type: object
+      additionalProperties: false
+      required: [bytes, sha256]
+      properties:
+        bytes:
+          type: integer
+          minimum: 1
+          maximum: 1843200
         sha256:
           $ref: '#/components/schemas/Sha256'
     ManifestClock:

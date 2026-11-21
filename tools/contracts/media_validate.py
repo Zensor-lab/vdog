@@ -96,6 +96,10 @@ MANIFEST_DEDICATED_RULES: Final[Mapping[tuple[str, str], tuple[str, ...]]] = {
     ("nominal_fps", "maximum"): (E.NOMINAL_FPS_INVALID,),
     ("source", "enum"): (E.CLOCK_SOURCE_UNKNOWN_VALUE,),
     ("start_utc", "pattern"): (E.CLOCK_TIMESTAMP_INVALID,),
+    # The shape *and* the calendar: _clock_violations parses the timestamp for real, so
+    # it reports an impossible date more precisely than a format keyword can, and the
+    # strict checker in schema_docs is what makes that keyword mean anything at all.
+    ("start_utc", "format"): (E.CLOCK_TIMESTAMP_INVALID,),
     # The count is checked against the records actually walked, so both bounds are
     # reported by that comparison (an empty index also reports INDEX_EMPTY).
     ("frame_count", "minimum"): (E.FRAME_COUNT_MISMATCH, E.INDEX_EMPTY),
@@ -445,6 +449,22 @@ def _walk_index(
                     E.OFFSET_EXCEEDS_PAYLOAD,
                     location,
                     f"offset {offset} + size {size} passes the payload end {len(payload)}",
+                )
+            )
+            walk.stopped = True
+            return walk
+
+        # An integral number written in decimal or exponent notation is still a JSON
+        # integer to the schema and to every bound above, but it is not a byte position
+        # a reader can index with: the wire form spells offsets and sizes as plain
+        # integers. Refusing here is also what keeps such a line from reaching the
+        # payload slice below, which can only be taken with real integers.
+        if not all(type(record[name]) is int for name in ("offset", "size")):
+            walk.violations.append(
+                Violation(
+                    E.FRAME_SCHEMA,
+                    location,
+                    f"offset {offset!r} and size {size!r} must be written as JSON integers",
                 )
             )
             walk.stopped = True
@@ -855,5 +875,18 @@ def _validate_checksums(fixture_dir: Path, committed: list[str]) -> list[Violati
 
 
 def _is_int(value: Any) -> bool:
-    """True for a JSON integer, excluding the bool that Python treats as an int."""
-    return isinstance(value, int) and not isinstance(value, bool)
+    """True for a JSON integer as ``json`` decodes one, excluding the bool Python calls an int.
+
+    ``type: integer`` in the contract accepts an integral number in *any* JSON number
+    notation, so ``120000001``, ``120000001.0`` and ``1.20000001e8`` are all integers
+    and every dedicated bound has to apply to all three spellings: a bound skipped for
+    one of them is a bound the schema keyword no longer reports either, because the
+    suppressed pair in :data:`MANIFEST_DEDICATED_RULES` silences it in exchange for a
+    check that never ran. A non-integral float is not an integer, and ``nan``/``inf``
+    are refused too (they have no JSON notation at all, so they cannot be a wire value).
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, float) and value.is_integer()

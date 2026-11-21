@@ -44,7 +44,7 @@ _SHARED_DEFS: tuple[str, ...] = ("device_id", "boot_id", "clip_id", "profile", "
 _EXPECTED_HEADER_SCHEMAS: Mapping[str, Mapping[str, Any]] = {
     "AcceptRanges": {"type": "string", "const": "bytes"},
     "ETagSha256": {"type": "string", "pattern": '^[0-9a-f]{64}$', "_quoted": True},
-    "ContentRange": {"type": "string", "pattern": "^bytes [0-9]+-[0-9]+/[0-9]+$"},
+    "ContentRange": {"type": "string", "pattern": "^bytes ([0-9]+-[0-9]+|\\*)/[0-9]+$"},
 }
 
 OTA_DEFERRAL_PACKAGE: str = "2.10"
@@ -66,7 +66,6 @@ def load_media_schemas(media_dir: Path) -> tuple[dict[str, Mapping[str, Any]], l
         except (ValueError, UnicodeDecodeError) as error:
             found.append(Violation(E.SCHEMA_DOCUMENT_INVALID, str(path), str(error)))
             continue
-        schemas[name] = document
         failure = check_metaschema(document)
         if failure is not None:
             found.append(Violation(E.SCHEMA_DOCUMENT_INVALID, str(path), failure))
@@ -86,6 +85,14 @@ def load_media_schemas(media_dir: Path) -> tuple[dict[str, Mapping[str, Any]], l
                     "write-side objects must reject unknown fields",
                 )
             )
+        if failure is not None:
+            # A document that is not a schema cannot validate anything: handing it to
+            # ``iter_errors`` anyway raises from inside the keyword implementation, so a
+            # bad contract file would surface as a CLI exit 2 "validator internal error"
+            # rather than the exit 1 finding it is. Every vector of that kind is then
+            # reported as having no usable schema, which is the honest verdict.
+            continue
+        schemas[name] = document
     if {"manifest", "active"} <= set(schemas):
         manifest_defs = schemas["manifest"].get("$defs", {})
         active_defs = schemas["active"].get("$defs", {})

@@ -2,24 +2,80 @@
 
 One place decides how a JSON Schema or OpenAPI 3.1 document is read and how a
 schema error is turned into a validator code, so the media and API validators cannot
-drift apart in their reporting.
+drift apart in their reporting — including the one :class:`~jsonschema.FormatChecker`
+that gives ``format: date-time`` a meaning at all.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import ValidationError
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError, ValidationError
 
 #: Keys stripped before comparing two documents that must say the same thing.
 _NON_SEMANTIC_KEYS: frozenset[str] = frozenset(
     {"description", "title", "$comment", "examples", "example", "deprecated"}
 )
+
+#: RFC 3339 ``date-time`` (the one ``format`` this contract uses), spelled out so every
+#: field can be examined: four-digit year, two-digit month/day, the case-tolerant ``T``
+#: RFC 3339 §5.6 allows, an optional fraction of any digit count, and either a
+#: case-tolerant ``Z`` or a ``±HH:MM`` offset.
+_RFC3339_DATE_TIME = re.compile(
+    r"\A(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})"
+    r"[Tt](?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
+    r"(?:\.[0-9]+)?"
+    r"(?:[Zz]|(?P<offset>[+-][0-9]{2}:[0-9]{2}))\Z"
+)
+
+
+def is_rfc3339_date_time(value: Any) -> bool:
+    """True when ``value`` is a real RFC 3339 instant, not merely one shaped like it.
+
+    ``format`` is informational in JSON Schema unless a validator is handed a checker,
+    and a ``pattern`` can only ever test the shape, so ``2026-02-30T12:00:00.000Z`` and
+    ``2026-01-01T25:00:00.000Z`` pass a regex and mean nothing. Constructing an actual
+    :class:`~datetime.datetime` is what makes an impossible calendar date impossible.
+
+    A leap second (``:60``) is refused: no contract vector, and no timestamp this
+    product can write at millisecond precision, carries one, so accepting it would
+    widen the published wire form for no documented reason.
+    """
+    if not isinstance(value, str):
+        return True  # format constrains strings only; the type keyword owns the rest
+    match = _RFC3339_DATE_TIME.match(value)
+    if match is None:
+        return False
+    offset = match.group("offset")
+    if offset is not None and (int(offset[1:3]) > 23 or int(offset[4:6]) > 59):
+        return False
+    try:
+        datetime(
+            year=int(match.group("year")),
+            month=int(match.group("month")),
+            day=int(match.group("day")),
+            hour=int(match.group("hour")),
+            minute=int(match.group("minute")),
+            second=int(match.group("second")),
+        )
+    except ValueError:
+        return False
+    return True
+
+
+#: The one format checker every schema-error report in the package uses, so the media
+#: and API validators cannot disagree about what a timestamp means. Formats it does not
+#: register (``binary``, say) stay informational, which is what the contract expects of
+#: an annotation it does not define semantics for.
+FORMAT_CHECKER = FormatChecker()
+FORMAT_CHECKER.checks("date-time")(is_rfc3339_date_time)
 
 
 def load_json(path: Path) -> Any:
@@ -85,7 +141,7 @@ def schema_error_report(
     ``""`` for errors at the document root), which lets callers suppress the generic
     schema code where a dedicated invariant already reports the same bound.
     """
-    validator = Draft202012Validator(schema)
+    validator = Draft202012Validator(schema, format_checker=FORMAT_CHECKER)
     report: list[tuple[str, str, str]] = []
     for error in sorted(validator.iter_errors(instance), key=_error_sort_key):
         property_name = ""
@@ -102,10 +158,16 @@ def schema_error_report(
 
 
 def check_metaschema(document: Mapping[str, Any]) -> str | None:
-    """Return a short failure description when a document is not a valid 2020-12 schema."""
+    """Return a short failure description when a document is not a valid 2020-12 schema.
+
+    A parseable document whose *keywords* are wrong — a ``maximum`` that is text, say —
+    raises :class:`~jsonschema.exceptions.SchemaError`, not ``ValidationError``. Both
+    have to be caught here: either one escaping turns a bad contract file into a CLI
+    exit 2 "validator internal error" instead of the exit 1 finding it is.
+    """
     try:
         Draft202012Validator.check_schema(document)
-    except ValidationError as error:  # pragma: no cover - only on a bad contract file
+    except (SchemaError, ValidationError) as error:
         return str(error.message).replace("\n", " ")
     return None
 

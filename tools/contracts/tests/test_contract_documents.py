@@ -451,3 +451,119 @@ def test_a_valid_vector_that_fails_is_reported(tmp_path: Path) -> None:
     codes = {violation.code for violation in result.failures}
     assert E.FRAME_CRC_MISMATCH in codes, sorted(codes)
     assert E.FIXTURE_EXPECTED_PASS in codes, sorted(codes)
+
+
+# --- Round 2: mirrored ceilings, the format checker, invalid keywords --------
+
+
+def _baseline_manifest() -> dict:
+    """The committed baseline manifest, as a mutable document."""
+    return json.loads(
+        (CONTRACTS / "fixtures" / "media" / "valid" / "baseline" / "manifest.json").read_bytes()
+    )
+
+
+def _manifest_schema(mirror: str, device: dict, backend: dict) -> dict:
+    """The manifest schema of one of the three places the manifest is published."""
+    from tools.contracts.schema_docs import resolve_refs
+
+    if mirror == "media":
+        document = load_json(CONTRACTS / "media-v1" / "manifest.schema.json")
+        return resolve_refs(document)
+    document = device if mirror == "device" else backend
+    return resolve_refs(document["components"]["schemas"]["Manifest"], root=document)
+
+
+@pytest.mark.parametrize("mirror", ["media", "device", "backend"])
+def test_the_index_ceiling_is_mirrored_in_every_manifest_notation(
+    mirror: str, device: dict, backend: dict
+) -> None:
+    """media-format.md §2 bounds frames.jsonl at 1,843,200 bytes in all three documents.
+
+    The OpenAPI mirrors are what a consumer generates a client from, so an index ceiling
+    that exists only in ``contracts/media-v1`` would still let a backend accept a
+    manifest declaring a three-times-too-large index. The payload entry keeps its own,
+    much larger, ceiling in every mirror too.
+    """
+    from tools.contracts.bounds import MAX_INDEX_BYTES, MAX_PAYLOAD_BYTES
+    from tools.contracts.schema_docs import schema_error_report
+
+    schema = _manifest_schema(mirror, device, backend)
+    manifest = _baseline_manifest()
+    manifest["files"]["video.mjpg"]["bytes"] = MAX_PAYLOAD_BYTES
+    manifest["files"]["frames.jsonl"]["bytes"] = MAX_INDEX_BYTES
+    assert not schema_error_report(schema, manifest), mirror
+
+    manifest["files"]["frames.jsonl"]["bytes"] = MAX_INDEX_BYTES + 1
+    found = [
+        (property_name, keyword)
+        for property_name, keyword, _ in schema_error_report(schema, manifest)
+    ]
+    assert found == [("bytes", "maximum")], (mirror, found)
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        ("2026-03-04T11:02:03.250Z", True),
+        ("2026-01-01T00:00:00Z", True),
+        ("2026-12-31T23:59:59.999999Z", True),
+        ("2026-06-01T08:30:00.000+05:30", True),
+        ("2026-02-28T23:59:59.000-00:00", True),
+        ("2026-03-04t11:02:03.250z", True),
+        ("2028-02-29T12:00:00.000Z", True),
+        ("2026-02-30T12:00:00.000Z", False),
+        ("2025-02-29T00:00:00.000Z", False),
+        ("2026-01-01T25:00:00.000Z", False),
+        ("2026-01-01T12:61:00.000Z", False),
+        ("2026-01-01T12:00:60.000Z", False),
+        ("2026-13-01T12:00:00.000Z", False),
+        ("2026-01-01T12:00:00.000+24:00", False),
+        ("2026-01-01 12:00:00.000Z", False),
+        ("2026-01-01T12:00:00.000", False),
+        ("not a timestamp", False),
+    ],
+)
+def test_the_format_checker_needs_a_real_instant_not_its_shape(value: str, valid: bool) -> None:
+    """``format`` is informational unless somebody checks it, so here it is checked.
+
+    Every documented timestamp in this contract already carries milliseconds and a
+    trailing ``Z``; the checker is not there to widen the wire form (a leap second stays
+    refused) but to give the pattern a calendar behind it.
+    """
+    from tools.contracts.schema_docs import is_rfc3339_date_time
+
+    assert is_rfc3339_date_time(value) is valid, value
+
+
+def test_the_format_checker_owns_only_the_formats_it_registers() -> None:
+    """``null`` stays a legal ``date-time`` value and an unknown format stays a note.
+
+    The contract writes ``type: [string, null]`` beside ``format: date-time`` and uses
+    ``format: binary`` as a pure annotation, so a checker that judged either would be
+    inventing a rule the documents never stated.
+    """
+    from tools.contracts.schema_docs import schema_error_report
+
+    assert not schema_error_report({"type": ["string", "null"], "format": "date-time"}, None)
+    assert not schema_error_report({"type": "string", "format": "binary"}, "anything at all")
+    assert [
+        (property_name, keyword)
+        for property_name, keyword, _ in schema_error_report(
+            {"type": "string", "format": "date-time"}, "2026-02-30T12:00:00.000Z"
+        )
+    ] == [("", "format")]
+
+
+def test_an_invalid_keyword_value_is_a_finding_not_a_crash() -> None:
+    """A parseable schema whose keyword is nonsense is a failed check, not exit 2.
+
+    ``check_schema`` raises ``SchemaError``, which is not a ``ValidationError``: letting
+    it escape turns a bad contract file into "validator internal error".
+    """
+    from tools.contracts.schema_docs import check_metaschema
+
+    failure = check_metaschema({"type": "object", "properties": {"x": {"maximum": "not-a-number"}}})
+    assert failure is not None
+    assert failure == failure.strip() and "\n" not in failure, failure
+    assert not check_metaschema({"type": "object", "properties": {"x": {"maximum": 3}}})

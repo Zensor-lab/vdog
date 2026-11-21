@@ -125,6 +125,12 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "device/valid/clip-file-response-206": (),
     "device/valid/clip-file-response-412-content-changed": (),
     "device/valid/clip-file-response-416-multi-range": (),
+    "device/valid/clip-file-response-416-hyphenless": (),
+    "device/valid/clip-file-response-416-beyond-eof": (),
+    "device/valid/clip-file-response-416-reversed": (),
+    "device/invalid/clip-file-response-206-hyphenless": ("RANGE_MULTI_NOT_ALLOWED",),
+    "device/invalid/clip-file-response-206-reversed": ("RANGE_MULTI_NOT_ALLOWED",),
+    "device/valid/clip-file-response-409-lease-expired": (),
     "device/valid/clip-file-response-410-clip-gone": (),
     "device/invalid/clip-file-response-206-bad-etag_invalid": ("ETAG_INVALID",),
     "device/invalid/clip-file-response-206-bad-content_range_invalid": ("CONTENT_RANGE_INVALID",),
@@ -145,6 +151,8 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "device/invalid/preview-response-200-wrong-content-type": ("HEADER_INVALID",),
     "device/valid/clip-manifest-response-200": (),
     "device/invalid/clip-manifest-response-200-bad-frame-count": ("API_SCHEMA",),
+    "device/invalid/clip-manifest-response-200-bad-clock-date": ("API_SCHEMA",),
+    "device/invalid/clips-page-response-200-bad-start-utc": ("API_SCHEMA",),
     "device/valid/ota-stage-response-202": (),
     # AC-05 backend: identity, uploads, patch, commit, jobs, derivatives, health
     "backend/valid/tokens-create-request": (),
@@ -532,3 +540,109 @@ def test_invalid_api_vectors_never_pass_silently(index: list[dict], specs: dict,
         if entry["expected"] != "invalid":
             continue
         assert _observed(entry, specs, media_schemas), f"{entry['id']} passed but must not"
+
+
+# --- Round 2: the Range decision table (interfaces.md §4, RFC 9110) ----------
+
+GRANTED_206 = {"Content-Range": "bytes 0-99/1000", "Content-Length": "100"}
+
+
+def _header_codes(name: str, value: str, status: int, extra: dict[str, str] | None = None) -> set[str]:
+    """One header rule's verdict on one value, away from any committed vector."""
+    from tools.contracts.api_validate import HEADER_RULES, _HeaderContext
+
+    headers = {name: value}
+    headers.update(extra or {})
+    context = _HeaderContext(
+        location="unit:range",
+        operation=ALL_OPERATIONS["device.get_clip_file"],
+        direction="response",
+        status=status,
+        headers=headers,
+    )
+    return {violation.code for violation in HEADER_RULES[name.lower()](context, name, value)}
+
+
+@pytest.mark.parametrize(
+    ("value", "status", "extra", "codes"),
+    [
+        # Unsupported syntax: the contract rejects it, so 416 is required, not optional.
+        ("bytes=0-99,200-299", 416, {}, set()),
+        ("bytes=-500", 416, {}, set()),
+        ("bytes=10", 416, {}, set()),
+        ("bytes=0-99,200-299", 206, GRANTED_206, {E.RANGE_MULTI_NOT_ALLOWED}),
+        ("bytes=-500", 200, {"Content-Length": "1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
+        ("bytes=10", 206, GRANTED_206, {E.RANGE_MULTI_NOT_ALLOWED}),
+        ("nonsense", 200, {"Content-Length": "1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
+        # Supported syntax, unsatisfiable endpoint ordering: 416 answers it.
+        ("bytes=200-100", 416, {}, set()),
+        ("bytes=200-100", 206, GRANTED_206, {E.RANGE_MULTI_NOT_ALLOWED}),
+        ("bytes=200-100", 200, {"Content-Length": "1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
+        # Supported syntax, correctly ordered: a 416 needs proof from Content-Range.
+        ("bytes=999999999-", 416, {"Content-Range": "bytes */1000"}, set()),
+        ("bytes=1000-1999", 416, {"Content-Range": "bytes */1000"}, set()),
+        ("bytes=999-", 416, {"Content-Range": "bytes */1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
+        ("bytes=0-99", 416, {}, {E.RANGE_MULTI_NOT_ALLOWED}),
+        ("bytes=0-99", 416, {"Content-Range": "bytes 0-99/1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
+        ("bytes=0-99", 206, GRANTED_206, set()),
+        ("bytes=999-", 206, GRANTED_206, set()),
+    ],
+    ids=[
+        "multipart-416",
+        "suffix-416",
+        "hyphenless-416",
+        "multipart-206",
+        "suffix-200",
+        "hyphenless-206",
+        "junk-200",
+        "reversed-416",
+        "reversed-206",
+        "reversed-200",
+        "beyond-eof-416",
+        "start-at-total-416",
+        "star-proves-satisfiable-416",
+        "granted-range-416-no-proof",
+        "granted-range-416-granted-form",
+        "granted-range-206",
+        "open-ended-206",
+    ],
+)
+def test_the_range_rule_follows_the_decision_table(
+    value: str, status: int, extra: dict[str, str], codes: set[str]
+) -> None:
+    """What the contract *rejects* and what is merely *unsatisfiable* differ (AC-06)."""
+    assert _header_codes("Range", value, status, extra) == codes, (value, status, extra)
+
+
+@pytest.mark.parametrize(
+    ("value", "status", "extra", "codes"),
+    [
+        ("bytes */1000", 416, {}, set()),
+        ("bytes */1000", 206, GRANTED_206, {E.CONTENT_RANGE_INVALID}),
+        ("bytes */1000", 200, {"Content-Length": "1000"}, {E.CONTENT_RANGE_INVALID}),
+        ("bytes */0", 416, {}, {E.CONTENT_RANGE_INVALID}),
+        ("bytes 0-99/1000", 416, {}, {E.CONTENT_RANGE_INVALID}),
+        ("bytes 0-99/1000", 206, GRANTED_206, set()),
+        ("bytes 0-99/1000", 206, {"Content-Length": "99"}, {E.CONTENT_LENGTH_MISMATCH}),
+        ("bytes 99-0/1000", 206, {"Content-Length": "100"}, {E.CONTENT_RANGE_INVALID}),
+        ("bytes 0-99/50", 206, {"Content-Length": "100"}, {E.CONTENT_RANGE_INVALID}),
+        ("bytes */", 416, {}, {E.CONTENT_RANGE_INVALID}),
+    ],
+    ids=[
+        "star-416",
+        "star-206",
+        "star-200",
+        "star-zero-total-416",
+        "granted-on-416",
+        "granted-206",
+        "granted-length-disagrees",
+        "descending-206",
+        "past-total-206",
+        "star-without-total",
+    ],
+)
+def test_the_content_range_rule_grants_only_on_a_success(
+    value: str, status: int, extra: dict[str, str], codes: set[str]
+) -> None:
+    """``bytes */<total>`` promises nothing, so only a 416 may carry it (and total ≥ 1)."""
+    assert _header_codes("Content-Range", value, status, extra) == codes, (value, status, extra)

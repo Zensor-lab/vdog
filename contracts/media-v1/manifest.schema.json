@@ -91,7 +91,7 @@
       "required": ["video.mjpg", "frames.jsonl"],
       "properties": {
         "video.mjpg": { "$ref": "#/$defs/file_entry" },
-        "frames.jsonl": { "$ref": "#/$defs/file_entry" }
+        "frames.jsonl": { "$ref": "#/$defs/index_file_entry" }
       }
     }
   },
@@ -126,6 +126,20 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 268435456
+        },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "index_file_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes", "sha256"],
+      "properties": {
+        "bytes": {
+          "description": "Exact index length in bytes. media-format.md section 2 bounds frames.jsonl at 1,843,200 bytes, well below the 268,435,456-byte payload ceiling the video file may use.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1843200
         },
         "sha256": { "$ref": "#/$defs/sha256" }
       }

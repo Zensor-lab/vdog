@@ -85,6 +85,28 @@ def test_cli_exits_one_when_a_check_fails(tmp_path: Path, monkeypatch, capsys) -
     assert "CLOCK_SOURCE_UNKNOWN_VALUE" in output
 
 
+def test_cli_exits_one_when_a_committed_schema_is_invalid(tmp_path: Path, monkeypatch, capsys) -> None:
+    """A schema whose keyword is nonsense is a failed check, never a validator crash.
+
+    ``check_schema`` raises ``SchemaError`` for that, which is not the ``ValidationError``
+    the diagnostic path used to catch: uncaught, this same tree exits 2 with "validator
+    internal error" instead of reporting the file it cannot accept.
+    """
+    broken = tmp_path / "contracts"
+    shutil.copytree(REPO_ROOT / "contracts", broken)
+    target = broken / "media-v1" / "frame-record.schema.json"
+    data = target.read_text(encoding="utf-8")
+    assert '"maximum": 2097152' in data, "the frame size bound is what this corrupts"
+    target.write_text(data.replace('"maximum": 2097152', '"maximum": "huge"', 1), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == 1
+    output = capsys.readouterr().out
+    assert "RESULT: FAIL" in output
+    assert "SCHEMA_DOCUMENT_INVALID" in output
+    assert "validator internal error" not in output
+
+
 def test_the_documented_entry_script_runs_as_a_process() -> None:
     """The shim is what the validation ledger names, so it must work standalone."""
     completed = subprocess.run(

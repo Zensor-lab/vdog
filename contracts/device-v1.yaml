@@ -366,10 +366,15 @@ paths:
         `name` is exactly `video.mjpg` or `frames.jsonl` and `X-Clip-Lease` is
         required. Bytes are immutable, so the ETag is the quoted SHA-256 of the
         whole file and `Accept-Ranges` is always `bytes`. Only a single
-        `bytes=start-end` or `bytes=start-` range is supported; multipart and
-        suffix ranges are rejected with 416. A request without `Range` returns 200.
-        Resume requires `If-Match` with the original ETag; a mismatch returns 412
-        `CONTENT_CHANGED`. Clients write a temporary file, store offset and
+        `bytes=start-end` or `bytes=start-` range is supported; multipart,
+        suffix and malformed ranges are rejected with 416, and so is a range
+        whose endpoint ordering or start makes it unsatisfiable for this file (a
+        416 may then describe the file with `Content-Range: bytes */<total>`). A
+        request without `Range` returns 200. Resume requires `If-Match` with the
+        original ETag; a mismatch returns 412 `CONTENT_CHANGED`. A lease that
+        expired before the response was started is refused with 409
+        `LEASE_EXPIRED` as a complete error body, because nothing has been
+        streamed yet. Clients write a temporary file, store offset and
         manifest, re-acquire a lease when needed and verify the full SHA-256
         before renaming.
       parameters:
@@ -418,6 +423,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '410':
           $ref: '#/components/responses/Gone'
         '412':
@@ -641,10 +648,12 @@ components:
         type: integer
         minimum: 0
     ContentRange:
-      description: '`bytes <first>-<last>/<total>` for the single granted range.'
+      description: >-
+        `bytes <first>-<last>/<total>` for the single granted range, or
+        `bytes */<total>` on the 416 that refuses an unsatisfiable one.
       schema:
         type: string
-        pattern: '^bytes [0-9]+-[0-9]+/[0-9]+$'
+        pattern: '^bytes ([0-9]+-[0-9]+|\*)/[0-9]+$'
     CacheControlNoStore:
       description: Live preview parts are never cached.
       schema:
@@ -1390,7 +1399,7 @@ components:
             video.mjpg:
               $ref: '#/components/schemas/ManifestFile'
             frames.jsonl:
-              $ref: '#/components/schemas/ManifestFile'
+              $ref: '#/components/schemas/ManifestIndexFile'
     ManifestFile:
       type: object
       additionalProperties: false
@@ -1400,6 +1409,20 @@ components:
           type: integer
           minimum: 1
           maximum: 268435456
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+    ManifestIndexFile:
+      description: >-
+        The frames.jsonl entry of Manifest: media-format.md section 2 bounds the
+        index at 1,843,200 bytes, far below the payload ceiling ManifestFile states.
+      type: object
+      additionalProperties: false
+      required: [bytes, sha256]
+      properties:
+        bytes:
+          type: integer
+          minimum: 1
+          maximum: 1843200
         sha256:
           $ref: '#/components/schemas/Sha256'
     ManifestClock:

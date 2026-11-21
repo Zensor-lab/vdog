@@ -25,6 +25,7 @@ from tools.contracts.bounds import (
     MAX_INDEX_BYTES,
     MAX_INDEX_LINE_BYTES,
     MAX_MANIFEST_BYTES,
+    MAX_PAYLOAD_BYTES,
     MEDIA_VERSION,
 )
 from tools.contracts.jpeg import decode_size, sof_dimensions
@@ -330,6 +331,12 @@ REQUIRED_MEDIA_DEFECTS: dict[str, tuple[str, ...]] = {
     "media/invalid/index-with-crlf": (E.INDEX_ENCODING_INVALID,),
     "media/invalid/index-with-blank-line": (E.INDEX_ENCODING_INVALID,),
     "media/invalid/clock-nullity-mismatch": (E.CLOCK_NULLITY_MISMATCH,),
+    "media/invalid/duration-too-long-decimal": (E.DURATION_TOO_LONG,),
+    "media/invalid/duration-too-long-exponent": (E.DURATION_TOO_LONG,),
+    "media/invalid/dimensions-oversized-decimal": (E.DIMENSIONS_EXCEEDED,),
+    "media/invalid/nominal-fps-high-decimal": (E.NOMINAL_FPS_INVALID,),
+    "media/invalid/index-declared-oversize": (E.MANIFEST_SCHEMA, E.MANIFEST_SIZE_MISMATCH),
+    "media/invalid/clock-timestamp-impossible-date": (E.CLOCK_TIMESTAMP_INVALID,),
 }
 
 
@@ -475,6 +482,10 @@ def _violating_value(node: dict, keyword: str) -> object:
         return "not-a-contract-value"
     if keyword == "enum":
         return "not_a_documented_value"
+    if keyword == "format":
+        # The documented RFC3339 shape, but the calendar has no such day: only a real
+        # date-time check (and the dedicated clock check that replaces it) can see it.
+        return "2026-02-30T12:00:00.000Z"
     raise AssertionError(f"no violation known for keyword {keyword!r}")
 
 
@@ -620,3 +631,142 @@ def test_a_terminator_inside_an_identifier_is_refused(tmp_path, schemas, field_n
     entry = synthetic_media_entry(tmp_path, f"manifest-{field_name}-terminator", files)
     observed = {violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)}
     assert E.ID_SYNTAX_INVALID in observed, sorted(observed)
+
+
+# --- Round 2: JSON number notation, the index ceiling, the calendar ----------
+
+
+def test_is_int_accepts_only_integral_json_numbers() -> None:
+    """``type: integer`` is about the *value*, so every bound has to follow it.
+
+    A bound skipped for the integral-float spelling is a bound nobody reports: the
+    schema keyword for it is suppressed in favour of the dedicated check that skipped
+    it, so the pair of them is silent. ``nan`` and ``inf`` have no JSON notation at all.
+    """
+    from tools.contracts.media_validate import _is_int
+
+    assert _is_int(0) and _is_int(1) and _is_int(-(2**53 - 1))
+    assert _is_int(1.0) and _is_int(120000001.0) and _is_int(1.20000001e8)
+    assert not _is_int(True)
+    assert not _is_int(False)
+    assert not _is_int(1.5)
+    assert not _is_int(float("nan"))
+    assert not _is_int(float("inf"))
+    assert not _is_int("1")
+    assert not _is_int(None)
+
+
+def _baseline_files_without_checksums() -> dict[str, bytes]:
+    """The committed baseline segment, minus the harness checksums file.
+
+    These tests rewrite one record, which makes a checksum comparison a second finding
+    about a defect that has nothing to do with integrity; the vectors that *are* about
+    integrity are the committed checksum ones.
+    """
+    return {
+        name: data for name, data in baseline_files().items() if name != CHECKSUMS_NAME
+    }
+
+
+def _manifest_bytes_with_raw_number(key: str, notation: str) -> bytes:
+    """The committed manifest with one number rewritten as *raw* JSON text."""
+    data = baseline_files()[MANIFEST_NAME]
+    member = key.encode("utf-8")
+    replaced, count = re.subn(
+        rb'"%b":-?[0-9]+' % member,
+        b'"%b":%b' % (member, notation.encode("utf-8")),
+        data,
+        count=1,
+    )
+    assert count == 1, (key, notation)
+    return replaced
+
+
+def _repoint_manifest_entry(files: dict[str, bytes], file_name: str) -> None:
+    """Make the manifest describe the bytes these tests just rewrote.
+
+    Only the *index line notation* is under test here, so the hash and length of the
+    edited file are made true; the committed corpus has its own integrity vectors.
+    """
+    manifest = json.loads(files[MANIFEST_NAME])
+    data = files[file_name]
+    manifest["files"][file_name] = {
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+    files[MANIFEST_NAME] = json.dumps(manifest, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+@pytest.mark.parametrize(
+    ("key", "notation", "code"),
+    [
+        ("duration_us", "120000001.0", E.DURATION_TOO_LONG),
+        ("duration_us", "1.20000001e8", E.DURATION_TOO_LONG),
+        ("width", "1601.0", E.DIMENSIONS_EXCEEDED),
+        ("nominal_fps", "31.0", E.NOMINAL_FPS_INVALID),
+    ],
+    ids=["duration-decimal", "duration-exponent", "width-decimal", "nominal-fps-decimal"],
+)
+def test_an_integral_float_still_meets_its_dedicated_bound(
+    tmp_path, schemas, key: str, notation: str, code: str
+) -> None:
+    """Every spelling of a JSON integer reaches the dedicated bound, and only it.
+
+    The notation is written straight into the bytes here, which is what a nonconforming
+    writer produces; the corpus vectors of the same names are the committed evidence.
+    """
+    files = _baseline_files_without_checksums()
+    files[MANIFEST_NAME] = _manifest_bytes_with_raw_number(key, notation)
+    entry = synthetic_media_entry(tmp_path, f"float-{key}-{notation}", files)
+    observed = {violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)}
+    assert observed == {code}, (key, notation, sorted(observed))
+
+
+@pytest.mark.parametrize("field_name", ["offset", "size"], ids=["offset", "size"])
+def test_a_float_byte_position_is_a_finding_not_a_crash(tmp_path, schemas, field_name) -> None:
+    """``size: 1024.0`` is a JSON integer but not a slice a reader can take.
+
+    The bounds accept it, so without this refusal the payload slice below them would be
+    taken with float indices and the run would die on a TypeError instead of naming the
+    line.
+    """
+    files = _baseline_files_without_checksums()
+    lines = files[INDEX_NAME].split(b"\n")
+    record = json.loads(lines[1])
+    notation = f"{record[field_name]}.0"
+    member = field_name.encode("utf-8")
+    replaced, count = re.subn(
+        rb'"%b":-?[0-9]+' % member,
+        b'"%b":%b' % (member, notation.encode("utf-8")),
+        lines[1],
+        count=1,
+    )
+    assert count == 1
+    lines[1] = replaced
+    files[INDEX_NAME] = b"\n".join(lines)
+    _repoint_manifest_entry(files, INDEX_NAME)
+
+    entry = synthetic_media_entry(tmp_path, f"float-{field_name}", files)
+    observed = {violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)}
+    assert observed == {E.FRAME_SCHEMA}, sorted(observed)
+
+
+def test_the_manifest_bounds_the_index_below_the_payload(schemas: dict) -> None:
+    """media-format.md §2: frames.jsonl has its own 1,843,200-byte ceiling.
+
+    Sharing the payload entry's 268,435,456-byte maximum would let a manifest declare an
+    index three times the size the format allows, so the boundary is pinned on both
+    sides of the two file entries.
+    """
+    from tools.contracts.schema_docs import schema_error_report
+
+    manifest = json.loads(baseline_files()[MANIFEST_NAME])
+    manifest["files"]["video.mjpg"]["bytes"] = MAX_PAYLOAD_BYTES
+    manifest["files"]["frames.jsonl"]["bytes"] = MAX_INDEX_BYTES
+    assert not schema_error_report(schemas["manifest"], manifest)
+
+    manifest["files"]["frames.jsonl"]["bytes"] = MAX_INDEX_BYTES + 1
+    found = [(property_name, keyword) for property_name, keyword, _ in schema_error_report(
+        schemas["manifest"], manifest
+    )]
+    assert found == [("bytes", "maximum")], found

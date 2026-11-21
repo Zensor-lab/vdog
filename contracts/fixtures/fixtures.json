@@ -3366,6 +3366,50 @@
       "status": 206
     },
     {
+      "api_error_code": null,
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "RANGE_MULTI_NOT_ALLOWED"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-206-hyphenless.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-206-hyphenless",
+      "invariant": "AC-06 range: a specifier with no hyphen is not a single bytes=start-end or bytes=start- range, so granting it with 206 is contract misuse",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
+      "api_error_code": null,
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "RANGE_MULTI_NOT_ALLOWED"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-206-reversed.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-206-reversed",
+      "invariant": "AC-06 range: bytes after their own end cannot be granted, so answering that ordering with 206 instead of 416 is contract misuse",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
       "api_error_code": "CLIP_EXPIRED",
       "category": "error-envelope",
       "contract": "device-v1",
@@ -3444,6 +3488,28 @@
         "API_SCHEMA"
       ],
       "files": [
+        "device/invalid/clip-manifest-response-200-bad-clock-date.json"
+      ],
+      "id": "device/invalid/clip-manifest-response-200-bad-clock-date",
+      "invariant": "AC-04/AC-06 manifest clock: an impossible calendar date in start_utc is not a timestamp, even though its shape matches the documented RFC3339 pattern",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_manifest",
+      "operation_id": "getClipManifest",
+      "path": "/clips/{clip_id}/manifest",
+      "schema": "Manifest",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "manifest",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
         "device/invalid/clip-manifest-response-200-bad-frame-count.json"
       ],
       "id": "device/invalid/clip-manifest-response-200-bad-frame-count",
@@ -3499,6 +3565,28 @@
       "path": "/clips",
       "schema": null,
       "status": null
+    },
+    {
+      "api_error_code": null,
+      "category": "catalog",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "device/invalid/clips-page-response-200-bad-start-utc.json"
+      ],
+      "id": "device/invalid/clips-page-response-200-bad-start-utc",
+      "invariant": "AC-04/AC-06 catalog: a page entry whose start_utc names a date the calendar does not have is not a conformant summary, shape or no shape",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.list_clips",
+      "operation_id": "listClips",
+      "path": "/clips",
+      "schema": "ClipsPage",
+      "status": 200
     },
     {
       "api_error_code": null,
@@ -3977,6 +4065,27 @@
       "status": 206
     },
     {
+      "api_error_code": "LEASE_EXPIRED",
+      "category": "lease",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-file-response-409-lease-expired.headers.json",
+        "device/valid/clip-file-response-409-lease-expired.json"
+      ],
+      "id": "device/valid/clip-file-response-409-lease-expired",
+      "invariant": "AC-04 interfaces.md §4: expiry checked before the response began is a complete 409 LEASE_EXPIRED body, because no header had been sent yet to withdraw — the after-headers case can only close the stream",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 409
+    },
+    {
       "api_error_code": "CLIP_GONE",
       "category": "catalog",
       "contract": "device-v1",
@@ -4026,11 +4135,74 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/clip-file-response-416-beyond-eof.headers.json",
+        "device/valid/clip-file-response-416-beyond-eof.json"
+      ],
+      "id": "device/valid/clip-file-response-416-beyond-eof",
+      "invariant": "AC-04/AC-06 range: a supported range whose start is at or past the end is unsatisfiable, and the 416 proves it with `Content-Range: bytes */<total>`",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 416
+    },
+    {
+      "api_error_code": "RANGE_INVALID",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-file-response-416-hyphenless.headers.json",
+        "device/valid/clip-file-response-416-hyphenless.json"
+      ],
+      "id": "device/valid/clip-file-response-416-hyphenless",
+      "invariant": "AC-04/AC-06 range: `bytes=10` is not a range this contract supports, so 416 is the required answer and the refusal is conformant",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 416
+    },
+    {
+      "api_error_code": "RANGE_INVALID",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
         "device/valid/clip-file-response-416-multi-range.headers.json",
         "device/valid/clip-file-response-416-multi-range.json"
       ],
       "id": "device/valid/clip-file-response-416-multi-range",
       "invariant": "AC-04 a multipart range is rejected with 416; only bytes=start-end is granted",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 416
+    },
+    {
+      "api_error_code": "RANGE_INVALID",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-file-response-416-reversed.headers.json",
+        "device/valid/clip-file-response-416-reversed.json"
+      ],
+      "id": "device/valid/clip-file-response-416-reversed",
+      "invariant": "AC-04/AC-06 range: an endpoint ordering no file can satisfy is refused with 416 rather than served",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_file",
@@ -5731,6 +5903,23 @@
     {
       "category": "clock",
       "contract": "media-v1",
+      "corruption": "clock_timestamp_impossible_date",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CLOCK_TIMESTAMP_INVALID"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/clock-timestamp-impossible-date",
+      "invariant": "AC-06 time: 2026-02-30 has the documented RFC3339 shape but no such day exists, so the calendar is checked and not only the pattern",
+      "kind": "clip"
+    },
+    {
+      "category": "clock",
+      "contract": "media-v1",
       "corruption": "clock_timestamp_invalid",
       "expected": "invalid",
       "expected_error_codes": [
@@ -5780,6 +5969,23 @@
       "kind": "clip"
     },
     {
+      "category": "dimensions",
+      "contract": "media-v1",
+      "corruption": "dimensions_oversized_decimal",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "DIMENSIONS_EXCEEDED"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/dimensions-oversized-decimal",
+      "invariant": "AC-03 oversized dimension written as 1601.0: the 1600 px profile bound applies to any integral JSON number, not only to one written without a fraction part",
+      "kind": "clip"
+    },
+    {
       "category": "time",
       "contract": "media-v1",
       "corruption": "duration_le_final_t",
@@ -5811,6 +6017,40 @@
       ],
       "id": "media/invalid/duration-too-long",
       "invariant": "AC-03 duration_us exceeds the 120,000,000 us hard segment maximum",
+      "kind": "clip"
+    },
+    {
+      "category": "time",
+      "contract": "media-v1",
+      "corruption": "duration_too_long_decimal",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "DURATION_TOO_LONG"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/duration-too-long-decimal",
+      "invariant": "AC-03 duration_us 120000001.0: a JSON integer may be written with a fraction part, and the 120,000,000 us maximum still has to reach it",
+      "kind": "clip"
+    },
+    {
+      "category": "time",
+      "contract": "media-v1",
+      "corruption": "duration_too_long_exponent",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "DURATION_TOO_LONG"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/duration-too-long-exponent",
+      "invariant": "AC-03 duration_us 1.20000001e8: exponent notation is a JSON integer too, so the segment maximum cannot be skipped by how the number is spelled",
       "kind": "clip"
     },
     {
@@ -5981,6 +6221,24 @@
       ],
       "id": "media/invalid/id-syntax-invalid",
       "invariant": "AC-03 invalid ID syntax: an uppercase device_id is not 32 lowercase hex",
+      "kind": "clip"
+    },
+    {
+      "category": "boundary",
+      "contract": "media-v1",
+      "corruption": "index_declared_oversize",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "MANIFEST_SCHEMA",
+        "MANIFEST_SIZE_MISMATCH"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/index-declared-oversize",
+      "invariant": "AC-03 boundary: files[frames.jsonl].bytes above the 1,843,200-byte index maximum is refused by the schema and disagrees with the committed bytes, so the index does not inherit the payload file's 268,435,456-byte ceiling",
       "kind": "clip"
     },
     {
@@ -6255,6 +6513,23 @@
       ],
       "id": "media/invalid/manifest-too-large",
       "invariant": "AC-03 manifest above the 16384-byte bound is refused before parsing",
+      "kind": "clip"
+    },
+    {
+      "category": "profile",
+      "contract": "media-v1",
+      "corruption": "nominal_fps_high_decimal",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "NOMINAL_FPS_INVALID"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/nominal-fps-high-decimal",
+      "invariant": "AC-03 profile: nominal_fps 31.0 is above the 30 frames-per-second bound even though its notation is not the plain integer form the writer uses",
       "kind": "clip"
     },
     {

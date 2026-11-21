@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
@@ -29,6 +30,7 @@ from typing import Any, Callable, Final, Mapping, Sequence
 from .bounds import (
     ACTIVE_NAME,
     MAX_DIMENSION_PX,
+    MAX_INDEX_BYTES,
     MAX_NOMINAL_FPS,
     CLIP_FILE_NAMES,
     MANIFEST_NAME,
@@ -431,6 +433,65 @@ def _corrupt_manifest_size(editable: _Editable) -> None:
     entry["bytes"] = entry["bytes"] + 5
 
 
+def _corrupt_clock_impossible_date(editable: _Editable) -> None:
+    assert editable.built.manifest is not None
+    # Every character has the documented RFC3339 shape; only a calendar check can
+    # notice that February has no thirtieth day.
+    editable.built.manifest["clock"]["start_utc"] = "2026-02-30T12:00:00.000Z"
+
+
+#: A declared index length above the 1,843,200-byte ceiling of media-format.md §2 and
+#: below the 268,435,456-byte payload ceiling, so the schema can only refuse it if the
+#: index really has its own, smaller, bound.
+OVERSIZED_INDEX_DECLARATION_BYTES: Final[int] = 2_000_000
+assert OVERSIZED_INDEX_DECLARATION_BYTES > MAX_INDEX_BYTES
+
+
+def _raw_number(data: bytes, key: str, notation: str) -> bytes:
+    """Rewrite one numeric member of a committed JSON document as raw JSON text.
+
+    The *notation* is the point of these vectors, so the bytes are edited instead of the
+    parsed model: ``json.dumps`` would normalise ``120000001.0`` back to the plain
+    integer a conforming writer produces, which is exactly the value the vector is not.
+    """
+    member = key.encode("utf-8")
+    pattern = re.compile(rb'"%b":-?[0-9]+' % member)
+    replaced, count = pattern.subn(
+        b'"%b":%b' % (member, notation.encode("utf-8")), data, count=1
+    )
+    if count != 1:  # pragma: no cover - the key is part of the committed manifest
+        raise KeyError(f"{key!r} is not a numeric member of the committed manifest")
+    return replaced
+
+
+def _raw_manifest_number(key: str, notation: str) -> FileMutation:
+    """A whole-manifest rewrite of one number, written in the notation under test."""
+
+    def mutate(_fixture: MediaFixture, _built: BuiltClip, files: dict[str, bytes]) -> dict[str, bytes]:
+        return _replace(files, MANIFEST_NAME, _raw_number(files[MANIFEST_NAME], key, notation))
+
+    return mutate
+
+
+def _mutate_index_declared_oversize(
+    _fixture: MediaFixture, _built: BuiltClip, files: dict[str, bytes]
+) -> dict[str, bytes]:
+    """Point the manifest's index declaration above the index bound, bytes untouched.
+
+    Only the ``frames.jsonl`` entry is rewritten: the committed index keeps its real
+    length, so the vector proves both that the index maximum exists and that a declared
+    length nobody can measure is a second, independent finding.
+    """
+    data = files[MANIFEST_NAME]
+    pattern = re.compile(rb'("frames\.jsonl":\{"bytes":)[0-9]+')
+    replaced, count = pattern.subn(
+        rb"\g<1>" + str(OVERSIZED_INDEX_DECLARATION_BYTES).encode("ascii"), data, count=1
+    )
+    if count != 1:  # pragma: no cover - the entry is part of the committed manifest
+        raise KeyError("frames.jsonl file entry absent from the committed manifest")
+    return _replace(files, MANIFEST_NAME, replaced)
+
+
 
 CORRUPTIONS: Final[Mapping[str, Callable[[_Editable], None]]] = {
     "frame_crc_flip": _corrupt_crc,
@@ -475,6 +536,7 @@ CORRUPTIONS: Final[Mapping[str, Callable[[_Editable], None]]] = {
     "index_empty": _corrupt_index_empty,
     "clock_source_unknown": _corrupt_clock_source,
     "clock_timestamp_invalid": _corrupt_clock_timestamp,
+    "clock_timestamp_impossible_date": _corrupt_clock_impossible_date,
     "jpeg_soi_missing": _corrupt_jpeg_soi,
     "jpeg_entropy_garbage": _corrupt_jpeg_entropy,
     "checksums_missing_entry": _corrupt_checksums_missing_entry,
@@ -552,6 +614,11 @@ FILE_MUTATIONS: Final[Mapping[str, FileMutation]] = {
     "active_not_json": _mutate_active_not_json,
     "active_too_large": _mutate_active_too_large,
     "active_with_manifest": _mutate_active_with_manifest,
+    "duration_too_long_decimal": _raw_manifest_number("duration_us", "120000001.0"),
+    "duration_too_long_exponent": _raw_manifest_number("duration_us", "1.20000001e8"),
+    "dimensions_oversized_decimal": _raw_manifest_number("width", "1601.0"),
+    "nominal_fps_high_decimal": _raw_manifest_number("nominal_fps", "31.0"),
+    "index_declared_oversize": _mutate_index_declared_oversize,
 }
 
 

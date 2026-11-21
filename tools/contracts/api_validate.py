@@ -4,6 +4,11 @@ A fixture is the exact wire body plus, when the vector needs one, the exact head
 map. This module validates both against the published contract *and* against the
 spec-derived operation table in :mod:`tools.contracts.api_model`, so a contract file
 that quietly dropped a documented status or a stable error code cannot pass.
+
+The byte-range rules follow one decision table, written out above :func:`_rule_range`:
+what the contract *rejects* (interfaces.md §4) and what is merely *unsatisfiable* for
+this file (RFC 9110) are different questions, and only the first one makes a 416 the
+required answer.
 """
 
 from __future__ import annotations
@@ -34,8 +39,13 @@ from .schema_docs import resolve_refs, schema_error_report
 
 _UUID = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 _QUOTED_SHA = re.compile(r'\A"[0-9a-f]{64}"\Z')
-_SINGLE_RANGE = re.compile(r"\Abytes=[0-9]+(-[0-9]*)?\Z")
+# The hyphen is mandatory: `bytes=10` is not a range this contract supports, and
+# neither is a multipart, suffix or otherwise unrecognised byte-range specifier.
+_SINGLE_RANGE = re.compile(r"\Abytes=([0-9]+)-([0-9]*)\Z")
 _CONTENT_RANGE = re.compile(r"\Abytes ([0-9]+)-([0-9]+)/([0-9]+)\Z")
+# The unsatisfiable-range answer of RFC 9110 §14.4: a refusal may name the file's
+# total size without granting anything.
+_STAR_CONTENT_RANGE = re.compile(r"\Abytes \*/([0-9]+)\Z")
 _UPLOAD_CHECKSUM = re.compile(r"\Asha256 [0-9a-f]{64}\Z")
 _ERROR_CODE = re.compile(r"\A[A-Z][A-Z0-9_]{0,63}\Z")
 _BASE64URL = re.compile(r"\A[A-Za-z0-9_-]+\Z")
@@ -205,16 +215,29 @@ def validate_api_fixture(
             )
 
     if body is not None and operation.key in _MANIFEST_BOUND_OPERATIONS and direction == "request":
-        binding = validate_manifest_binding(entry, body, media_schemas["manifest"])
-        if binding:
-            # The dedicated base64url/manifest rules own this property: reporting the
-            # component ``pattern`` failure as well would only duplicate the code.
-            violations[:] = [
-                violation
-                for violation in violations
-                if "manifest_base64url" not in violation.location
-            ]
-        violations.extend(binding)
+        manifest_schema = media_schemas.get("manifest")
+        if manifest_schema is None:
+            # The dedicated base64url/manifest rules need the media schema. Without it
+            # this vector cannot be cleared at all, so the gap is a finding rather than a
+            # silently skipped check: a vector nobody checked may not print PASS.
+            violations.append(
+                Violation(
+                    E.SCHEMA_DOCUMENT_INVALID,
+                    str(entry["id"]),
+                    "no usable media manifest schema was loaded, so the binding is unchecked",
+                )
+            )
+        else:
+            binding = validate_manifest_binding(entry, body, manifest_schema)
+            if binding:
+                # The dedicated base64url/manifest rules own this property: reporting the
+                # component ``pattern`` failure as well would only duplicate the code.
+                violations[:] = [
+                    violation
+                    for violation in violations
+                    if "manifest_base64url" not in violation.location
+                ]
+            violations.extend(binding)
 
     context = _HeaderContext(
         location=str(entry["id"]),
@@ -480,6 +503,27 @@ def _rule_content_length(context: _HeaderContext, name: str, value: str) -> list
 
 def _rule_content_range(context: _HeaderContext, name: str, value: str) -> list[Violation]:
     location = f"{context.location}: {name}"
+    star = _STAR_CONTENT_RANGE.match(value)
+    if star is not None:
+        # ``bytes */<total>`` promises no bytes, so it belongs to the refusal alone;
+        # and a total of zero would describe a file this contract never stores.
+        if context.status != 416:
+            return [
+                Violation(
+                    E.CONTENT_RANGE_INVALID,
+                    location,
+                    f"{value!r} is the unsatisfiable-range form, which only a 416 may carry",
+                )
+            ]
+        if int(star.group(1)) < 1:
+            return [
+                Violation(
+                    E.CONTENT_RANGE_INVALID,
+                    location,
+                    f"{value!r} declares a file of no bytes",
+                )
+            ]
+        return []
     match = _CONTENT_RANGE.match(value)
     if match is None:
         return [
@@ -487,6 +531,14 @@ def _rule_content_range(context: _HeaderContext, name: str, value: str) -> list[
                 E.CONTENT_RANGE_INVALID,
                 location,
                 f"{value!r} is not `bytes <first>-<last>/<total>`",
+            )
+        ]
+    if context.status == 416:
+        return [
+            Violation(
+                E.CONTENT_RANGE_INVALID,
+                location,
+                f"{value!r} grants a range, which a 416 may not; the refusal states `bytes */<total>`",
             )
         ]
     first, last, total = (int(match.group(index)) for index in (1, 2, 3))
@@ -512,26 +564,62 @@ def _rule_content_range(context: _HeaderContext, name: str, value: str) -> list[
     return []
 
 
+#: The Range decision table, in the words the validator applies (interfaces.md §4 for
+#: what the contract allows, RFC 9110 §14.4 and §15.5.17 for what a refusal means):
+#:
+#: * **Unsupported syntax** — anything the anchored ``_SINGLE_RANGE`` refuses
+#:   (multipart, suffix, ``bytes=10``, junk). 416 is the *required* answer, so a 416
+#:   is clean and any other status is ``RANGE_MULTI_NOT_ALLOWED``.
+#: * **Supported syntax, unsatisfiable ordering** (``end < start``). The request is
+#:   well formed but can never be served, so 416 is acceptable and 200/206 is
+#:   ``RANGE_MULTI_NOT_ALLOWED``: serving bytes a client did not ask for is worse than
+#:   refusing.
+#: * **Supported syntax, correctly ordered** (``bytes=start-end`` or ``bytes=start-``).
+#:   A 416 is honest only when the response *proves* the range is beyond the end of
+#:   this file: ``Content-Range: bytes */<total>`` with ``start >= total``. Without
+#:   that header, or with a start inside the file, the refusal is unfounded and is
+#:   ``RANGE_MULTI_NOT_ALLOWED``.
+
+
 def _rule_range(context: _HeaderContext, name: str, value: str) -> list[Violation]:
     location = f"{context.location}: {name}"
-    supported = _SINGLE_RANGE.match(value) is not None
-    rejected_by_contract = not supported  # multipart, suffix or otherwise unsupported
-    if context.status == 416:
-        if rejected_by_contract:
-            return []
-        return [
-            Violation(
-                E.RANGE_MULTI_NOT_ALLOWED,
-                location,
-                f"416 is only the answer to a range the contract rejects, and {value!r} is supported",
-            )
-        ]
-    if not supported:
+    match = _SINGLE_RANGE.match(value)
+    if match is None:
+        if context.status == 416:
+            return []  # unsupported syntax refused the only way the contract allows
         return [
             Violation(
                 E.RANGE_MULTI_NOT_ALLOWED,
                 location,
                 f"{value!r} is not a single bytes=start-end or bytes=start- range",
+            )
+        ]
+    start = int(match.group(1))
+    end = match.group(2)
+    if end and int(end) < start:
+        if context.status == 416:
+            return []
+        return [
+            Violation(
+                E.RANGE_MULTI_NOT_ALLOWED,
+                location,
+                f"{value!r} asks for bytes beyond their own end, which only a 416 may answer",
+            )
+        ]
+    if context.status == 416:
+        proven_beyond_end = False
+        declared = _lookup_header(context.headers, "Content-Range")
+        if declared is not None:
+            total = _STAR_CONTENT_RANGE.match(declared)
+            proven_beyond_end = total is not None and start >= int(total.group(1))
+        if proven_beyond_end:
+            return []
+        return [
+            Violation(
+                E.RANGE_MULTI_NOT_ALLOWED,
+                location,
+                f"416 is only the answer to a range the contract rejects or one its "
+                f"Content-Range proves starts past the end, and {value!r} is neither",
             )
         ]
     return []

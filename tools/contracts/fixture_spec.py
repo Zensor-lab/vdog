@@ -817,6 +817,67 @@ _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
         invariant="AC-06 hash: checksums.json must describe every file the clip ships",
     ),
     _Negative(
+        id="media/invalid/duration-too-long-decimal",
+        category="time",
+        corruption="duration_too_long_decimal",
+        codes=(DURATION_TOO_LONG,),
+        invariant=(
+            "AC-03 duration_us 120000001.0: a JSON integer may be written with a fraction "
+            "part, and the 120,000,000 us maximum still has to reach it"
+        ),
+    ),
+    _Negative(
+        id="media/invalid/duration-too-long-exponent",
+        category="time",
+        corruption="duration_too_long_exponent",
+        codes=(DURATION_TOO_LONG,),
+        invariant=(
+            "AC-03 duration_us 1.20000001e8: exponent notation is a JSON integer too, so "
+            "the segment maximum cannot be skipped by how the number is spelled"
+        ),
+    ),
+    _Negative(
+        id="media/invalid/dimensions-oversized-decimal",
+        category="dimensions",
+        corruption="dimensions_oversized_decimal",
+        codes=(DIMENSIONS_EXCEEDED,),
+        invariant=(
+            "AC-03 oversized dimension written as 1601.0: the 1600 px profile bound applies "
+            "to any integral JSON number, not only to one written without a fraction part"
+        ),
+    ),
+    _Negative(
+        id="media/invalid/nominal-fps-high-decimal",
+        category="profile",
+        corruption="nominal_fps_high_decimal",
+        codes=(NOMINAL_FPS_INVALID,),
+        invariant=(
+            "AC-03 profile: nominal_fps 31.0 is above the 30 frames-per-second bound even "
+            "though its notation is not the plain integer form the writer uses"
+        ),
+    ),
+    _Negative(
+        id="media/invalid/index-declared-oversize",
+        category="boundary",
+        corruption="index_declared_oversize",
+        codes=(MANIFEST_SCHEMA, MANIFEST_SIZE_MISMATCH),
+        invariant=(
+            "AC-03 boundary: files[frames.jsonl].bytes above the 1,843,200-byte index "
+            "maximum is refused by the schema and disagrees with the committed bytes, so "
+            "the index does not inherit the payload file's 268,435,456-byte ceiling"
+        ),
+    ),
+    _Negative(
+        id="media/invalid/clock-timestamp-impossible-date",
+        category="clock",
+        corruption="clock_timestamp_impossible_date",
+        codes=(CLOCK_TIMESTAMP_INVALID,),
+        invariant=(
+            "AC-06 time: 2026-02-30 has the documented RFC3339 shape but no such day exists, "
+            "so the calendar is checked and not only the pattern"
+        ),
+    ),
+    _Negative(
         id="media/invalid/active-bad-type",
         kind="active",
         category="active-record",
@@ -1468,6 +1529,28 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
+        id="clips-page-response-200-bad-start-utc",
+        contract="device",
+        category="catalog",
+        operation="device.list_clips",
+        direction="response",
+        status=200,
+        schema="ClipsPage",
+        body={
+            **page,
+            "items": [
+                {**page["items"][0], "start_utc": "2026-02-30T12:00:00.000Z"},
+                page["items"][1],
+            ],
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-04/AC-06 catalog: a page entry whose start_utc names a date the calendar "
+            "does not have is not a conformant summary, shape or no shape"
+        ),
+    )
+    out.add(
         id="clips-page-response-409-cursor-expired",
         contract="device",
         category="pagination",
@@ -1578,6 +1661,29 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         expected="invalid",
         codes=(API_SCHEMA,),
         invariant="AC-04 a manifest claiming zero frames cannot describe this clip",
+    )
+
+    out.add(
+        id="clip-manifest-response-200-bad-clock-date",
+        contract="device",
+        category="manifest",
+        operation="device.get_clip_manifest",
+        direction="response",
+        status=200,
+        schema="Manifest",
+        body={
+            **media.baseline_manifest,
+            "clock": {
+                **media.baseline_manifest["clock"],
+                "start_utc": "2026-02-30T12:00:00.000Z",
+            },
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-04/AC-06 manifest clock: an impossible calendar date in start_utc is not a "
+            "timestamp, even though its shape matches the documented RFC3339 pattern"
+        ),
     )
 
     out.add(
@@ -1763,6 +1869,27 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         body=_error_body("CLIP_GONE", "Clip was evicted", retryable=False, request_id="req-bf3"),
         invariant="AC-04 a known evicted clip returns 410 CLIP_GONE",
     )
+    out.add(
+        id="clip-file-response-409-lease-expired",
+        contract="device",
+        category="lease",
+        operation="device.get_clip_file",
+        direction="response",
+        status=409,
+        api_error_code="LEASE_EXPIRED",
+        headers={"X-Clip-Lease": lease_id},
+        body=_error_body(
+            "LEASE_EXPIRED",
+            "Lease expired before the response started",
+            retryable=False,
+            request_id="req-bf6",
+        ),
+        invariant=(
+            "AC-04 interfaces.md §4: expiry checked before the response began is a "
+            "complete 409 LEASE_EXPIRED body, because no header had been sent yet to "
+            "withdraw — the after-headers case can only close the stream"
+        ),
+    )
     for bad_id, code, detail in (
         (
             {
@@ -1833,6 +1960,106 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         invariant=(
             "AC-06 range: 416 is only ever the answer to a multipart or suffix range, so claiming "
             "it for a supported single range is contract misuse"
+        ),
+    )
+    out.add(
+        id="clip-file-response-416-hyphenless",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=416,
+        api_error_code="RANGE_INVALID",
+        headers={"Range": "bytes=10", "Accept-Ranges": "bytes"},
+        body=_error_body(
+            "RANGE_INVALID", "Malformed range specifier", retryable=False, request_id="req-bf7"
+        ),
+        invariant=(
+            "AC-04/AC-06 range: `bytes=10` is not a range this contract supports, so 416 "
+            "is the required answer and the refusal is conformant"
+        ),
+    )
+    out.add(
+        id="clip-file-response-206-hyphenless",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Range": "bytes=10",
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes 0-1023/{media.baseline_payload_bytes}",
+            "ETag": payload_etag,
+            "Content-Length": "1024",
+        },
+        expected="invalid",
+        codes=(RANGE_MULTI_NOT_ALLOWED,),
+        invariant=(
+            "AC-06 range: a specifier with no hyphen is not a single bytes=start-end or "
+            "bytes=start- range, so granting it with 206 is contract misuse"
+        ),
+    )
+    out.add(
+        id="clip-file-response-416-beyond-eof",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=416,
+        api_error_code="RANGE_INVALID",
+        headers={
+            "Range": "bytes=999999999-",
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes */{media.baseline_payload_bytes}",
+        },
+        body=_error_body(
+            "RANGE_INVALID",
+            "Range starts past the end of the file",
+            retryable=False,
+            request_id="req-bf8",
+        ),
+        invariant=(
+            "AC-04/AC-06 range: a supported range whose start is at or past the end is "
+            "unsatisfiable, and the 416 proves it with `Content-Range: bytes */<total>`"
+        ),
+    )
+    out.add(
+        id="clip-file-response-416-reversed",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=416,
+        api_error_code="RANGE_INVALID",
+        headers={"Range": "bytes=200-100", "Accept-Ranges": "bytes"},
+        body=_error_body(
+            "RANGE_INVALID", "Range end precedes its start", retryable=False, request_id="req-bf9"
+        ),
+        invariant=(
+            "AC-04/AC-06 range: an endpoint ordering no file can satisfy is refused with "
+            "416 rather than served"
+        ),
+    )
+    out.add(
+        id="clip-file-response-206-reversed",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Range": "bytes=200-100",
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes 0-1023/{media.baseline_payload_bytes}",
+            "ETag": payload_etag,
+            "Content-Length": "1024",
+        },
+        expected="invalid",
+        codes=(RANGE_MULTI_NOT_ALLOWED,),
+        invariant=(
+            "AC-06 range: bytes after their own end cannot be granted, so answering that "
+            "ordering with 206 instead of 416 is contract misuse"
         ),
     )
     out.add(

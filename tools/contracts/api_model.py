@@ -260,6 +260,7 @@ DEVICE_OPERATIONS: Final[dict[str, Operation]] = {
                 400: ("MALFORMED_REQUEST", "RANGE_INVALID"),
                 401: ("UNAUTHENTICATED",),
                 404: ("NOT_FOUND",),
+                409: ("LEASE_EXPIRED",),
                 410: ("CLIP_GONE",),
                 412: ("CONTENT_CHANGED",),
                 416: ("RANGE_INVALID",),
