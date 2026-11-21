@@ -1,0 +1,8 @@
+# Input for tools/firmware/requirements-dev.lock — regenerate with:
+#   uv pip compile --generate-hashes --python-version 3.12 \
+#     --python $(uv python find 3.12) tools/firmware/requirements-dev.in \
+#     -o tools/firmware/requirements-dev.lock
+# Purpose: the single documented host test environment for the
+# tools/firmware/tests suite (master plan 0.9.8). Keep dependencies minimal.
+pytest
+jsonschema
