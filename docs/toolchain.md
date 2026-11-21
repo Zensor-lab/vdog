@@ -33,7 +33,7 @@ packages were fetched into `~/.platformio` by PlatformIO itself.
 | `toolchain-riscv32-esp` | 15.2.0+20251204 | RISC-V toolchain (present via platform deps) |
 | `toolchain-esp32ulp` | 1.23800.240113 (2.38.0) | ULP toolchain (optional dep) |
 | `tool-cmake` | 3.30.2 | build system |
-| `tool-ninja` | 1.13.2 | build system |
+| `tool-ninja` | **range `>=1.7.1,<2`** (the one host-resolved package, 2026-11-21 — see the exception note below): resolves to **1.13.2** on this darwin host, **1.7.1** on linux_x86_64 CI (pending CI re-record, §7; registry publishes no linux_x86_64 build above 1.7.1) | build system |
 | `tool-esptool` | 2.50400.0 (esptool v5.4.0) | image tools (used read-only for `image-info` analysis) |
 | `tool-esp-rom-elfs` | 0.0.1+20241011 | ROM ELF files |
 | `tool-xtensa-esp-elf-gdb` / `tool-riscv32-esp-elf-gdb` | 12.1.0+20221002 | debuggers (unused) |
@@ -48,14 +48,16 @@ The component-manager lockfile `firmware/dependencies.lock`
 
 ### PlatformIO package locking (PR-review F1)
 
-`firmware/platformio.ini` additionally pins **every** package this
-environment resolves via `platform_packages =` with exact
+`firmware/platformio.ini` additionally pins (with one documented host
+exception, `tool-ninja`, below) **every** package this environment
+resolves via `platform_packages =` with exact
 `owner/name@version` strings (the platform itself otherwise resolves its
 packages by range): `platformio/framework-espidf@4.60100.0`,
 `platformio/toolchain-xtensa-esp-elf@15.2.0+20251204`,
 `platformio/toolchain-riscv32-esp@15.2.0+20251204`,
 `platformio/toolchain-esp32ulp@1.23800.240113`,
-`platformio/tool-cmake@3.30.2`, `platformio/tool-ninja@1.13.2`,
+`platformio/tool-cmake@3.30.2`, `platformio/tool-ninja@>=1.7.1,<2`
+(range — exception note below),
 `platformio/tool-esptool@2.50400.0`,
 `platformio/tool-esp-rom-elfs@0.0.1+20241011`,
 `espressif/tool-xtensa-esp-elf-gdb@12.1.0+20221002`,
@@ -64,7 +66,7 @@ packages by range): `platformio/framework-espidf@4.60100.0`,
 uses; unpinned it resolved by range `~4.41101.0`, and the exact pin is
 confirmed both by the cold-install line and the resolver output — §7/§6).
 `pio pkg list` (§6) now shows every package with an exact
-`required:` spec.
+`required:` spec (the `tool-ninja` required spec is the documented range).
 The 15.2.0+20251204 toolchains are the platform's **declared optional
 variant** (`optionalVersions` in platform.json; default is 14.2.0+20260121)
 that resolves for ESP-IDF v6.1.0 — pinned explicitly so a cold cache cannot
@@ -74,6 +76,24 @@ substitute a different compiler. The native environment is locked too:
 `throwtheswitch/Unity@2.6.1` (exact pin, §2 above). GDB/ulp/rom-elfs
 packages are installed-by-default platform deps and are pinned even though
 debugging/ULP are unused in vdog v1.
+
+**tool-ninja host-resolution exception (2026-11-21, live CI).** The
+PlatformIO registry
+(`api.registry.platformio.org/v3/packages/platformio/tool/tool-ninja`)
+publishes **no `linux_x86_64` build above 1.7.1**: 1.13.2 ships
+darwin_x86_64/darwin_arm64 only, 1.10.2 linux_aarch64/armv6l/armv7l/
+armv8l, 1.9.0 darwin+windows, 1.7.1 linux_x86_64 only. No single exact
+version therefore covers both this darwin host (0.2 qualification) and
+the `ubuntu-24.04` CI runner, so `tool-ninja` is the ONE host-resolved
+package: `platformio/tool-ninja@>=1.7.1,<2` — darwin resolves 1.13.2
+(the 0.2-qualified version, confirmed unchanged here by `pio pkg list`),
+linux_x86_64 CI resolves 1.7.1 (pending CI re-record, §7). This is the
+documented CI-host exception, parallel in spirit to the range-resolved
+IDF Python layer (§7); every other package above remains exactly
+pinned. Disclosure: the `<2` bound admits silent in-range upgrades — a
+future darwin build ≥ 1.13.3 or a linux_x86_64 build above 1.7.1 would
+displace the versions observed here — so re-qualification should re-pin
+the then-observed versions once the rerun fixes them.
 
 Verification with an **empty package cache** (`PLATFORMIO_CORE_DIR=$(mktemp
 -d)`, cold IDF venv + cold component-manager cache) is recorded in §7.
@@ -220,7 +240,8 @@ logs archived in the package 0.2 evidence bundle named in the handoff):
   installs** at exact pinned versions, cold IDF venv, cold component-manager
   cache; `emptycache-build.log`). The run's `PACKAGES:` block matches §2
   **exactly** (framework-espidf 4.60100.0/6.1.0, GCC 15.2.0+20251204
-  toolchains, cmake 3.30.2, ninja 1.13.2, esptool 2.50400.0/5.4.0, ulp
+  toolchains, cmake 3.30.2, ninja 1.13.2 (this run: darwin host; see the
+  ninja host-resolution exception below), esptool 2.50400.0/5.4.0, ulp
   1.23800.240113, rom-elfs 0.0.1+20241011, gdb 12.1.0+20221002 ×2). The IDF
   venv installs its Python layer from IDF's range requirements (`urllib3<2`
   → 1.26.20, `cryptography~=46.0.0` → 46.0.7, `pyparsing<4,>=3.1.0` → 3.3.3,
@@ -246,9 +267,25 @@ logs archived in the package 0.2 evidence bundle named in the handoff):
   `T vdog_cpp_smoke` with `U vdog_format_version / vdog_version_compare /
   vdog_version_pack`.
 
+- Live CI host-resolution outcome (2026-11-21): the first live PR run of
+  `.github/workflows/firmware-pr.yml` on GitHub `ubuntu-24.04`
+  (run 44890089847, PR #2, `opencode/0.2-toolchains` @ 3c8cb47) passed
+  `firmware-host-tests` and `firmware-package-tests`; `firmware-build`
+  failed at "Build the prototype environment" with
+  `UnknownPackageError: Could not find the package with
+  'platformio/tool-ninja @ 1.13.2' requirements` — the exact 1.13.2 pin
+  was qualified on darwin, the only platform publishing 1.13.2 builds.
+  The proto environment now requires `platformio/tool-ninja@>=1.7.1,<2`
+  (§2 exception note): darwin still resolves the 0.2-qualified 1.13.2
+  (re-confirmed here with `pio pkg list` after the change), while
+  linux_x86_64 resolution (1.7.1 per the registry) and `firmware-build`
+  success on the CI host are **UNVERIFIED locally** and will be
+  re-recorded from the CI rerun.
+
 All recorded runs exit 0. The tracked `firmware/dependencies.lock`, the
-Unity pin and the exact pins (`platformio/espressif32@8.0.0`, `==2.1.9`)
-are the reproducibility contract.
+Unity pin and the exact pins (`platformio/espressif32@8.0.0`, `==2.1.9`;
+every `platform_packages` pin exact except the documented `tool-ninja`
+host range above) are the reproducibility contract.
 
 ## 8. App/Backend deferred pins (not qualified here)
 
