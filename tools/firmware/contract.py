@@ -729,6 +729,11 @@ def _validate_identity_consistency(doc: dict[str, Any]) -> list[str]:
             errors.append(f"manifest.build_id: local kind requires 'local', got {build_id!r}")
         if tag is not None:
             errors.append("manifest.tag: local builds must not carry a tag")
+        if doc.get("ci") is not None:
+            errors.append(
+                f"manifest.ci: local builds are unpublishable and must not carry "
+                f"CI identity, got {doc.get('ci')!r}"
+            )
     if kind == "main" and tag is not None and not _is_str(tag):
         errors.append(f"manifest.tag: must be string for main kind, got {tag!r}")
     return errors

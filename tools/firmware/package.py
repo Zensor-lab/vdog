@@ -110,6 +110,7 @@ def build_payload(
     flash_layout: dict[str, Any] | None = None,
     repo_root: Path | None = None,
     require_fresh_metadata: bool = True,
+    skip_git_verify: bool = False,
 ) -> tuple[dict[str, bytes], dict[str, Any]]:
     """Return (payload files keyed by package-relative path, manifest document).
 
@@ -160,7 +161,16 @@ def build_payload(
         errors.append("package: --run-id and --attempt must be supplied together")
         raise ContractError(errors)
     ci = None if run_id is None else {"run_id": run_id, "attempt": attempt}
+    if kind == "local" and ci is not None:
+        raise ContractError(
+            ["package: local builds are unpublishable and must not carry CI "
+             "identity (run_id/attempt are reserved for pr/main)"]
+        )
 
+    if repo_root is None and not skip_git_verify and kind in ("pr", "main"):
+        # Release path default: CI-looking identities are always checked
+        # against the checkout (dirty tree or replaced source is refused).
+        repo_root = REPO_ROOT
     if repo_root is not None:
         try:
             metadata.verify_source_identity(
@@ -437,6 +447,7 @@ def create_package(
     flash_layout: dict[str, Any] | None = None,
     verify_git: bool = False,
     require_fresh_metadata: bool = True,
+    skip_git_verify: bool = False,
     **sources: Any,
 ) -> tuple[Path, Path]:
     """Build, validate and write the ZIP + external .sha256. Returns paths."""
@@ -444,6 +455,7 @@ def create_package(
         repo_root=REPO_ROOT if verify_git else None,
         flash_layout=flash_layout,
         require_fresh_metadata=require_fresh_metadata,
+        skip_git_verify=skip_git_verify,
         **sources,
     )
     build_id = _manifest["build_id"]
@@ -481,7 +493,11 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--attempt", type=int)
     parser.add_argument("--verify-git", action="store_true",
-                        help="reject dirty/replaced source for pr/main identities")
+                        help="also verify local-kind builds (pr/main are verified "
+                             "by default)")
+    parser.add_argument("--skip-git-verify", action="store_true",
+                        help="forensics only: skip the default dirty/replaced-source "
+                             "check for pr/main identities; never use for releases")
     parser.add_argument("--allow-stale-metadata", action="store_true",
                         help="forensics only: skip the metadata freshness gate; "
                              "never use for release packaging")
@@ -515,6 +531,7 @@ def _main(argv: list[str] | None = None) -> int:
             zip_name=args.zip_name,
             verify_git=args.verify_git,
             require_fresh_metadata=not args.allow_stale_metadata,
+            skip_git_verify=args.skip_git_verify,
             **sources,
         )
     except ContractError as exc:

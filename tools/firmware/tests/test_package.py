@@ -164,6 +164,37 @@ def test_run_id_attempt_must_pair(tmp_path: Path) -> None:
     assert any("together" in e for e in exc.value.errors)
 
 
+def test_local_build_must_not_carry_ci_identity(tmp_path: Path) -> None:
+    with pytest.raises(ContractError) as exc:
+        support.package_from_build_dir(
+            tmp_path, run_id=5, attempt=1,
+        )
+    assert any("must not carry CI identity" in e for e in exc.value.errors)
+
+
+def test_pr_main_identity_verifies_checkout_by_default(tmp_path: Path) -> None:
+    # The release path verifies pr/main identities against the checkout even
+    # when the caller omits repo_root: a synthetic CI-looking SHA that is not
+    # HEAD must be refused (no --verify-git flag required).
+    from tools.firmware import package as pkg
+
+    build_dir = support.write_build_dir(tmp_path / "build" / "vdog_xiao_sense_proto")
+    meta = support.write_metadata(tmp_path / "meta", kind="pr")
+    meta.touch()
+    sources = support._default_sources(tmp_path)
+    with pytest.raises(ContractError) as exc:
+        pkg.build_payload(
+            build_dir=build_dir,
+            partition_csv=support.PARTITION_CSV,
+            metadata_path=meta,
+            core_header_path=support.CORE_HEADER,
+            kind="pr", pr_number=7, base_sha=support.FULL_SHA_B,
+            run_id=None, attempt=None,
+            **sources,
+        )
+    assert any("replaced source" in e or "dirty source" in e for e in exc.value.errors)
+
+
 def test_pr_package_requires_base_sha(tmp_path: Path) -> None:
     build_dir = support.write_build_dir(tmp_path / "build" / "vdog_xiao_sense_proto")
     meta = support.write_metadata(tmp_path / "meta", kind="pr")

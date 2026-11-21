@@ -277,6 +277,29 @@ def test_refuses_provisioned_board(installed_package) -> None:
     assert transport.writes == []
 
 
+def test_refuses_provisioned_even_beyond_first_nvs_sector(installed_package) -> None:
+    # Provable blankness must cover the whole NVS partition, not just sector 0.
+    root, payload, _manifest = installed_package
+    flash_map = support.blank_device_table(payload)
+    flash_map[0x9000 + 0x1000] = b"\x01\x02paired"
+    transport = _install_expect(
+        installed_package, support.FakeTransport(flash_map=flash_map),
+        inst.EXIT_REFUSED, "NVS",
+    )
+    assert transport.writes == []
+
+
+def test_partial_nvs_data_is_never_treated_as_factory_blank(installed_package) -> None:
+    root, _payload, _manifest = installed_package
+    # Partition table and otadata erased, but NVS sector 2 holds data.
+    flash_map = {0x9000 + 0x2000: b"\xAA"}
+    transport = _install_expect(
+        installed_package, support.FakeTransport(flash_map=flash_map),
+        inst.EXIT_REFUSED, "never assumed blank",
+    )
+    assert transport.writes == []
+
+
 def test_refuses_unknown_partition_layout(installed_package) -> None:
     root, payload, _manifest = installed_package
     foreign = support.make_partitions_bin(entries=[
@@ -343,6 +366,19 @@ def test_refuses_unpinned_esptool_without_port_touch(installed_package) -> None:
         )
     assert exc.value.code == inst.EXIT_ENVIRONMENT
     assert transport.calls == [["version"]]  # version gate first, no port ops
+
+
+def test_broken_esptool_maps_to_environment_exit(installed_package) -> None:
+    root, _payload, _manifest = installed_package
+    transport = support.FakeTransport(version_fail=True)
+    a, _lines = app(root, transport=transport)
+    with pytest.raises(inst.InstallerError) as exc:
+        a.cmd_install(
+            "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+            dry_run=False, confirm_replace=True,
+        )
+    assert exc.value.code == inst.EXIT_ENVIRONMENT
+    assert "availability check" in str(exc.value)
 
 
 def test_esptool_failure_maps_to_flash_failed(installed_package) -> None:
@@ -597,6 +633,15 @@ def test_installer_valid_pr_and_main_manifests() -> None:
     assert inst.validate_manifest(
         support.valid_manifest_doc(kind="main", sha=support.FULL_SHA_B)
     ) == []
+
+
+def test_installer_rejects_pr_base_equals_head() -> None:
+    doc = support.valid_manifest_doc(
+        kind="pr", sha=support.FULL_SHA_A, pr_number=7, base_sha=support.FULL_SHA_B
+    )
+    doc["source"]["base_sha"] = doc["source"]["sha"]
+    assert contract.validate_manifest(doc), "contract must reject base==head"
+    assert inst.validate_manifest(doc), "installer validator must reject base==head"
 
 
 @pytest.mark.parametrize(

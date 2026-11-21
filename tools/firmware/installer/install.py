@@ -185,6 +185,11 @@ def validate_manifest(data: Any) -> list[str]:
     if not isinstance(source, dict):
         errors.append("manifest.source: must be an object")
     else:
+        for field in source:
+            if field not in {
+                "kind", "sha", "sha_short", "pr_number", "base_sha", "dirty"
+            }:
+                errors.append(f"manifest.source: unknown field {field!r}")
         kind = source.get("kind")
         if kind not in ("pr", "main", "local"):
             errors.append(f"manifest.source.kind: invalid {kind!r}")
@@ -199,6 +204,8 @@ def validate_manifest(data: Any) -> list[str]:
             base = source.get("base_sha")
             if not isinstance(base, str) or not re.match(r"\A[0-9a-f]{40}\Z", base):
                 errors.append("manifest.source.base_sha: pr kind requires full SHA")
+            elif base == sha:
+                errors.append("manifest.source.base_sha: base SHA must differ from head SHA")
         if kind == "local" and (sha != "local" or source.get("sha_short") != "local"):
             errors.append("manifest.source: local kind must use 'local' identity")
         if kind in ("pr", "main") and isinstance(sha, str) and re.match(r"\A[0-9a-f]{40}\Z", sha):
@@ -219,14 +226,25 @@ def validate_manifest(data: Any) -> list[str]:
         errors.append(f"manifest.tag: only main releases carry tags, got {tag!r}")
     ci = data.get("ci")
     if ci is not None:
-        if not isinstance(ci, dict) or not all(
-            _is_int(ci.get(k)) and ci[k] >= 1 for k in ("run_id", "attempt")
+        if (
+            not isinstance(ci, dict)
+            or set(ci) != {"run_id", "attempt"}
+            or not all(_is_int(ci.get(k)) and ci[k] >= 1 for k in ("run_id", "attempt"))
         ):
             errors.append(f"manifest.ci: must be null or run_id/attempt >= 1, got {ci!r}")
+        if kind == "local":
+            errors.append(
+                "manifest.ci: local builds are unpublishable and must not carry "
+                f"CI identity, got {ci!r}"
+            )
     toolchain = data.get("toolchain")
     if not isinstance(toolchain, dict):
         errors.append("manifest.toolchain: must be an object")
     else:
+        if set(toolchain) != {
+            "platformio_core", "platform", "idf_version", "esptool_version"
+        }:
+            errors.append("manifest.toolchain: must have exactly the four pin fields")
         for field, want in (
             ("platform", "platformio/espressif32@8.0.0"),
             ("esptool_version", ESPTOOL_VERSION),
@@ -242,6 +260,8 @@ def validate_manifest(data: Any) -> list[str]:
             "mode": FLASH_MODE, "size": FLASH_SIZE, "freq": FLASH_FREQ,
             "size_bytes": EXPECTED_FLASH_BYTES,
         }
+        if set(flash) != set(want_flash):
+            errors.append("manifest.flash: keys must be mode/size/freq/size_bytes")
         for field, want in want_flash.items():
             if flash.get(field) != want:
                 errors.append(f"manifest.flash.{field}: must be {want!r}, got {flash.get(field)!r}")
@@ -326,6 +346,8 @@ def validate_manifest(data: Any) -> list[str]:
             if not _path_ok(path):
                 errors.append(f"manifest.files: unsafe path {path!r}")
                 continue
+            if path in covered:
+                errors.append(f"manifest.files: duplicate path {path!r}")
             if path in SELF_EXCLUDED:
                 errors.append(f"manifest.files: {path} must be self-excluded")
             if path not in REQUIRED_FILES:
@@ -904,11 +926,13 @@ def classify_device(transport: EsptoolTransport, port: str, manifest: dict[str, 
     ota_image = image_by_role["ota_data_initial"]
     otadata = transport.read_flash(port, ota_image["offset"], ota_image["size"])
     nvs = next(e for e in manifest["partition_table"]["entries"] if e["name"] == "nvs")
-    nvs_head = transport.read_flash(port, nvs["offset"], min(0x1000, nvs["size"]))
+    # Read the FULL NVS partition: provable blankness (and the refusal of
+    # provisioned boards) must not depend on the first sector alone.
+    nvs_data = transport.read_flash(port, nvs["offset"], nvs["size"])
 
     if all(b == 0xFF for b in table):
-        if all(b == 0xFF for b in otadata) and all(b == 0xFF for b in nvs_head):
-            log("device state: blank factory board (partition table/otadata/NVS head erased)")
+        if all(b == 0xFF for b in otadata) and all(b == 0xFF for b in nvs_data):
+            log("device state: blank factory board (partition table/otadata/NVS erased)")
             return "factory-blank"
         raise InstallerError(
             "refusing: partition table area is erased but otadata/NVS is not — an "
@@ -940,7 +964,7 @@ def classify_device(transport: EsptoolTransport, port: str, manifest: dict[str, 
                 f"(0x{want['offset']:x}/0x{want['size']:x}) — layout migration is out of scope",
                 EXIT_REFUSED,
             )
-    if not all(b == 0xFF for b in nvs_head):
+    if not all(b == 0xFF for b in nvs_data):
         raise InstallerError(
             "refusing: NVS partition contains settings — the board is provisioned/"
             "paired; replacing it needs the separately qualified preservation route "
@@ -989,6 +1013,16 @@ class InstallerApp:
                 resolve_esptool_command(self.esptool_python)
             )
         return self._transport
+
+    def _require_pinned_esptool(self, transport: EsptoolTransport) -> None:
+        """Version gate; a broken/missing esptool is an environment failure,
+        never a traceback and never a silent substitute."""
+        try:
+            ensure_pinned_esptool(transport)
+        except EsptoolFailure as exc:
+            raise InstallerError(
+                f"esptool availability check failed: {exc}", EXIT_ENVIRONMENT
+            ) from exc
 
     # -- identity logging -----------------------------------------------------
     def log_identity(self) -> None:
@@ -1067,7 +1101,7 @@ class InstallerApp:
         self.log_identity()
         manifest = self.package.validate()
         transport = self.get_transport()
-        ensure_pinned_esptool(transport)
+        self._require_pinned_esptool(transport)
         try:
             chip, size = transport.flash_id(port)
             self.out(f"inspect: chip={chip} flash={size} bytes ({size // (1024 * 1024)}MB)")
@@ -1100,7 +1134,7 @@ class InstallerApp:
             return EXIT_OK
 
         transport = self.get_transport()
-        ensure_pinned_esptool(transport)
+        self._require_pinned_esptool(transport)
         try:
             state = classify_device(transport, port, manifest, self.out)
             self._consent(manifest, confirm_replace=confirm_replace, state=state)

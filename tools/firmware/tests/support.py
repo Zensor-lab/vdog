@@ -295,8 +295,14 @@ def package_from_build_dir(
     build_metadata_overrides: dict[str, Any] | None = None,
     partition_csv: Path | None = None,
     flash_layout: dict[str, Any] | None = None,
+    skip_git_verify: bool = True,
 ) -> tuple[Path, Path, dict[str, bytes], dict[str, Any]]:
-    """Build a complete synthetic package. Returns (zip, sha256 file, payload, manifest)."""
+    """Build a complete synthetic package. Returns (zip, sha256 file, payload, manifest).
+
+    ``skip_git_verify`` defaults to True because these fixtures fabricate
+    pr/main identities that are deliberately not the checkout's HEAD; the
+    default-on release-path verification is covered by dedicated tests.
+    """
     tmp_path = Path(tmp_path)
     if build_dir is None:
         build_dir = write_build_dir(tmp_path / "build" / "vdog_xiao_sense_proto")
@@ -318,6 +324,7 @@ def package_from_build_dir(
         attempt=attempt,
         output_dir=out_dir,
         require_fresh_metadata=require_fresh_metadata,
+        skip_git_verify=skip_git_verify,
         flash_layout=flash_layout,
         **sources,
     )
@@ -577,6 +584,22 @@ MANIFEST_MUTATIONS: list[tuple[str, Any, str, bool]] = [
      "not part of the section 4 payload", False),
     ("ci attempt zero", lambda m: m.__setitem__("ci", {"run_id": 5, "attempt": 0}),
      "attempt", True),
+    ("ci extra key", lambda m: m.__setitem__("ci", {"run_id": 5, "attempt": 1, "url": "x"}),
+     "run_id/attempt", True),
+    ("local carrying ci", lambda m: m.__setitem__("ci", {"run_id": 5, "attempt": 1}),
+     "must not carry", True),
+    ("toolchain extra key", lambda m: m["toolchain"].update({"extra": "x"}),
+     "toolchain", True),
+    ("flash extra key", lambda m: m["flash"].update({"extra": "x"}),
+     "flash", True),
+    ("source extra key", lambda m: m["source"].update({"extra": "x"}),
+     "source", True),
+    ("duplicate files path", lambda m: m["files"].append(dict(m["files"][0])),
+     "duplicate", False),
+    ("files path traversal",
+     lambda m: m["files"].append({"path": "images/../b.bin", "size": 1,
+                                  "sha256": "d" * 64}),
+     "unsafe", True),
     ("partition entry bad type",
      lambda m: _m(m, ("partition_table", "entries", 0, "type"), "magic"),
      "type", True),

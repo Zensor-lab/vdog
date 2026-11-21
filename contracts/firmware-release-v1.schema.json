@@ -208,13 +208,23 @@
       },
       "then": { "properties": { "tag": { "type": "string" } } },
       "else": { "properties": { "tag": { "const": null } } }
+    },
+    {
+      "if": {
+        "properties": { "source": { "properties": { "kind": { "const": "local" } }, "required": ["kind"] } },
+        "required": ["source"]
+      },
+      "then": {
+        "properties": { "ci": { "const": null } },
+        "description": "A local build is unpublishable: no tag, no CI identity."
+      }
     }
   ],
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "relativePath": {
       "type": "string",
-      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!\\.\\./)(?!\\./)(?![^/]*\\.{2,}$)(?:[^/\\\\]+)(?:/[^/\\\\]+)*$",
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*[/]$)[A-Za-z0-9 ._/-]+$",
       "minLength": 1,
       "maxLength": 255
     }

@@ -135,13 +135,25 @@ def test_esptool_image_info_cross_check(real_build: Path) -> None:
     """Authoritative container verification stays with esptool: when a
     resolvable esptool exists, its independent image-info must accept the
     packaged images."""
+    # Prefer the PlatformIO-pinned tool package (qualified with this
+    # baseline); only then fall back to an ambient binary that verifiably
+    # reports the pinned esptool 5.4.0.
     candidates = [
-        shutil.which("esptool"),
         str(Path.home() / ".platformio/packages/tool-esptool/esptool"),
+        shutil.which("esptool"),
     ]
     binary = next((c for c in candidates if c and Path(c).is_file()), None)
     if binary is None:
         pytest.skip("no esptool binary available for cross-check")
+    ver = subprocess.run(
+        [binary, "version"], capture_output=True, text=True, timeout=60,
+    )
+    ver_out = ver.stdout + ver.stderr
+    if "5.4.0" not in ver_out:
+        pytest.skip(
+            f"available esptool at {binary} is not the pinned 5.4.0 "
+            f"(reports: {ver_out.strip().splitlines()[:1]})"
+        )
     for name in ("bootloader.bin", "firmware.bin"):
         proc = subprocess.run(
             [binary, "--chip", "esp32s3", "image-info", str(real_build / name)],
