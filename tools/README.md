@@ -26,7 +26,7 @@ human-reviewable mirror (the test suite enforces they agree).
 | `installer/install.sh`, `installer/install.ps1` | Setup wrappers: create/reuse the isolated `.venv-installer/`, install the locked dependencies with `--require-hashes`, then exec `install.py` inside it (master plan 0.9.6) |
 | `installer/requirements-installer.{in,lock}` | Hashed end-user installer environment pins (`esptool==5.4.0`, pyserial) |
 | `templates/THIRD_PARTY_NOTICES.md` | Third-party notices source shipped as `THIRD_PARTY_NOTICES.md` |
-| `tests/` | pytest suite (367 tests), including the real-baseline build checks |
+| `tests/` | pytest suite (369 tests), including the real-baseline build checks |
 
 The release-notes source is `docs/release-notes-template.md` and the packaged
 `INSTALL.md` comes from `docs/release-installation.md`; the CI workflows pass
@@ -83,8 +83,10 @@ sh ./install.sh install --port /dev/cu.usbmodem123 \
 
 The wrappers need `uv` and create `.venv-installer/` beside the script, then
 install `requirements-installer.lock` into it with `--require-hashes` (first
-setup needs network). They never touch a global Python, never use `sudo`, never
-copy a virtual environment and never pipe a download into a shell. `install.py`
+setup needs network). Once that environment is complete, later runs exec
+`install.py` in it directly — no `uv` on `PATH` and no network required. They
+never touch a global Python, never use `sudo`, never copy a virtual environment
+and never pipe a download into a shell. `install.py`
 itself is stdlib-only; serial operations additionally require that locked
 environment (or `--esptool-python` pointing at it). `VDOG_INSTALLER_UV`,
 `VDOG_INSTALLER_VENV_DIR` and `VDOG_INSTALLER_PYTHON` override discovery.

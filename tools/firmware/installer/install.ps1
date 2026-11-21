@@ -48,6 +48,17 @@ function Stop-Installer {
     exit 2
 }
 
+function Test-InstallerEnvComplete {
+    # True only when the isolated interpreter is usable, is the qualified minor
+    # version and already carries the locked dependencies.
+    if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) { return $false }
+    $version = (& $VenvPython -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $version) { return $false }
+    if ($version.Trim() -ne $QualifiedMinor) { return $false }
+    & $VenvPython -c $DepProbe *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
 # --- prerequisites ----------------------------------------------------------
 if (-not (Test-Path -LiteralPath $InstallPy -PathType Leaf)) {
     Stop-Installer "install.py not found beside this script in '$ScriptDir'." @(
@@ -60,6 +71,14 @@ if (-not (Test-Path -LiteralPath $RequirementsLock -PathType Leaf)) {
         'The bundle is incomplete; re-download it from the GitHub Release and',
         'verify its .sha256 before installing.'
     )
+}
+
+# --- fast path: a complete environment needs no uv and no network -----------
+# First setup needs uv (and network) to build the environment; every later run
+# must work from the environment alone, even if uv is not on this PATH.
+if (Test-InstallerEnvComplete) {
+    & $VenvPython $InstallPy @args
+    exit $LASTEXITCODE
 }
 
 $UvBin = $env:VDOG_INSTALLER_UV

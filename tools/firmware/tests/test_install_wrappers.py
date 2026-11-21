@@ -235,6 +235,46 @@ def test_setup_is_reused_and_not_reinstalled(bundle: Bundle) -> None:
     assert len(installs_after) == len(installs_before), "the env must be reused"
 
 
+def test_completed_environment_needs_neither_uv_nor_network(bundle: Bundle) -> None:
+    """After the first setup the wrapper must run from the environment alone.
+
+    A user whose PATH no longer contains uv (new shell, GUI launch) still gets a
+    working offline install, which is what the guide promises.
+    """
+    setup = bundle.run("check")
+    assert setup.returncode == 0, setup.stderr
+    invocations_before = bundle.invocations()
+
+    env = bundle.env()
+    env["PATH"] = "/bin:/usr/bin"          # uv is unreachable now
+    result = subprocess.run(
+        ["/bin/sh", str(bundle.root / "install.sh"), "plan", "--board",
+         "seeed-xiao-esp32s3-sense"],
+        cwd=bundle.root, env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "bootloader" in result.stdout
+    assert "uv" not in result.stderr.lower(), result.stderr
+    assert bundle.invocations() == invocations_before, "uv must not be called again"
+
+
+def test_partial_environment_without_uv_fails_rather_than_guessing(bundle: Bundle) -> None:
+    """A half-built environment cannot be completed without uv: say so."""
+    setup = bundle.run("check")
+    assert setup.returncode == 0, setup.stderr
+    site = next((bundle.venv / "lib").glob("python*/site-packages"))
+    (site / "esptool.py").unlink()                      # simulate a broken env
+
+    env = bundle.env()
+    env["PATH"] = "/bin:/usr/bin"
+    result = subprocess.run(
+        ["/bin/sh", str(bundle.root / "install.sh"), "check"],
+        cwd=bundle.root, env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 2
+    assert "uv" in result.stderr and "docs.astral.sh/uv" in result.stderr
+
+
 def test_arguments_pass_through_and_exit_status_propagates(bundle: Bundle) -> None:
     ok = bundle.run("plan", "--board", "seeed-xiao-esp32s3-sense")
     assert ok.returncode == 0, ok.stderr
@@ -371,6 +411,7 @@ def test_install_sh_never_uses_global_python_elevation_or_pipes() -> None:
         "VDOG_INSTALLER_PYTHON",
         ".venv-installer",
         "set -eu",
+        "env_is_complete",          # offline reuse fast path before uv is required
     ]
     for needle in required:
         assert needle in text, f"install.sh must contain {needle!r}"
@@ -401,6 +442,7 @@ def test_install_ps1_structural_invariants_without_pwsh() -> None:
         "Set-StrictMode",
         "$ErrorActionPreference = 'Stop'",
         "exit $LASTEXITCODE",
+        "Test-InstallerEnvComplete",   # offline reuse fast path before uv is required
     ]
     for needle in required:
         assert needle in text, f"install.ps1 must contain {needle!r}"

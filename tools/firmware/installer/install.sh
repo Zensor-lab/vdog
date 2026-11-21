@@ -59,6 +59,15 @@ fail() {
     exit 2
 }
 
+# True only when $VENV_PYTHON is a usable interpreter of the qualified minor
+# version that already carries the locked dependencies.
+env_is_complete() {
+    [ -x "$VENV_PYTHON" ] || return 1
+    [ "$("$VENV_PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)" \
+        = "$QUALIFIED_MINOR" ] || return 1
+    "$VENV_PYTHON" -c "$DEP_PROBE" >/dev/null 2>&1
+}
+
 # --- prerequisites ----------------------------------------------------------
 if [ ! -f "$INSTALL_PY" ]; then
     fail "install.py not found beside this script in '$SCRIPT_DIR'." \
@@ -69,6 +78,13 @@ if [ ! -f "$REQUIREMENTS_LOCK" ]; then
     fail "requirements-installer.lock is missing from '$SCRIPT_DIR'." \
         "The bundle is incomplete; re-download it from the GitHub Release and" \
         "verify its .sha256 before installing."
+fi
+
+# --- fast path: a complete environment needs no uv and no network -----------
+# First setup needs uv (and network) to build the environment; every later run
+# must work from the environment alone, even if uv is not on this PATH.
+if env_is_complete; then
+    exec "$VENV_PYTHON" "$INSTALL_PY" "$@"
 fi
 
 UV_BIN=${VDOG_INSTALLER_UV:-}
