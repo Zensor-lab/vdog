@@ -11,11 +11,14 @@
 #     written here at parse time, so the IDF "main" component (src/main.c)
 #     always sees a fresh firmware/build_gen/vdog_build_id.h during
 #     compilation, even on a clean build.
-#   - The vdog-build-metadata-v1 JSON is written by an AddPostAction on the
-#     application image, so it is (re)generated only at the end of a
-#     SUCCESSFUL normal build. `pio test` (`__test` targets) and `nobuild`
-#     never (re)write it, keeping the release artifact's identity tied to a
-#     successful normal `pio run`.
+#   - The vdog-build-metadata-v1 JSON is refreshed by two build post actions:
+#     the AlwaysBuild `checkprogsize` alias (fires on every successful
+#     default build, cached included) and the ElfToBin post action on
+#     $BUILD_DIR/${PROGNAME}.bin (the LAST action of a default build), so the
+#     final write always lands after every packaged builder output and the
+#     JSON is (re)generated only at the end of a SUCCESSFUL normal build.
+#     `pio test` (`__test` targets) and `nobuild` never (re)write it, keeping
+#     the release artifact's identity tied to a successful normal `pio run`.
 #
 # Input handling contract (hard requirements):
 #   - VDOG_SOURCE_SHA: accepted only as a full 40-hex object ID; any other
@@ -270,14 +273,28 @@ def main():
         # Test builds and nobuild never (re)write the release metadata.
         return
 
-    # checkprogsize is an AlwaysBuild alias on the linked ELF that every
-    # successful default build executes (even a fully cached one), so the
-    # metadata JSON is regenerated at the end of EVERY successful normal
-    # `pio run`, never leaving a stale identity behind.
-    # Consumers must only export/package after `pio run` exits 0: the alias
-    # runs before the final ElfToBin step, so treat a non-zero exit as "no
-    # valid release identity for this build" (round-2 CI gating).
+    # Two hooks, in build-execution order:
+    #
+    # 1) checkprogsize (AlwaysBuild alias on the linked ELF) fires on every
+    #    successful default build, fully cached included, so the JSON is
+    #    regenerated at the end of EVERY successful normal `pio run`.
+    #    NOTE: this alias completes BEFORE the final ElfToBin step
+    #    (espressif32 builder/main.py: env.Depends(target_firm,
+    #    "checkprogsize")), so its write alone is not the freshness anchor.
+    #
+    # 2) The ElfToBin post action on $BUILD_DIR/${PROGNAME}.bin runs AFTER
+    #    the application image exists — it is the LAST step of a default
+    #    build — and is therefore the definitive write that guarantees
+    #    mtime(metadata) >= mtime(every packaged builder output), which is
+    #    what the release packaging freshness gate
+    #    (tools/firmware/metadata.check_build_metadata_freshness) requires.
+    #    When the bin is up to date its action (and post action) does not
+    #    run, but hook 1 still refreshes and no output mtime moved.
+    #
+    # Consumers must still only export/package after `pio run` exits 0.
     env.AddPostAction("checkprogsize", _emit_metadata_action)
+    bin_target = env.subst("$BUILD_DIR/${PROGNAME}.bin")
+    env.AddPostAction(bin_target, _emit_metadata_action)
 
 
 main()
