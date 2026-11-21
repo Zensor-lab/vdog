@@ -7,3 +7,11 @@ idf_component_register(
     REQUIRES vdog_core esp32-camera
     PRIV_REQUIRES app_update esp_system esp_timer log unity
 )
+
+# Stage 0.9 packet A: generated build-identity header directory
+# (firmware/build_gen/, gitignored; written by scripts/gen_build_meta.py
+# before compilation). Registered here so the CMake codemodel compile flags
+# for this component always carry it, independently of the post-build SCons
+# CPPPATH update in the extra script.
+target_include_directories(${COMPONENT_LIB} PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../build_gen")
