@@ -625,9 +625,48 @@ LAYOUT_MUTATIONS: list[tuple[str, Any, str]] = [
 # Fake serial/esptool adapter (mirrors tools.firmware.installer.install API)
 # ---------------------------------------------------------------------------
 
+# VERSION-MATCHED esptool 5.4.0 identification fixtures (round-2 fix F3).
+# The pinned 5.4.0 sdist prints the chip line as
+#   f"{'Chip type:':<20}{esp.get_chip_description()}"   (esptool/__init__.py:568-572)
+# and flash-id ends with
+#   f"Detected flash size: {flash_size}"                 (esptool/cmds.py:2415)
+# so real output carries the padded "Chip type:" form — never the legacy
+# "Chip is ..." string. These fixtures reproduce those exact shapes.
+ESPTOOL_540_CHIP_LINE_S3 = "Chip type:          ESP32-S3 (QFN56) (revision v0.2)"
+ESPTOOL_540_CHIP_LINE_C3 = "Chip type:          ESP32-C3 (revision v0.4)"
+
+
+def esptool_540_flash_id_output(chip_line: str = ESPTOOL_540_CHIP_LINE_S3,
+                                flash_size: str = "8MB") -> str:
+    """Complete 5.4.0-style ``flash-id`` output (banner, padded chip line,
+    Features/Crystal/MAC from the chip-info block, flash-id block)."""
+    return (
+        "esptool v5.4.0\n"
+        f"{chip_line}\n"
+        "Features:           Wi-Fi 802.11 b/g/n, BLE, 802.15.4\n"
+        "Crystal frequency:  40MHz\n"
+        "MAC:                aa:bb:cc:dd:ee:ff\n"
+        "Flash Memory Information:\n"
+        "=========================\n"
+        "Manufacturer: 5e\n"
+        "Device: 4016\n"
+        f"Detected flash size: {flash_size}\n"
+    )
+
+
+ESPTOOL_540_FLASH_ID_S3 = esptool_540_flash_id_output()
+ESPTOOL_540_FLASH_ID_C3 = esptool_540_flash_id_output(
+    ESPTOOL_540_CHIP_LINE_C3, flash_size="4MB"
+)
+
 
 class FakeTransport:
-    """Programmable stand-in for EsptoolTransport; records every call."""
+    """Programmable stand-in for EsptoolTransport; records every call.
+
+    ``calls`` preserves the full operation order (phase assertions),
+    ``writes``/``reads`` expose the flash-facing details and ``resets``
+    counts the explicit post-verification resets (must be 0 or 1).
+    """
 
     def __init__(
         self,
@@ -641,6 +680,7 @@ class FakeTransport:
         fail_version: str | None = None,
         fail_on_call: int | None = None,
         fail_on_write: int | None = None,
+        fail_reset: bool = False,
         corrupt_store: bool = False,
     ) -> None:
         from tools.firmware.installer.install import EsptoolFailure
@@ -656,10 +696,12 @@ class FakeTransport:
         self.fail_version = fail_version
         self.fail_on_call = fail_on_call
         self.fail_on_write = fail_on_write
+        self.fail_reset = fail_reset
         self.corrupt_store = corrupt_store
         self.calls: list[list[Any]] = []
-        self.writes: list[tuple[int, str, bool]] = []
+        self.writes: list[tuple[int, str]] = []
         self.reads: list[tuple[int, int]] = []
+        self.resets: list[str] = []
 
     # -- adapter surface -----------------------------------------------------
     def _maybe_fail(self, kind: str) -> None:
@@ -677,7 +719,9 @@ class FakeTransport:
         self.calls.append(["flash-id", port])
         self._maybe_fail("flash-id")
         if self.chip != "esp32s3":
-            raise self._failure_cls(f"device is not an ESP32-S3: 'Chip is {self.chip}'")
+            raise self._failure_cls(
+                f"device is not an ESP32-S3: {ESPTOOL_540_CHIP_LINE_C3!r}"
+            )
         return self.chip, self.flash_size
 
     def security_flags(self, port: str) -> dict[str, bool]:
@@ -700,13 +744,15 @@ class FakeTransport:
                 ]
         return bytes(out)
 
-    def write_flash(self, port: str, offset: int, image_path: Path, *, final: bool) -> None:
-        self.calls.append(["write-flash", port, offset, str(image_path), final])
+    def write_flash(self, port: str, offset: int, image_path: Path) -> None:
+        # Mirrors EsptoolTransport: every write keeps the board in the
+        # bootloader (--after no-reset); reset() is the only reset.
+        self.calls.append(["write-flash", port, offset, str(image_path)])
         self._maybe_fail("write-flash")
         if self.fail_on_write is not None and len(self.writes) == self.fail_on_write:
             raise self._failure_cls(f"injected write failure at segment {offset:#x}")
         data = Path(image_path).read_bytes()
-        self.writes.append((offset, sha256_bytes(data), final))
+        self.writes.append((offset, sha256_bytes(data)))
         if self.corrupt_store:
             flipped = bytearray(data)
             if flipped:
@@ -714,6 +760,13 @@ class FakeTransport:
             self.flash_map[offset] = bytes(flipped)
         else:
             self.flash_map[offset] = data
+
+    def reset(self, port: str) -> None:
+        self.calls.append(["reset", port])
+        self._maybe_fail("reset")
+        if self.fail_reset:
+            raise self._failure_cls("injected reset failure")
+        self.resets.append(port)
 
 
 def blank_device_table(build_dir_payload: dict[str, bytes]) -> dict[int, bytes]:

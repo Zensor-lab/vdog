@@ -88,6 +88,15 @@ def test_plan_never_opens_port(installed_package) -> None:
     for image in manifest["images"]:
         assert f"0x{image['offset']:08x}" in "\n".join(lines)
     assert any("never written: NVS" in line for line in lines)
+    # F4 contract in the plan output: every write keeps the board in the
+    # bootloader; exactly one explicit hard-reset (read-only flash-id).
+    invokes = [line for line in lines if line.startswith("invoke:")]
+    write_invokes = [line for line in invokes if "write-flash" in line]
+    assert len(write_invokes) == 4
+    assert all("--after no-reset" in line for line in write_invokes)
+    reset_invokes = [line for line in invokes if "--after hard-reset" in line]
+    assert len(reset_invokes) == 1
+    assert "flash-id" in reset_invokes[0]
 
 
 def test_plan_rejects_unknown_board(installed_package) -> None:
@@ -115,8 +124,8 @@ def test_dry_run_opens_nothing(installed_package) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _expected_writes(manifest: dict) -> list[tuple[int, bool]]:
-    return [(0x0, False), (0x8000, False), (0xF000, False), (0x20000, True)]
+def _expected_write_offsets() -> list[int]:
+    return [0x0, 0x8000, 0xF000, 0x20000]
 
 
 def test_install_blank_factory_happy_path(installed_package) -> None:
@@ -127,16 +136,17 @@ def test_install_blank_factory_happy_path(installed_package) -> None:
         "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
         dry_run=False, confirm_replace=False,
     ) == inst.EXIT_OK
-    assert [w[0:1] + (w[2],) for w in transport.writes] == _expected_writes(manifest)
+    assert [w[0] for w in transport.writes] == _expected_write_offsets()
     # every written digest matches the manifest
     by_offset = {i["offset"]: i["sha256"] for i in manifest["images"]}
-    for offset, digest, _final in transport.writes:
+    for offset, digest in transport.writes:
         assert digest == by_offset[offset]
     assert any("blank factory board" in line for line in lines)
     assert any("install: OK" in line for line in lines)
     # no erase / eFuse / force style invocations exist anywhere
     assert all("write-flash" in call or "read-flash" in call
                or "flash-id" in call or "get-security-info" in call
+               or "reset" in call
                or "version" in call for call in transport.calls)
 
 
@@ -405,6 +415,62 @@ def test_read_back_mismatch_fails(installed_package) -> None:
         )
     assert exc.value.code == inst.EXIT_FLASH_FAILED
     assert "read-back" in str(exc.value)
+    # F4: verification failure must NEVER reset the board.
+    assert transport.resets == []
+    assert not any(call[0] == "reset" for call in transport.calls)
+
+
+def test_install_sequence_writes_then_reads_then_single_reset(installed_package) -> None:
+    """F4: the order is provably all writes → all read-backs → one reset."""
+    root, _payload, manifest = installed_package
+    transport = support.FakeTransport()
+    a, lines = app(root, transport=transport)
+    assert a.cmd_install(
+        "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+        dry_run=False, confirm_replace=True,
+    ) == inst.EXIT_OK
+    ops = [call[0] for call in transport.calls]
+    # exactly one reset, and it is the final operation
+    assert ops.count("reset") == 1
+    reset_index = ops.index("reset")
+    assert reset_index == len(ops) - 1
+    assert transport.resets == ["/dev/cu.usbmodem1"]
+    # all four writes precede the verification reads
+    write_indices = [i for i, op in enumerate(ops) if op == "write-flash"]
+    assert len(write_indices) == 4
+    last_write = write_indices[-1]
+    # the reads between the last write and the reset are exactly the four
+    # manifest ranges, in manifest order
+    by_role = {i["role"]: i for i in manifest["images"]}
+    expected = [(by_role[role]["offset"], by_role[role]["size"])
+                for role in inst.IMAGE_ROLES]
+    verify_reads = [
+        (call[2], call[3])
+        for call in transport.calls[last_write + 1:reset_index]
+        if call[0] == "read-flash"
+    ]
+    assert verify_reads == expected
+    # the success log claims the reset because the reset actually happened
+    assert any("device was reset" in line for line in lines)
+
+
+def test_reset_failure_after_verification_is_reported_without_ok(
+    installed_package,
+) -> None:
+    root, _payload, _manifest = installed_package
+    transport = support.FakeTransport(fail_reset=True)
+    a, lines = app(root, transport=transport)
+    with pytest.raises(inst.InstallerError) as exc:
+        a.cmd_install(
+            "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+            dry_run=False, confirm_replace=True,
+        )
+    assert exc.value.code == inst.EXIT_FLASH_FAILED
+    assert "manual power cycle" in str(exc.value)
+    assert transport.resets == []  # the reset never completed
+    assert not any("install: OK" in line for line in lines)
+    # all writes and verification reads still completed before the reset
+    assert len(transport.writes) == 4
 
 
 def test_write_failure_stops_immediately(installed_package) -> None:
@@ -418,6 +484,9 @@ def test_write_failure_stops_immediately(installed_package) -> None:
         )
     assert exc.value.code == inst.EXIT_FLASH_FAILED
     assert [w[0] for w in transport.writes] == [0x0]
+    # F4: a failure before verification means no reset was ever attempted
+    assert transport.resets == []
+    assert not any(call[0] == "reset" for call in transport.calls)
 
 
 def test_install_requires_explicit_port(installed_package) -> None:
@@ -492,10 +561,12 @@ class CapturedRun:
 
 
 def test_transport_argv_vectors_are_fixed(monkeypatch) -> None:
+    # VERSION-MATCHED fixture: exact esptool 5.4.0 identification output
+    # (padded "Chip type:" line from __init__.py:568-572 in the pinned
+    # sdist — the legacy "Chip is" form no longer appears in v5 output).
     captured = CapturedRun(
-        "esptool v5.4.0\nChip is ESP32-S3 (QFN56) (revision v0.2)\n"
-        "Detected flash size: 8MB\n"
-        "Security Information:\nFlags: 0x00\nSecure Boot: Disabled\n"
+        support.esptool_540_flash_id_output()
+        + "Security Information:\nFlags: 0x00\nSecure Boot: Disabled\n"
         "Flash Encryption: Disabled\n"
     )
     monkeypatch.setattr(inst.subprocess, "run", captured)
@@ -509,20 +580,57 @@ def test_transport_argv_vectors_are_fixed(monkeypatch) -> None:
     assert head[:5] == ["py312", "-m", "esptool", "--chip", "esp32s3"]
     assert "--port" in head and "/dev/ttyX" in head
     assert head[-1] == "flash-id"
+    # ALL writes keep the board in the bootloader: --after no-reset.
     write = CapturedRun("Wrote 1024 bytes")
     monkeypatch.setattr(inst.subprocess, "run", write)
-    transport.write_flash("/dev/ttyX", 0x8000, Path("/tmp/x.bin"), final=True)
+    transport.write_flash("/dev/ttyX", 0x8000, Path("/tmp/x.bin"))
     argv = write.argvs[0]
     assert "write-flash" in argv
     assert ["--flash-mode", "dio"] <= argv
     assert ["--flash-size", "8MB"] <= argv
     assert ["--flash-freq", "80m"] <= argv
     assert "0x8000" in argv and "/tmp/x.bin" in argv
-    assert ["--after", "hard-reset"] <= argv
+    assert ["--after", "no-reset"] <= argv
+    assert ["--after", "hard-reset"] not in argv
+    # The only reset: read-only flash-id with --after hard-reset
+    # (CLI form verified against the pinned 5.4.0 sdist).
+    reset = CapturedRun(support.esptool_540_flash_id_output())
+    monkeypatch.setattr(inst.subprocess, "run", reset)
+    transport.reset("/dev/ttyX")
+    reset_argv = reset.argvs[0]
+    assert reset_argv[-1] == "flash-id"
+    assert ["--before", "default-reset"] <= reset_argv
+    assert ["--after", "hard-reset"] <= reset_argv
+
+
+def test_transport_identifies_esp32s3_from_540_output(monkeypatch) -> None:
+    """F3 regression: identification succeeds on the real 5.4.0 output."""
+    captured = CapturedRun(support.esptool_540_flash_id_output())
+    monkeypatch.setattr(inst.subprocess, "run", captured)
+    transport = inst.EsptoolTransport(["esptool"])
+    assert transport.flash_id("/dev/ttyX") == ("esp32s3", 8_388_608)
+
+
+def test_transport_chip_line_accepts_both_identification_forms() -> None:
+    """_chip_line() finds 'Chip type:' (5.x) and legacy 'Chip is' lines."""
+    assert (
+        inst.EsptoolTransport._chip_line(support.ESPTOOL_540_FLASH_ID_S3)
+        == support.ESPTOOL_540_CHIP_LINE_S3
+    )
+    assert (
+        inst.EsptoolTransport._chip_line("Chip is ESP32-S3 (esptool 4.x)\n")
+        == "Chip is ESP32-S3 (esptool 4.x)"
+    )
+    assert inst.EsptoolTransport._chip_line("no identification here") == (
+        "<no 'Chip type:'/'Chip is' line>"
+    )
 
 
 def test_transport_rejects_non_s3_output(monkeypatch) -> None:
-    captured = CapturedRun("Chip is ESP32-C3 (revision v0.4)\nDetected flash size: 4MB\n")
+    # F3 regression: 5.4.0-format ESP32-C3 output is still rejected.
+    captured = CapturedRun(support.esptool_540_flash_id_output(
+        support.ESPTOOL_540_CHIP_LINE_C3, flash_size="4MB"
+    ))
     monkeypatch.setattr(inst.subprocess, "run", captured)
     transport = inst.EsptoolTransport(["esptool"])
     with pytest.raises(inst.EsptoolFailure):

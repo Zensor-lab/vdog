@@ -296,9 +296,24 @@ def test_publish_locates_the_bundle_without_assuming_the_artifact_layout() -> No
 
 
 def test_main_package_job_checks_lockfiles() -> None:
+    """Round-2 F1/F2: both drift checks run through the tested module, not
+    inline grep/regex (tests/test_check_lockfiles.py exercises it against
+    the real committed lockfiles on every PR)."""
     job = load("firmware-main")["jobs"]["firmware-package-tests"]
     body = "\n".join(str(s.get("run", "")) for s in steps(job))
     assert "git diff --exit-code -- firmware/dependencies.lock" in body
+    assert "python -m tools.firmware.check_lockfiles" in body
+    assert "--component-lock firmware/dependencies.lock" in body
+    assert (
+        "--installer-lock tools/firmware/installer/requirements-installer.lock"
+        in body
+    )
+    # the two dead inline checks must not come back: the version-range grep
+    # (rejected the valid committed component lock) and the inline
+    # requirements-installer regex heredoc.
+    assert "grep -nE" not in body
+    assert "re.fullmatch" not in body
+    # uv still verifies the pinned hashes on the interpreter itself.
     assert "requirements-installer.lock" in body
     assert "--require-hashes" in body
 
