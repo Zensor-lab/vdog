@@ -1,0 +1,11 @@
+# Input for tools/firmware/installer/requirements-installer.lock — regenerate with:
+#   uv pip compile --generate-hashes --python-version 3.12 \
+#     --python $(uv python find 3.12) tools/firmware/installer/requirements-installer.in \
+#     -o tools/firmware/installer/requirements-installer.lock
+# Purpose: the end-user installer environment created by the (round-2)
+# install.sh/install.ps1 wrappers. Pinned to the qualified esptool line from
+# docs/toolchain.md (tool-esptool@2.50400.0 == esptool 5.4.0). install.py
+# itself is stdlib-only; pyserial provides port enumeration and esptool the
+# serial protocol. First setup needs network access (documented prerequisite).
+esptool==5.4.0
+pyserial

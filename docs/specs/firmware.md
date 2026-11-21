@@ -1,18 +1,21 @@
 # Firmware specification
 
-Status: Seeed Studio XIAO ESP32S3 Sense / 32GB-first, revised 2026-11-16.
+Status: Seeed Studio XIAO ESP32S3 Sense / 32GB-first, updated 2026-11-20.
 Nominal 3.7V 1000mAh and about 1–2h per charge, external pack charging and
 on-demand Wi-Fi remain. See [hardware review](../hardware-decision-review.md),
 [PlatformIO support](../platformio-support.md) and [hardware](hardware.md).
-No firmware project, cross-build, upload or device operation was performed here.
+Package 0.2 supplies a minimal firmware cross-build and portable host tests;
+see [toolchain evidence](../toolchain.md). Recording/peripheral behavior, upload
+and device operation remain unverified.
 
 ## 1. Platform and module boundaries
 
 Use ESP-IDF C++ through a qualified pinned PlatformIO environment, with board
-`seeed_xiao_esp32s3` and proposed environment `vdog_xiao_sense_proto`. Official
-board support is source-verified; candidate official platform 8.0.0 still needs
-project build qualification. Preserve small ESP-IDF C adapters and portable host
-logic. No silent Arduino/fork switch. Framework/compiler/camera/board versions,
+`seeed_xiao_esp32s3` and environment `vdog_xiao_sense_proto`. Official platform
+8.0.0 and the exact ESP-IDF/compiler/camera set have package 0.2 BUILD/HOST
+qualification; acquired-board behavior still requires device checks. Preserve
+small ESP-IDF C adapters and portable host logic. No silent Arduino/fork switch.
+Framework/compiler/camera/board versions,
 `sdkconfig`, actual 8MB flash/8MB octal PSRAM settings and partitions are release
 inputs; Arduino `qio_opi` flags do not configure ESP-IDF.
 
@@ -263,3 +266,17 @@ tests; it is not part of media v1 or a required release deliverable.
 
 Host tests, cross-compilation and hardware verification are separate evidence.
 Only the last requires and can demonstrate actual peripheral behavior.
+
+## 10. Build and installation distribution
+
+Implementation of PR-20/PR-21 is specified by the
+[Stage 0.9 CI/release plan](../plans/0.9-firmware-ci-release.md). Every PR builds
+its exact head SHA with a hash-bearing build/artifact name. Successful main
+builds create immutable `firmware-main-<sha12>` tags and complete installation
+Releases with generated flash layouts, supporting images, manifests/checksums,
+instructions and cross-platform installer scripts. The pipeline remains planned.
+
+Keep semantic firmware version separate from source/build identity. Initial
+bootstrap Releases are prototype pre-releases and do not implement recording
+or signed device OTA. USB factory/recovery installation is separate from the
+Stage 2 OTA contract; neither tag creation nor checksums replace signatures.

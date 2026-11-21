@@ -4,9 +4,10 @@ This baseline was prepared on 2026-11-07 and revised on 2026-11-16 for Seeed
 Studio XIAO ESP32S3 Sense and 32GB-first FAT32 storage. Read the
 [hardware review](hardware-decision-review.md) and
 [PlatformIO support check](platformio-support.md) for source evidence and gates.
-The repository is
-currently a documentation and agent-configuration starter: no camera firmware,
-mobile application, backend, PCB, or application checks have been implemented.
+The repository includes a minimal firmware build and portable host tests.
+Camera recording, the mobile application, backend and PCB remain planned;
+device operation remains unverified here. For setup and USB flashing, follow the
+[prototype installation guide](installation.md).
 
 ## Reading order
 
@@ -20,7 +21,9 @@ mobile application, backend, PCB, or application checks have been implemented.
 5. [Flutter frontend](specs/frontend.md) and [Rust backend](specs/backend.md).
 6. [Implementation plan](plans/implementation-plan.md): ordered stages and
    numbered work packages, including inputs, outputs, tests, and handoffs.
-7. [Validation](validation.md), [security](security.md), and
+7. [Stage 0.9 CI and release plan](plans/0.9-firmware-ci-release.md): PR head-hash
+   builds, main tags/releases and complete installation bundles; implementation pending.
+8. [Validation](validation.md), [security](security.md), and
    [references](references.md).
 
 ## How to use the baseline

@@ -12,14 +12,15 @@ that harm will be detected or prevented.
 
 ## Project status
 
-**Planning and specifications only.** Firmware, the mobile app, backend, PCB and
-enclosure have not been built or tested. Cost, 72-hour retention, image quality,
+**Early prototype.** A minimal firmware build and portable host tests are
+available; camera recording, the mobile app, backend, PCB and enclosure remain
+planned. Device operation, cost, 72-hour retention, image quality,
 battery runtime and wearable suitability remain engineering gates.
 
 The current prototype uses **Seeed Studio XIAO ESP32S3 Sense** and starts with
 **32GB FAT32 microSD**. PlatformIO officially supports the XIAO base-board target
-with ESP-IDF and Arduino; the Sense peripherals still need a qualified build
-and hardware tests. See [PlatformIO support](docs/platformio-support.md).
+with ESP-IDF and Arduino; the minimal ESP-IDF build is qualified, while the
+Sense peripherals still need hardware tests. See [PlatformIO support](docs/platformio-support.md).
 
 Use the camera shipped with the acquired Sense revision after identification:
 current Seeed documentation describes fixed-focus OV5640/OV3660 shipments;
@@ -64,8 +65,21 @@ user priorities versus engineering proposals.
 
 ## Getting started
 
-There is no application to install, flash or run yet. Start with the
-[documentation guide](docs/README.md), then execute
+Two ways to put firmware on a supported board:
+
+- **Prebuilt release bundle** (no PlatformIO, no source clone): download
+  `vdog-xiao-sense-main-<sha12>.zip` from [Releases](https://github.com/Zensor-lab/vdog/releases),
+  verify its `.sha256`, then follow the
+  [prebuilt installation guide](docs/release-installation.md). You need Python
+  3.12 and [`uv`](https://docs.astral.sh/uv/); the bundled `install.sh` /
+  `install.ps1` builds its own isolated environment.
+- **Source build** (development): follow the
+  [prototype installation guide](docs/installation.md) for tool setup, build,
+  USB upload, port selection and BOOT/RESET recovery.
+
+Both routes install the same four validated flash segments and neither provides
+device OTA or a recording feature. For development, start with the
+[documentation guide](docs/README.md), then
 [Stage 0 of the implementation plan](docs/plans/implementation-plan.md). It
 qualifies the board/toolchain, wiring, card format and recording quality before
 a custom PCB or full app/backend build.
@@ -76,10 +90,56 @@ storage baseline is a genuine 32GB FAT32 card on the Sense SPI socket; larger
 cards need a separate qualification. Prototype animal use waits
 for electrical, thermal and mounting acceptance.
 
+### Firmware build
+
+Package 0.2 qualified a pinned minimal ESP-IDF proto build for the XIAO
+ESP32S3 target (qualifier: see [toolchain matrix](docs/toolchain.md)). From
+the repository root with PlatformIO Core 6.2:
+
+```sh
+pio run -d firmware -e vdog_xiao_sense_proto   # cross-build (BUILD evidence)
+pio run -d firmware -e vdog_xiao_sense_proto -t size
+pio test -d firmware -e native                 # host tests (HOST evidence)
+```
+
+These commands compile and host-test only. This proto has no camera, SD,
+network or radio runtime. USB upload instructions are in the
+[installation guide](docs/installation.md); upload and device operation remain
+unverified here.
+
+### Firmware CI and prebuilt releases
+
+[Stage 0.9](docs/plans/0.9-firmware-ci-release.md) is implemented in
+`.github/workflows/` on this branch and takes effect for PRs opened from it:
+
+- every PR runs the stable checks `firmware-build`, `firmware-host-tests` and
+  `firmware-package-tests` against the immutable PR head SHA and uploads
+  `vdog-xiao-sense-pr-<number>-<sha12>-run<id>-a<attempt>` (14-day retention);
+- every push to `main` rebuilds that exact SHA from source and, once all three
+  checks pass, a separate `publish` job creates the immutable
+  `firmware-main-<sha12>` tag and a **pre-release** with the validated ZIP, its
+  `.sha256`, `INSTALL.md`, `RELEASE_NOTES.md`, `THIRD_PARTY_NOTICES.md` and
+  `manifest.json`. Prototype releases are never flagged as the repository's
+  "latest" release, and tags are never moved, forced or deleted;
+- only that one job holds `contents: write`; every action is pinned to a full
+  commit SHA and no checkout persists credentials.
+
+Releases remain **prototype/pre-release** evidence: BUILD/HOST only,
+`hardware_verified=false`, no recording and no device OTA. Installing on real
+hardware is still a separate, deferred gate (CI-T15). Branch protection on
+`main` remains an OWNER decision. The first hosted run of these workflows is
+still pending, so no hosted result is claimed; see
+[validation](docs/validation.md) section 5 for the per-check status.
+
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
+| [CI and installation release plan](docs/plans/0.9-firmware-ci-release.md) | Detailed Stage 0.9 tasks for PR builds, automatic main tags/releases and install assets |
+| [Prebuilt release installation](docs/release-installation.md) | Download, verify and install a CI-built bundle with the isolated installer (no PlatformIO) |
+| [Release notes template](docs/release-notes-template.md) | What every bundle's `RELEASE_NOTES.md` says, including the prototype-status table |
+| [Prototype installation](docs/installation.md) | Build, USB upload, port selection, BOOT/RESET recovery and Python troubleshooting |
+| [Release tooling](tools/README.md) | Package/validate/publish modules, installer wrappers and the documented test command |
 | [Hardware decision review](docs/hardware-decision-review.md) | XIAO Sense/32GB tradeoffs, retention/runtime calculations and decisions |
 | [PlatformIO support](docs/platformio-support.md) | Verified upstream board support and the remaining build/peripheral gates |
 | [Detailed implementation plan](docs/plans/implementation-plan.md) | Numbered work packages, dependencies, outputs, tests and agent handoffs |

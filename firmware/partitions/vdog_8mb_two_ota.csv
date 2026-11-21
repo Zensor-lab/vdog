@@ -1,0 +1,24 @@
+# vdog 8MB two-slot OTA partition table — package 0.2 (see docs/toolchain.md
+# for the full budget arithmetic; measured minimal image from BUILD evidence).
+#
+# Total flash budget: 8MB = 0x800000 bytes (Seeed XIAO ESP32S3 Sense).
+#   0x000000 - 0x008000  bootloader (32KB room; ESP32-S3 boots from 0x0)
+#   0x008000 - 0x008C00  partition table (~3KB, fixed at 0x8000)
+#   0x009000 - 0x00F000  nvs       0x6000  (24KB: settings + identity/config)
+#   0x00F000 - 0x011000  otadata   0x2000  (2x4KB seq sectors, fixed layout)
+#   0x011000 - 0x012000  phy_init  0x1000  (4KB RF calibration data)
+#   0x012000 - 0x020000  (gap: first app slot must be 0x10000-aligned)
+#   0x020000 - 0x320000  app0      0x300000 (3MB OTA slot A)
+#   0x320000 - 0x620000  app1      0x300000 (3MB OTA slot B, equal size)
+#   0x620000 - 0x800000  storage   0x1E0000 (1984KB reserved headroom/fat
+#                                            data partition for future use)
+# Arithmetic: 0x620000 + 0x1E0000 = 0x800000 (exactly 8MB, no overflow).
+# Slot margin vs measured minimal app (docs/toolchain.md): slot / image >= 4x.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+otadata,    data, ota,      0xf000,   0x2000,
+phy_init,   data, phy,      0x11000,  0x1000,
+app0,       app,  ota_0,    0x20000,  0x300000,
+app1,       app,  ota_1,    0x320000, 0x300000,
+storage,    data, spiffs,   0x620000, 0x1E0000,

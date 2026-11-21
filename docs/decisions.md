@@ -1,6 +1,6 @@
 # Decision and open-question register
 
-Status as of 2026-11-16. **Confirmed** means visible user direction; **baseline**
+Status as of 2026-11-20. **Confirmed** means visible user direction; **baseline**
 means a proposed engineering choice; **gated** requires evidence before dependent
 implementation. Record new evidence and rationale here without copying chat logs.
 
@@ -12,7 +12,7 @@ implementation. Record new evidence and rationale here without copying chat logs
 | D-04 | Gated | XIAO Sense revision, shipped sensor/lens and 8MB flash/8MB octal PSRAM | Identify OV5640/OV3660 transition or qualified legacy sensor; review SPI/CS/LED/control pins, not classic wiring |
 | D-05 | Gated | 72h useful retained footage remains a goal, unverified on 32GB | 27.2GB nominal pool allows ~0.84Mbit/s before pins/headroom; quality and real retention evidence required |
 | D-06 | Baseline | Flutter app, Rust backend | Freeze toolchain/dependencies at 0.2; no React app substituted |
-| D-07 | Upstream support verified; project unqualified | PlatformIO board seeed_xiao_esp32s3 lists ESP-IDF and Arduino | Candidate official platform 8.0.0; freeze SDK/compiler/camera/config and prove build; finding a board entry does not close 0.2 |
+| D-07 | BUILD/HOST qualified; DEVICE unverified | PlatformIO board seeed_xiao_esp32s3 using pinned ESP-IDF | Package 0.2 qualifies official platform 8.0.0 and exact SDK/compiler/camera/config; see [toolchain](toolchain.md); board/peripheral behavior still needs DEVICE evidence |
 | D-08 | Baseline revised | Genuine 32GB SDHC FAT32 on Sense SPI socket; no autoformat | Actual card/model/allocation/rollover; larger/exFAT cards separately qualified |
 | D-09 | Baseline | Concatenated JPEG + indexed timestamps + immutable manifest | Versioned media v1 contract and golden fixtures before recorder/player |
 | D-10 | Baseline | Device HTTPS with QR-pinned unique certificate and physical pairing window | Provisioning usability/security spike before app implementation |
@@ -29,6 +29,8 @@ implementation. Record new evidence and rationale here without copying chat logs
 | D-21 | Confirmed target, gated fit | Owner's dog below 8kg, chest harness mount | Exact weight/chest/harness measurements before fit signoff; larger dogs require separate geometry/angle checks |
 | D-22 | Confirmed scope | Dry-weather prototype; weather protection later | Basic electronics/pack protective housing still required before wear; no waterproof/IP claim |
 | D-23 | Proposed engineering budget | Scale local protected clips to ≤2,000,000,000 bytes for 32GB | Inside 85% pool, never additional free storage; smaller safe limit allowed and reported; backend quota independent |
+| D-24 | Confirmed delivery requirement; implementation pending | Every PR builds firmware with its latest head hash in the name; successful main builds create a Git tag and complete installation Release | Owner direction 2026-11-20; [Stage 0.9](plans/0.9-firmware-ci-release.md), PR-20/PR-21 |
+| D-25 | Baseline naming convention | PR build ID `pr-<number>-<sha12>`; immutable main tag `firmware-main-<sha12>` | Full source SHA retained in manifest; current bootstrap Releases are prototype/pre-release; no automatic SemVer bump or tag rewrite |
 
 The [current hardware review](hardware-decision-review.md) and
 [PlatformIO check](platformio-support.md) record the 2026-11-16 update. Earlier

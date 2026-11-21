@@ -1,0 +1,42 @@
+# vdog sdkconfig.defaults — package 0.2 explicit ESP-IDF configuration.
+#
+# The XIAO ESP32S3 Sense carries 8MB quad-SPI NOR flash and 8MB OCTAL (OPI)
+# PSRAM. The PlatformIO board manifest's Arduino `qio_opi` / `default_8MB.csv`
+# entries do NOT configure an ESP-IDF build, so everything below is set
+# explicitly against the pinned framework (platformio/espressif32@8.0.0).
+# Resolved values were verified in the generated build config
+# (.pio/build/vdog_xiao_sense_proto/config/sdkconfig.json) — see
+# docs/toolchain.md for the verification table.
+#
+# Physical flash/PSRAM detection on the acquired unit is DEVICE evidence and
+# is deferred to packages 1.2-1.4; this file only pins build configuration.
+
+# ---- Target ----
+CONFIG_IDF_TARGET="esp32s3"
+
+# ---- Flash: 8MB, QIO 80MHz (quad-SPI NOR on XIAO ESP32S3) ----
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# ---- PSRAM: 8MB in OCTAL (OPI) mode ----
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ---- Console on the native USB port (XIAO USB-C) ----
+# In ESP-IDF v6.1 CONFIG_ESP_CONSOLE_USB_CDC selects the ROM CDC driver on
+# the USB-OTG port (the XIAO's USB-C; incompatible with TinyUSB, which vdog
+# does not use). Secondary output disabled to keep a single console channel.
+CONFIG_ESP_CONSOLE_USB_CDC=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# ---- Custom partition table (must match board_build.partitions) ----
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions/vdog_8mb_two_ota.csv"
+
+# ---- OTA: keep SDK app-rollback support compiled in ----
+# Real signature verification needs Secure Boot v2 provisioning, which is an
+# identified-device operation (deferred, plan §Non-goals). We only qualify
+# that the rollback/OTA APIs build and link at package 0.2.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

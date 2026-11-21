@@ -72,3 +72,12 @@ license scope before publishing PCB/CAD artifacts. No license text changes here.
 Production flash encryption, secure boot and eFuse settings need a reviewed
 manufacturing/recovery procedure, identified devices, key custody and explicit
 authorization. Do not perform irreversible provisioning as a test shortcut.
+
+The [Stage 0.9 CI/release plan](plans/0.9-firmware-ci-release.md) specifies
+read-only PR/build jobs and a separate trusted main publish job with minimum
+tag/release permissions. PR code receives no release credentials; main Releases
+are rebuilt from the exact main SHA. Immutable tags, validated installation
+manifests and checksums establish source identity and corruption checks, not
+firmware signatures. The prototype USB installer must reject incompatible
+security states and cannot erase the whole chip, program eFuses or bypass
+secure boot/flash encryption. These are planned controls, not an audit pass.

@@ -1,0 +1,394 @@
+# vdog firmware main build + isolated publish (master plan 0.9.10-0.9.14)
+#
+# Stable required-check names: firmware-build, firmware-host-tests and
+# firmware-package-tests (the publish job is deliberately NOT a required check:
+# it is the consequence of those three passing, on canonical main only).
+#
+# Security posture (0.9.14):
+#   * top level permissions are `contents: read`; ONLY the publish job gets
+#     `contents: write` (plus `actions: read` to fetch this run's own artifact);
+#   * every third-party action is pinned to a full commit SHA with the resolved
+#     commit recorded in the comment;
+#   * checkouts never persist credentials;
+#   * no `pull_request_target`, no privileged `workflow_run`, and no path by
+#     which a PR artifact or a workflow_dispatch input can be published: this
+#     workflow is `push`-only and always builds `github.sha`;
+#   * PlatformIO package caches are enabled on trusted main only.
+#
+# Concurrency groups per event SHA with cancel-in-progress: false, so two rapid
+# merges each keep an independent chance to tag and publish (0.9.13).
+#
+# Branch protection/merge policy remains an OWNER decision: `main` is currently
+# unprotected and this file changes nothing there.
+
+name: firmware-main
+
+# Full event SHA in the run name (evaluated before jobs run).
+run-name: "Firmware main @ ${{ github.sha }}"
+
+on:
+  push:
+    branches: [main]
+    # Deliberately NO `paths:` filter (CI-01/CI-03): every main update, docs-only
+    # included, rebuilds and can publish its own tag/release.
+
+permissions:
+  contents: read
+
+concurrency:
+  # Per event SHA, never cancelled: an arriving merge must not discard an
+  # accepted earlier push's publish chance.
+  group: firmware-main-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  VDOG_PYTHON: "3.12"
+  VDOG_PLATFORMIO_CORE: "6.2.0"
+  UV_PYTHON: "3.12"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # firmware-build: rebuild the exact triggering SHA from source. PR artifacts
+  # are never downloaded or promoted (0.9.10).
+  # ---------------------------------------------------------------------------
+  firmware-build:
+    name: firmware-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      artifact-name: ${{ steps.identity.outputs.artifact_name }}
+      package-zip: ${{ steps.identity.outputs.package_zip }}
+      build-id: ${{ steps.identity.outputs.build_id }}
+    steps:
+      - name: Checkout the exact triggering main SHA
+        # actions/checkout v5.0.0
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate and record main source identity
+        id: identity
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          printf 'Event SHA      : %s\n' "$EVENT_SHA"
+          printf 'Ref            : %s\n' "${GITHUB_REF}"
+          printf 'PR number (if any): %s\n' "${PR_NUMBER:-}"
+          case "$EVENT_SHA" in
+            *[!0-9a-f]*) echo "::error::event SHA is not lowercase hex" >&2; exit 1 ;;
+          esac
+          if [ "${#EVENT_SHA}" -ne 40 ]; then
+            echo "::error::event SHA must be a full 40-hex object ID" >&2
+            exit 1
+          fi
+          checked_out="$(git rev-parse HEAD)"
+          if [ "$checked_out" != "$EVENT_SHA" ]; then
+            echo "::error::checkout HEAD $checked_out != triggering SHA $EVENT_SHA" >&2
+            exit 1
+          fi
+          sha12="${EVENT_SHA:0:12}"
+          build_id="main-${sha12}"
+          zip_name="vdog-xiao-sense-${build_id}.zip"
+          artifact_name="vdog-xiao-sense-main-${sha12}-run${RUN_ID}-a${ATTEMPT}"
+          {
+            echo "sha12=${sha12}"
+            echo "build_id=${build_id}"
+            echo "package_zip=${zip_name}"
+            echo "artifact_name=${artifact_name}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Main firmware build identity"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Built SHA (triggering) | \`$EVENT_SHA\` |"
+            echo "| Build ID | \`$build_id\` |"
+            echo "| Tag (created only by the publish job) | \`firmware-main-${sha12}\` |"
+            echo "| Artifact | \`$artifact_name\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install uv and the qualified CPython 3.12
+        # astral-sh/setup-uv v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+          python-version: ${{ env.VDOG_PYTHON }}
+
+      - name: Restore the PlatformIO package cache (trusted main only)
+        # actions/cache v4.3.0. Exact key only - no restore-keys, so a
+        # different lockfile set can never restore a stale toolchain.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.platformio
+          key: platformio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini', 'firmware/dependencies.lock', 'firmware/sdkconfig.defaults', 'tools/firmware/requirements-dev.lock') }}
+
+      - name: Install pinned PlatformIO Core 6.2.0
+        run: |
+          set -euo pipefail
+          uv tool install --python "$VDOG_PYTHON" "platformio==${VDOG_PLATFORMIO_CORE}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/pio" --version
+          "$HOME/.local/bin/pio" --version | grep -F "$VDOG_PLATFORMIO_CORE"
+
+      - name: Build the prototype environment
+        env:
+          VDOG_SOURCE_SHA: ${{ github.sha }}
+          VDOG_BUILD_ID: ${{ steps.identity.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          pio run -d firmware -e vdog_xiao_sense_proto
+          pio run -d firmware -e vdog_xiao_sense_proto -t size
+
+      - name: Export, package and validate the installation ZIP
+        env:
+          PACKAGE_ZIP: ${{ steps.identity.outputs.package_zip }}
+        run: |
+          set -euo pipefail
+          uv run --python "$VDOG_PYTHON" \
+            --with-requirements tools/firmware/requirements-dev.lock \
+            python -m tools.firmware.package \
+              --install-md docs/release-installation.md \
+              --release-notes-md docs/release-notes-template.md \
+              --metadata firmware/.vdog-build-metadata.json \
+              --release-kind main \
+              --run-id "$GITHUB_RUN_ID" \
+              --attempt "$GITHUB_RUN_ATTEMPT" \
+              --zip-name "$PACKAGE_ZIP"
+          test -f "tools/firmware/dist/$PACKAGE_ZIP"
+          test -f "tools/firmware/dist/$PACKAGE_ZIP.sha256"
+
+      - name: Run the packaged installer's offline check (never opens a port)
+        env:
+          PACKAGE_ZIP: ${{ steps.identity.outputs.package_zip }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          unzip -q "tools/firmware/dist/$PACKAGE_ZIP" -d "$work"
+          root="$(find "$work" -mindepth 1 -maxdepth 1 -type d)"
+          uv run --python "$VDOG_PYTHON" python "$root/install.py" check
+          uv run --python "$VDOG_PYTHON" python "$root/install.py" plan \
+            --board seeed-xiao-esp32s3-sense
+
+      - name: Upload the complete hash-named bundle
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.identity.outputs.artifact_name }}
+          path: |
+            tools/firmware/dist/${{ steps.identity.outputs.package_zip }}
+            tools/firmware/dist/${{ steps.identity.outputs.package_zip }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # firmware-host-tests: portable native firmware tests for the same SHA.
+  # ---------------------------------------------------------------------------
+  firmware-host-tests:
+    name: firmware-host-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout the exact triggering main SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install uv and the qualified CPython 3.12
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+          python-version: ${{ env.VDOG_PYTHON }}
+
+      - name: Restore the PlatformIO package cache (trusted main only)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.platformio
+          key: platformio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini', 'firmware/dependencies.lock', 'firmware/sdkconfig.defaults', 'tools/firmware/requirements-dev.lock') }}
+
+      - name: Install pinned PlatformIO Core 6.2.0
+        run: |
+          set -euo pipefail
+          uv tool install --python "$VDOG_PYTHON" "platformio==${VDOG_PLATFORMIO_CORE}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/pio" --version
+
+      - name: Native firmware tests
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          pio test -d firmware -e native | tee "$RUNNER_TEMP/native-tests.log"
+          grep -E "[0-9]+ test cases: [0-9]+ succeeded" \
+            "$RUNNER_TEMP/native-tests.log"
+          if grep -E "\[(FAILED|Errored)\]|Status +FAILED" "$RUNNER_TEMP/native-tests.log"; then
+            echo "::error::native firmware tests did not all pass" >&2
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # firmware-package-tests: release tooling suite plus the trusted-main
+  # lockfile-drift check (component lock + installer lock hashes).
+  # ---------------------------------------------------------------------------
+  firmware-package-tests:
+    name: firmware-package-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout the exact triggering main SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install uv and the qualified CPython 3.12
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+          python-version: ${{ env.VDOG_PYTHON }}
+
+      - name: Release tooling tests (pinned CPython 3.12 environment)
+        env:
+          VDOG_SKIP_REAL_BUILD: "1"
+        run: |
+          set -euo pipefail
+          uv run --python "$VDOG_PYTHON" \
+            --with-requirements tools/firmware/requirements-dev.lock \
+            pytest tools/firmware/tests
+
+      - name: Check lockfile drift (component lock + installer lock hashes)
+        run: |
+          set -euo pipefail
+          # 1. The tracked IDF component lock must be the committed one and
+          #    carry a resolved hash/version for every managed component.
+          #    Structural validation lives in tools/firmware/check_lockfiles
+          #    so PR-runnable pytest cases exercise the exact same code
+          #    (tests/test_check_lockfiles.py) — a grep cannot tell resolved
+          #    versions from dependency constraints and rejected the valid
+          #    committed lock (round-2 finding F1).
+          test -s firmware/dependencies.lock
+          git diff --exit-code -- firmware/dependencies.lock
+          if ! grep -q "espressif/esp32-camera:" firmware/dependencies.lock; then
+            echo "::error::component lock lost the camera component" >&2
+            exit 1
+          fi
+          uv run --python "$VDOG_PYTHON" \
+            --with-requirements tools/firmware/requirements-dev.lock \
+            python -m tools.firmware.check_lockfiles \
+              --component-lock firmware/dependencies.lock
+          # 2. The installer lock must be fully pinned and fully hashed, and
+          #    uv must accept those hashes on this interpreter. Parsing lives
+          #    in the same module: uv emits `name==version \` continuation
+          #    lines the old inline regex could not handle (round-2 F2).
+          uv run --python "$VDOG_PYTHON" \
+            --with-requirements tools/firmware/requirements-dev.lock \
+            python -m tools.firmware.check_lockfiles \
+              --installer-lock tools/firmware/installer/requirements-installer.lock
+          uv venv --python "$VDOG_PYTHON" "$RUNNER_TEMP/installer-env-check"
+          VIRTUAL_ENV="$RUNNER_TEMP/installer-env-check" uv pip install \
+            --require-hashes -r tools/firmware/installer/requirements-installer.lock
+          "$RUNNER_TEMP/installer-env-check/bin/python" -c \
+            "import esptool, serial; print('installer env OK:', esptool.__version__)"
+
+  # ---------------------------------------------------------------------------
+  # publish: the ONLY job with write rights, only after all three validation
+  # jobs pass, only for a push to canonical main (0.9.11-0.9.13).
+  # ---------------------------------------------------------------------------
+  publish:
+    name: publish
+    needs: [firmware-build, firmware-host-tests, firmware-package-tests]
+    if: >-
+      github.repository == 'Zensor-lab/vdog' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    env:
+      # Only this job receives a token, and only for the publish step below.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout the exact triggering main SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install uv and the qualified CPython 3.12
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+          python-version: ${{ env.VDOG_PYTHON }}
+
+      - name: Download this run's validated bundle
+        # actions/download-artifact v4.3.0. Pinned to this run and repository:
+        # no other run's artifact can be published, and no PR artifact exists
+        # in this workflow at all.
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.firmware-build.outputs.artifact-name }}
+          path: bundle
+          run-id: ${{ github.run_id }}
+          repository: ${{ github.repository }}
+
+      - name: Re-validate the downloaded bundle offline
+        # The bundle is located by name rather than by a hard-coded layout:
+        # actions/upload-artifact v4 roots multiple file inputs at their least
+        # common ancestor (tools/firmware/dist here), and depending on that
+        # detail would make the only publish path fail on a detail that is not
+        # part of the contract. Finding the file also turns a missing artifact
+        # into an unambiguous error instead of a confusing `test -f` failure.
+        id: locate
+        env:
+          PACKAGE_ZIP: ${{ needs.firmware-build.outputs.package-zip }}
+        run: |
+          set -euo pipefail
+          zip="$(find bundle -type f -name "$PACKAGE_ZIP" -print -quit)"
+          if [ -z "$zip" ]; then
+            echo "::error::this run's artifact does not contain $PACKAGE_ZIP" >&2
+            echo "downloaded files:" >&2
+            find bundle -type f | sed 's/^/  /' >&2 || true
+            exit 1
+          fi
+          dir="$(dirname "$zip")"
+          if [ ! -f "$dir/$PACKAGE_ZIP.sha256" ]; then
+            echo "::error::$PACKAGE_ZIP was uploaded without its external digest" >&2
+            exit 1
+          fi
+          (cd "$dir" && sha256sum -c "$PACKAGE_ZIP.sha256")
+          uv run --python "$VDOG_PYTHON" \
+            --with-requirements tools/firmware/requirements-dev.lock \
+            python -m tools.firmware.validate_package "$zip"
+          printf 'zip_path=%s\n' "$zip" >> "$GITHUB_OUTPUT"
+
+      - name: Create/verify the immutable tag and publish the Release
+        # State logic lives in tools/firmware/publish.py so it is unit-tested
+        # behind a fake adapter; this step only calls it. The tag is created at
+        # the full tested SHA, verified by peeling, reused only on an exact
+        # match and never moved, forced or deleted. Token-created tags do not
+        # start a second main workflow run.
+        run: |
+          set -euo pipefail
+          zip="${{ steps.locate.outputs.zip_path }}"
+          test -n "$zip"
+          test -f "$zip"
+          uv run --python "$VDOG_PYTHON" \
+            --with-requirements tools/firmware/requirements-dev.lock \
+            python -m tools.firmware.publish \
+              --zip "$zip" \
+              --expected-sha "$GITHUB_SHA" \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref "$GITHUB_REF" \
+              --event-name "$GITHUB_EVENT_NAME"
