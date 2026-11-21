@@ -1,0 +1,453 @@
+"""The contract documents themselves (decision 1, AC-07, AC-08).
+
+Two OpenAPI files and three JSON Schemas are the published contract. These tests
+prove the documents are structurally what the specs say, that the validator really
+notices when they weaken, and that the deferred OTA envelope stays deferred.
+"""
+
+from __future__ import annotations
+
+import ast
+import copy
+import pathlib
+import json
+import re
+import shutil
+from typing import Final
+from pathlib import Path
+
+import pytest
+
+from tools.contracts import bounds as bounds_module
+from tools.contracts import errors as E
+from tools.contracts.api_model import ALL_OPERATIONS
+from tools.contracts.openapi_check import (
+    check_headers_contract,
+    check_manifest_component,
+    check_openapi,
+    check_ota_deferral,
+    check_shared_error_envelope,
+    load_media_schemas,
+)
+from tools.contracts.schema_docs import load_json, load_yaml
+from tools.contracts.validate import validate_contracts
+
+from conftest import CORPUS_MUTATIONS, REPO_ROOT
+
+CONTRACTS = REPO_ROOT / "contracts"
+
+#: Device routes interfaces.md §2-§6 assigns.
+DEVICE_PATHS = (
+    "/pair",
+    "/tokens/revoke",
+    "/capabilities",
+    "/status",
+    "/settings",
+    "/time",
+    "/preview",
+    "/clips",
+    "/clips/{clip_id}/manifest",
+    "/clips/{clip_id}/leases",
+    "/leases/{lease_id}",
+    "/clips/{clip_id}/files/{name}",
+    "/ota",
+    "/events",
+    "/events/{event_id}",
+)
+
+#: Backend routes interfaces.md §7-§9 assigns.
+BACKEND_PATHS = (
+    "/tokens",
+    "/tokens/{id}",
+    "/devices",
+    "/clips",
+    "/clips/{clip_id}",
+    "/clips/{clip_id}/files/{name}",
+    "/uploads",
+    "/uploads/{id}",
+    "/uploads/{id}/files/{name}",
+    "/uploads/{id}/commit",
+    "/events",
+    "/events/{id}",
+    "/jobs",
+    "/jobs/{id}",
+    "/derivatives/{id}",
+    "/derivatives/{id}/file",
+    "/health/live",
+    "/health/ready",
+)
+
+
+@pytest.fixture(scope="module")
+def device() -> dict:
+    return load_yaml(CONTRACTS / "device-v1.yaml")
+
+
+@pytest.fixture(scope="module")
+def backend() -> dict:
+    return load_yaml(CONTRACTS / "backend-v1.yaml")
+
+
+@pytest.fixture
+def media_dir(tmp_path: Path) -> Path:
+    """A disposable copy of the contracts tree, for mutation experiments."""
+    target = tmp_path / "contracts"
+    shutil.copytree(CONTRACTS, target)
+    return target
+
+
+def test_media_schemas_load_and_pass_their_meta_schema() -> None:
+    schemas, violations = load_media_schemas(CONTRACTS / "media-v1")
+    assert not violations, [violation.render() for violation in violations]
+    assert set(schemas) == {"frame", "manifest", "active"}
+
+
+def test_a_broken_media_schema_is_reported(tmp_path: Path) -> None:
+    media_dir = tmp_path / "contracts" / "media-v1"
+    media_dir.mkdir(parents=True)
+    shutil.copy(CONTRACTS / "media-v1" / "manifest.schema.json", media_dir)
+    shutil.copy(CONTRACTS / "media-v1" / "active-record.schema.json", media_dir)
+    (media_dir / "frame-record.schema.json").write_text("{ not json", encoding="utf-8")
+
+    _schemas, violations = load_media_schemas(media_dir)
+    assert {violation.code for violation in violations} == {E.SCHEMA_DOCUMENT_INVALID}
+
+
+def test_device_document_declares_every_documented_route(device: dict) -> None:
+    assert device["openapi"] == "3.1.0"
+    assert device["servers"][0]["url"] == "https://vdog.local/api/v1"
+    for path in DEVICE_PATHS:
+        assert path in device["paths"], path
+    assert not check_openapi("device", device)
+    assert not check_headers_contract(device, "device")
+
+
+def test_backend_document_declares_every_documented_route(backend: dict) -> None:
+    assert backend["openapi"] == "3.1.0"
+    assert backend["servers"][0]["url"] == "https://backend.local/api/v1"
+    for path in BACKEND_PATHS:
+        assert path in backend["paths"], path
+    assert not check_openapi("backend", backend)
+    assert not check_headers_contract(backend, "backend")
+
+
+def test_every_operation_in_the_table_is_in_the_yaml(device: dict, backend: dict) -> None:
+    documents = {"device": device, "backend": backend}
+    for key, operation in ALL_OPERATIONS.items():
+        item = documents[operation.contract]["paths"][operation.path][operation.method.lower()]
+        assert item["operationId"] == operation.operation_id, key
+
+
+def test_dropping_a_documented_response_is_detected(device: dict) -> None:
+    weakened = copy.deepcopy(device)
+    del weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["416"]
+    codes = {violation.code for violation in check_openapi("device", weakened)}
+    assert E.SPEC_STATUS_MISSING in codes
+
+
+def test_adding_an_undocumented_response_is_detected(device: dict) -> None:
+    weakened = copy.deepcopy(device)
+    weakened["paths"]["/status"]["get"]["responses"]["418"] = {"description": "teapot"}
+    codes = {violation.code for violation in check_openapi("device", weakened)}
+    assert E.SPEC_STATUS_UNDOCUMENTED in codes
+
+
+def test_dropping_bearer_security_is_detected(device: dict) -> None:
+    weakened = copy.deepcopy(device)
+    weakened["paths"]["/status"]["get"]["security"] = []
+    codes = {violation.code for violation in check_openapi("device", weakened)}
+    assert E.SPEC_SECURITY_MISSING in codes
+
+
+def test_the_error_envelope_is_one_reusable_schema(device: dict, backend: dict) -> None:
+    assert not check_shared_error_envelope({"device": device, "backend": backend})
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["schemas"]["ErrorBody"]["required"] = ["code"]
+    codes = {
+        violation.code
+        for violation in check_shared_error_envelope({"device": device, "backend": weakened})
+    }
+    assert codes == {E.SPEC_COMPONENT_DRIFT}
+
+
+def test_the_manifest_component_mirrors_the_media_schema(device: dict, backend: dict) -> None:
+    manifest = load_json(CONTRACTS / "media-v1" / "manifest.schema.json")
+    assert not check_manifest_component({"device": device, "backend": backend}, manifest)
+
+    weakened = copy.deepcopy(device)
+    weakened["components"]["schemas"]["ManifestFile"]["properties"]["bytes"]["maximum"] = 1024
+    codes = {
+        violation.code
+        for violation in check_manifest_component({"device": weakened, "backend": backend}, manifest)
+    }
+    assert codes == {E.SPEC_COMPONENT_DRIFT}
+
+
+def test_request_objects_reject_unknown_fields_and_no_secret_appears(device: dict) -> None:
+    schemas = device["components"]["schemas"]
+    for name in ("PutSettingsRequest", "TimeRequest", "DeviceEventRequest", "VersionedRequest"):
+        assert schemas[name]["additionalProperties"] is False, name
+    read = schemas["NetworkSettingsRead"]
+    assert read["additionalProperties"] is False
+    # The description may mention a password; the schema must not carry one.
+    assert "password" not in read["properties"], "GET /settings must never expose a password"
+
+
+def test_response_objects_stay_permissive(device: dict) -> None:
+    """interfaces.md §1: readers tolerate unknown response fields."""
+    schemas = device["components"]["schemas"]
+    for name in ("StatusResponse", "CapabilitiesResponse", "ClipsPage"):
+        assert schemas[name].get("additionalProperties") is not False, name
+
+
+def test_token_and_secret_patterns_are_unpadded_base64url(device: dict, backend: dict) -> None:
+    pattern = "^[A-Za-z0-9_-]{43}$"
+    for document, name in (
+        (device, "SetupSecret"),
+        (device, "AccessToken"),
+        (backend, "TokenSecret"),
+    ):
+        assert document["components"]["schemas"][name]["pattern"] == pattern, name
+
+
+def test_manifest_base64url_is_base64url_and_validator_bounds_the_decode(backend: dict) -> None:
+    binding = backend["components"]["schemas"]["CreateUploadRequest"]["properties"]
+    assert binding["manifest_base64url"]["$ref"] == "#/components/schemas/ManifestBase64Url"
+    assert (
+        backend["components"]["schemas"]["ManifestBase64Url"]["pattern"] == "^[A-Za-z0-9_-]+$"
+    )
+
+
+def test_chunk_content_length_is_documented_as_one_to_one_mebibyte(backend: dict) -> None:
+    parameter = backend["components"]["parameters"]["ChunkContentLength"]
+    assert parameter["name"] == "Content-Length"
+    assert parameter["in"] == "header"
+    assert parameter["required"] is True
+    assert parameter["schema"]["minimum"] == 1
+    assert parameter["schema"]["maximum"] == 1_048_576
+
+
+# --- AC-07: the OTA envelope stays deferred ----------------------------------
+
+
+def test_no_ota_schema_ships() -> None:
+    assert not (CONTRACTS / "ota-v1.json").exists()
+
+
+def test_ota_operation_carries_the_deferral(device: dict) -> None:
+    assert not check_ota_deferral(device, CONTRACTS)
+
+
+def test_a_guessed_ota_schema_is_refused(device: dict, media_dir: Path) -> None:
+    (media_dir / "ota-v1.json").write_text(
+        json.dumps({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}),
+        encoding="utf-8",
+    )
+    codes = {violation.code for violation in check_ota_deferral(device, media_dir)}
+    assert codes == {E.OTA_SCHEMA_PRESENT}
+
+
+def test_removing_the_deferral_note_is_refused(device: dict, media_dir: Path) -> None:
+    weakened = copy.deepcopy(device)
+    del weakened["paths"]["/ota"]["post"]["x-deferred"]
+    codes = {violation.code for violation in check_ota_deferral(weakened, media_dir)}
+    assert E.OTA_DEFERRAL_MISSING in codes
+
+
+def test_a_schema_on_the_deferred_body_is_refused(device: dict, media_dir: Path) -> None:
+    weakened = copy.deepcopy(device)
+    weakened["paths"]["/ota"]["post"]["requestBody"]["content"]["application/octet-stream"][
+        "schema"
+    ] = {"$ref": "#/components/schemas/OtaEnvelope"}
+    codes = {violation.code for violation in check_ota_deferral(weakened, media_dir)}
+    assert E.OTA_DEFERRAL_MISSING in codes
+
+
+# --- Whole-repo contract checks (AC-08) --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "index,code",
+    [(i, code) for i, (group, code, _mutate) in enumerate(CORPUS_MUTATIONS) if group == "documents"],
+    ids=[code for group, code, _mutate in CORPUS_MUTATIONS if group == "documents"],
+)
+def test_a_broken_document_is_named(index: int, code: str, mutation_codes) -> None:
+    """A contract document that stopped being parseable or lost its envelope is a finding."""
+    assert code in mutation_codes[f"{index}:{code}"], sorted(mutation_codes[f"{index}:{code}"])
+
+
+def test_a_tree_level_scenario_code_is_never_routine(clean_codes) -> None:
+    """Attribution for a document scenario is the whole tree, so it needs a guard.
+
+    A vector scenario must name its code on the damaged vector. A document scenario
+    damages the tree as a whole, so its evidence is only sound while the code it claims
+    is one the committed tree never emits — which is exactly what this pins.
+    """
+    tree_level = [code for group, code, _mutate in CORPUS_MUTATIONS if group == "documents"]
+    tree_level.append("SPEC_STATUS_NOT_ALLOWED")
+    routine = [code for code in tree_level if code in clean_codes]
+    assert not routine, sorted(routine)
+
+
+def test_a_status_outside_the_documented_set_is_refused(mutation_codes) -> None:
+    """Decision 7: the documented status set is a ceiling, not a suggestion.
+
+    The scenario puts 418 in *both* the operation table and the YAML, so the two
+    notations agree with each other and only the ceiling can catch it.
+    """
+    codes = mutation_codes[f"{len(CORPUS_MUTATIONS)}:SPEC_STATUS_NOT_ALLOWED"]
+    assert E.SPEC_STATUS_NOT_ALLOWED in codes, sorted(codes)
+
+
+def test_the_documents_and_the_bound_table_agree(device: dict, backend: dict) -> None:
+    """bounds.py is the single source of a limit; a YAML keyword may not drift from it.
+
+    The contract states these limits as schema keywords, and the validator enforces
+    the ones it can only reach by arithmetic. Both notations have to say the same
+    number, or a client coded against the document would be refused by the tooling.
+    """
+    from tools.contracts import bounds
+
+    device_parameters = device["components"]["parameters"]
+    backend_parameters = backend["components"]["parameters"]
+    device_schemas = device["components"]["schemas"]
+    backend_schemas = backend["components"]["schemas"]
+
+    checks: list[tuple[object, object, str]] = [
+        (device_parameters["Cursor"]["schema"]["maxLength"], bounds.MAX_CURSOR_CHARS, "device Cursor"),
+        (backend_parameters["Cursor"]["schema"]["maxLength"], bounds.MAX_CURSOR_CHARS, "backend Cursor"),
+        (device_parameters["LimitDevice"]["schema"]["maximum"], bounds.MAX_PAGE_LIMIT, "device page limit"),
+        (device_parameters["LimitDevice"]["schema"]["default"], bounds.DEVICE_PAGE_DEFAULT, "device page default"),
+        (backend_parameters["LimitBackend"]["schema"]["maximum"], bounds.MAX_PAGE_LIMIT, "backend page limit"),
+        (backend_parameters["LimitBackend"]["schema"]["default"], bounds.BACKEND_PAGE_DEFAULT, "backend page default"),
+        (
+            device_schemas["DeviceEventRequest"]["properties"]["clip_ids"]["minItems"],
+            bounds.MIN_EVENT_CLIPS,
+            "event clip floor",
+        ),
+        (
+            device_schemas["DeviceEventRequest"]["properties"]["clip_ids"]["maxItems"],
+            bounds.MAX_EVENT_CLIPS,
+            "event clip ceiling",
+        ),
+        (
+            device_schemas["DeviceEventRequest"]["properties"]["label"]["maxLength"],
+            bounds.MAX_EVENT_LABEL_CHARS,
+            "device event label",
+        ),
+        (
+            backend_schemas["BackendEventRequest"]["properties"]["label"]["maxLength"],
+            bounds.MAX_EVENT_LABEL_CHARS,
+            "backend event label",
+        ),
+        (
+            backend_parameters["ChunkContentLength"]["schema"]["minimum"],
+            bounds.MIN_CHUNK_BYTES,
+            "chunk floor",
+        ),
+        (
+            backend_parameters["ChunkContentLength"]["schema"]["maximum"],
+            bounds.MAX_CHUNK_BYTES,
+            "chunk ceiling",
+        ),
+        (
+            backend_schemas["UploadCreated"]["properties"]["expires_in_s"]["const"],
+            bounds.UPLOAD_EXPIRY_S,
+            "upload expiry",
+        ),
+    ]
+    for observed, expected, name in checks:
+        assert observed == expected, f"{name}: document says {observed!r}, bounds.py says {expected!r}"
+
+
+#: bounds.py names that describe the *fixture shapes* the generator draws rather than a
+#: rule the contract enforces, so only the generator side may read them. Listed by hand:
+#: a new `FIXTURE_*`-looking limit must be argued for here, not exempted by its name.
+GENERATOR_ONLY_BOUNDS: Final[frozenset[str]] = frozenset(
+    {
+        "FIXTURE_FRAME_WIDTH",
+        "FIXTURE_FRAME_HEIGHT",
+        "FIXTURE_JPEG_QUALITY",
+        "FIXTURE_NOMINAL_FPS",
+    }
+)
+
+
+def _loaded_names(path: pathlib.Path) -> set[str]:
+    """Every identifier a module *loads*, ignoring imports, strings and comments.
+
+    Text matching would credit a mention in a docstring or an unused import, so the
+    guard reads syntax: a bound counts as read only where the code actually uses it.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    loaded: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            # An import binds an ``alias``, never a ``Name``, so what is reached here is
+            # a real load site: the bound is used, not merely mentioned.
+            loaded.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            base = node
+            while isinstance(base, ast.Attribute):
+                base = base.value
+            if isinstance(base, ast.Name):
+                loaded.add(node.attr)
+    return loaded
+
+
+def test_no_bound_constant_is_left_unread() -> None:
+    """A limit in bounds.py that nothing reads is a limit nobody enforces.
+
+    Every constant type counts: a marker byte or a file name drifts just as quietly as
+    a maximum does, and an identifier in a comment is not an enforcement site.
+    """
+    package = pathlib.Path(bounds_module.__file__).parent
+    readers: set[str] = set()
+    for source in sorted(package.glob("*.py")):
+        if source.name != "bounds.py":
+            readers |= _loaded_names(source)
+    readers |= _loaded_names(pathlib.Path(__file__))
+    declared = {
+        name
+        for name in dir(bounds_module)
+        if name.isupper() and not name.startswith("_")
+    }
+    unenforced = sorted(declared - readers - GENERATOR_ONLY_BOUNDS)
+    assert not unenforced, unenforced
+
+
+def test_whole_corpus_has_no_contract_findings(report) -> None:
+    assert not report.contract_violations, [
+        violation.render() for violation in report.contract_violations
+    ]
+
+
+def test_a_negative_vector_that_passes_is_a_failure(tmp_path: Path) -> None:
+    """AC-10 of the plan: a detector that stopped detecting must fail the run."""
+    broken = tmp_path / "contracts"
+    shutil.copytree(CONTRACTS, broken)
+    index_path = broken / "fixtures" / "fixtures.json"
+    document = json.loads(index_path.read_bytes().decode("utf-8"))
+    for entry in document["fixtures"]:
+        if entry["id"] == "media/invalid/frame-crc-mismatch":
+            entry["expected_error_codes"] = [E.FRAME_SEQ_NOT_CONSECUTIVE]
+    index_path.write_bytes(json.dumps(document).encode("utf-8"))
+
+    report = validate_contracts(tmp_path)
+    result = next(item for item in report.results if item.id == "media/invalid/frame-crc-mismatch")
+    codes = {violation.code for violation in result.failures}
+    assert codes == {E.FIXTURE_MISSING_CODE, E.FIXTURE_UNEXPECTED_CODE}
+
+
+def test_a_valid_vector_that_fails_is_reported(tmp_path: Path) -> None:
+    broken = tmp_path / "contracts"
+    shutil.copytree(CONTRACTS, broken)
+    (broken / "fixtures" / "media" / "valid" / "baseline" / "frames.jsonl").write_bytes(
+        b'{"v":1,"seq":0,"offset":0,"size":1,"t_us":0,"crc32":"00000000"}\n'
+    )
+    report = validate_contracts(tmp_path)
+    result = next(item for item in report.results if item.id == "media/valid/baseline")
+    assert not result.passed
+    codes = {violation.code for violation in result.failures}
+    assert E.FRAME_CRC_MISMATCH in codes, sorted(codes)
+    assert E.FIXTURE_EXPECTED_PASS in codes, sorted(codes)
