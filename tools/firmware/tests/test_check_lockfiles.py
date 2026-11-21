@@ -96,7 +96,7 @@ def test_component_lock_rejects_resolved_version_replaced_by_range(
 
 @pytest.mark.parametrize(
     "bad_version",
-    [">=6.1", "~6.1.0", "6.*", "latest", "", None, 1.0],
+    [">=6.1", "~6.1.0", "6.*", "latest", "", None, True],
 )
 def test_component_lock_rejects_non_exact_resolved_versions(
     tmp_path: Path, bad_version: Any
@@ -105,6 +105,25 @@ def test_component_lock_rejects_non_exact_resolved_versions(
     data["dependencies"]["espressif/esp_jpeg"]["version"] = bad_version
     errors = check_lockfiles.check_component_lock(_write_component_lock(tmp_path, data))
     assert any("espressif/esp_jpeg" in e for e in errors)
+
+
+@pytest.mark.parametrize(
+    "exact_version",
+    [
+        "1.3.2",   # ordinary multi-dot str
+        6.1,       # unquoted single-dot loads as float in YAML 1.1
+        2,         # unquoted single-segment loads as int
+        1.0,
+    ],
+)
+def test_component_lock_accepts_exact_numeric_scalar_versions(
+    tmp_path: Path, exact_version: Any
+) -> None:
+    """LOW note: numeric YAML scalars are exact versions, not constraints."""
+    data = _component_lock_data()
+    data["dependencies"]["espressif/esp_jpeg"]["version"] = exact_version
+    errors = check_lockfiles.check_component_lock(_write_component_lock(tmp_path, data))
+    assert errors == [], (exact_version, errors)
 
 
 def test_component_lock_requires_component_hash(tmp_path: Path) -> None:

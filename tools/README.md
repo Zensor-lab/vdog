@@ -27,7 +27,7 @@ human-reviewable mirror (the test suite enforces they agree).
 | `installer/install.sh`, `installer/install.ps1` | Setup wrappers: create/reuse the isolated `.venv-installer/`, install the locked dependencies with `--require-hashes`, then exec `install.py` inside it (master plan 0.9.6) |
 | `installer/requirements-installer.{in,lock}` | Hashed end-user installer environment pins (`esptool==5.4.0`, pyserial) |
 | `templates/THIRD_PARTY_NOTICES.md` | Third-party notices source shipped as `THIRD_PARTY_NOTICES.md` |
-| `tests/` | pytest suite (418 tests), including the real-baseline build checks |
+| `tests/` | pytest suite (422 tests), including the real-baseline build checks |
 
 The release-notes source is `docs/release-notes-template.md` and the packaged
 `INSTALL.md` comes from `docs/release-installation.md`; the CI workflows pass

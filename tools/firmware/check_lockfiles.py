@@ -69,6 +69,23 @@ def _as_mapping(value: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _version_text(value: Any) -> str | None:
+    """Render a YAML scalar as the version token text, or None if not numeric.
+
+    Unquoted single-segment versions (``version: 6``, ``version: 6.1``) load
+    as ``int``/``float``; they are still operator-free exact versions, so
+    accept their plain textual rendering (booleans are excluded — YAML 1.1
+    coerces ``yes``/``no`` to ``bool``). Multi-dot versions load as ``str``.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
+    return None
+
+
 def check_component_lock(path: Path) -> list[str]:
     """Return drift errors for an IDF component lock (empty list = OK).
 
@@ -95,7 +112,8 @@ def check_component_lock(path: Path) -> list[str]:
             errors.append(f"component lock: {name}: entry is not a mapping")
             continue
         version = component.get("version")
-        if not isinstance(version, str) or not EXACT_VERSION_RE.match(version):
+        version_text = _version_text(version)
+        if version_text is None or not EXACT_VERSION_RE.match(version_text):
             errors.append(
                 f"component lock: {name}: resolved version must be exact, got {version!r}"
             )
