@@ -73,7 +73,7 @@ packages exist. Stage 0.9 round 2 adds the release-tooling commands (documented
 in [`tools/README.md`](../tools/README.md) and
 [validation](validation.md) section 4): the host suite
 `uv run --python 3.12 --with-requirements tools/firmware/requirements-dev.lock
-pytest tools/firmware/tests` (383 tests; qualified CPython 3.12.12 via `uv` —
+pytest tools/firmware/tests` (422 tests; qualified CPython 3.12.12 via `uv` —
 the host `python3` is 3.14 and is not qualified), the offline
 `python -m tools.firmware.validate_package <zip>` check, and
 `python -m tools.firmware.publish ... --dry-run`, which performs no network
