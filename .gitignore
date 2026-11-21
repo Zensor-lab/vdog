@@ -29,3 +29,4 @@ graphify-out/
 /.opencode
 opencode.jsonc
 /.agent
+/tmp
