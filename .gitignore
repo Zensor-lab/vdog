@@ -18,6 +18,12 @@ firmware/sdkconfig
 firmware/sdkconfig.*
 !firmware/sdkconfig.defaults
 
+# Stage 0.9 packet A: generated build identity (vdog-build-metadata-v1 JSON
+# and the sanitized build-ID header directory produced by
+# firmware/scripts/gen_build_meta.py). Never tracked.
+firmware/.vdog-build-metadata.json
+firmware/build_gen/
+
 # Local Graphify indexes, reports, caches and exports (all worktree subdirectories)
 graphify-out/
 /.opencode

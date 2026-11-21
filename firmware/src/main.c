@@ -21,6 +21,11 @@
 
 #include "vdog_core.h"
 
+/* Generated before compilation by firmware/scripts/gen_build_meta.py from
+ * validated VDOG_SOURCE_SHA/VDOG_BUILD_ID inputs (gitignored; on the
+ * environment CPPPATH and the IDF "main" component include path). */
+#include "vdog_build_id.h"
+
 static const char *TAG = "vdog";
 
 typedef esp_err_t (*vdog_camera_deinit_fn_t)(void);
@@ -36,6 +41,11 @@ void app_main(void)
     } else {
         ESP_LOGE(TAG, "version formatting failed");
     }
+
+    /* Stage 0.9 packet A: build identity alongside the version, so console
+     * evidence ties a booting image to its source SHA and CI build ID. */
+    ESP_LOGI(TAG, "build identity: build_id=%s source_sha=%s",
+             VDOG_BUILD_ID_STR, VDOG_SOURCE_SHA_SHORT);
 
     /* Compile/link proof only: never invoked at runtime in 0.2. */
     ESP_LOGI(TAG, "esp32-camera linked: %s",
