@@ -270,56 +270,29 @@ jobs:
           set -euo pipefail
           # 1. The tracked IDF component lock must be the committed one and
           #    carry a resolved hash/version for every managed component.
+          #    Structural validation lives in tools/firmware/check_lockfiles
+          #    so PR-runnable pytest cases exercise the exact same code
+          #    (tests/test_check_lockfiles.py) — a grep cannot tell resolved
+          #    versions from dependency constraints and rejected the valid
+          #    committed lock (round-2 finding F1).
           test -s firmware/dependencies.lock
           git diff --exit-code -- firmware/dependencies.lock
           if ! grep -q "espressif/esp32-camera:" firmware/dependencies.lock; then
             echo "::error::component lock lost the camera component" >&2
             exit 1
           fi
-          if grep -nE "^[[:space:]]*version: *(\\^|>=|~)" firmware/dependencies.lock; then
-            echo "::error::component lock carries an unresolved version range" >&2
-            exit 1
-          fi
+          uv run --python "$VDOG_PYTHON" \
+            --with-requirements tools/firmware/requirements-dev.lock \
+            python -m tools.firmware.check_lockfiles \
+              --component-lock firmware/dependencies.lock
           # 2. The installer lock must be fully pinned and fully hashed, and
-          #    uv must accept those hashes on this interpreter.
-          uv run --python "$VDOG_PYTHON" --with-requirements \
-            tools/firmware/requirements-dev.lock \
-            python - <<'PY'
-          import re
-          import sys
-          from pathlib import Path
-
-          text = Path("tools/firmware/installer/requirements-installer.lock").read_text()
-          requirements = []
-          current = None
-          for line in text.splitlines():
-              if line.startswith("#") or not line.strip():
-                  continue
-              if line.startswith("    --hash="):
-                  if current is None:
-                      sys.exit("installer lock: hash outside a requirement")
-                  current["hashes"].append(line.strip())
-                  continue
-              if line.startswith("    "):
-                  continue
-              if current is not None:
-                  requirements.append(current)
-              match = re.fullmatch(r"([A-Za-z0-9._-]+)==([^\s\\]+)", line.strip())
-              if not match:
-                  sys.exit(f"installer lock: unpinned requirement {line.strip()!r}")
-              current = {"name": match.group(1), "version": match.group(2), "hashes": []}
-          if current is not None:
-              requirements.append(current)
-          if not requirements:
-              sys.exit("installer lock: no requirements parsed")
-          missing = [r["name"] for r in requirements if not r["hashes"]]
-          if missing:
-              sys.exit(f"installer lock: requirements without sha256 hashes: {missing}")
-          pinned = {r["name"].lower(): r["version"] for r in requirements}
-          if pinned.get("esptool") != "5.4.0":
-              sys.exit(f"installer lock: esptool must be the qualified 5.4.0, got {pinned.get('esptool')!r}")
-          print(f"installer lock OK: {len(requirements)} hashed requirements")
-          PY
+          #    uv must accept those hashes on this interpreter. Parsing lives
+          #    in the same module: uv emits `name==version \` continuation
+          #    lines the old inline regex could not handle (round-2 F2).
+          uv run --python "$VDOG_PYTHON" \
+            --with-requirements tools/firmware/requirements-dev.lock \
+            python -m tools.firmware.check_lockfiles \
+              --installer-lock tools/firmware/installer/requirements-installer.lock
           uv venv --python "$VDOG_PYTHON" "$RUNNER_TEMP/installer-env-check"
           VIRTUAL_ENV="$RUNNER_TEMP/installer-env-check" uv pip install \
             --require-hashes -r tools/firmware/installer/requirements-installer.lock

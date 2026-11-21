@@ -16,6 +16,8 @@ Safety properties (CI-08 / CI-T08 / 0.9.5):
   * the chip must be esp32s3 and the flash the expected 8MB before any write;
   * the pinned esptool version is verified and never silently substituted;
   * writes go only to manifest-approved ranges matching the partition table;
+  * exactly one explicit reset is performed, and only after every written
+    range has been read back and verified; no failure path resets the board;
   * there is no wiping, security-configuration, or override switch reachable
     from this CLI; nothing outside the four manifest image ranges is written;
   * NVS/SD contents are never written and provisioned/unknown devices are
@@ -48,7 +50,14 @@ from typing import Any, Callable
 
 ESPTOOL_VERSION = "5.4.0"
 TARGET = "esp32s3"
-CHIP_DISPLAY_RE = re.compile(r"Chip is ESP32-S3(?![0-9])", re.IGNORECASE)
+# esptool 5.x prints f"{'Chip type:':<20}{esp.get_chip_description()}" (pinned
+# 5.4.0 sdist esptool/__init__.py:568-572), e.g. "Chip type:          ESP32-S3
+# (QFN56) (revision v0.2)"; the pre-5 "Chip is ..." form is accepted too for
+# robustness. Whitespace-tolerant padding; (?![0-9]) keeps ESP32-S3xx variants
+# from matching.
+CHIP_DISPLAY_RE = re.compile(
+    r"(?:Chip type:|Chip is)\s+ESP32-S3(?![0-9])", re.IGNORECASE
+)
 HARDWARE_CLASS = "seeed-xiao-esp32s3-sense"
 EXPECTED_FLASH_BYTES = 8_388_608
 FLASH_MODE, FLASH_SIZE, FLASH_FREQ = "dio", "8MB", "80m"
@@ -716,8 +725,10 @@ class EsptoolTransport:
     """Runs the pinned esptool as a subprocess with fixed argv vectors.
 
     Only the operations this class exposes are reachable from the CLI:
-    identification, read-only flash reads and segment writes. There is no
-    wiping or security-configuration operation available anywhere, by design.
+    identification, read-only flash reads, segment writes (always
+    ``--after no-reset``) and the single explicit post-verification reset.
+    There is no wiping or security-configuration operation available
+    anywhere, by design.
     """
 
     def __init__(self, command: list[str]) -> None:
@@ -777,9 +788,10 @@ class EsptoolTransport:
     @staticmethod
     def _chip_line(out: str) -> str:
         for line in out.splitlines():
-            if line.strip().lower().startswith("chip is"):
+            stripped = line.strip().lower()
+            if stripped.startswith("chip type:") or stripped.startswith("chip is"):
                 return line.strip()
-        return "<no 'Chip is' line>"
+        return "<no 'Chip type:'/'Chip is' line>"
 
     @staticmethod
     def _size_line(out: str) -> str:
@@ -827,10 +839,12 @@ class EsptoolTransport:
                 raise EsptoolFailure(f"esptool did not produce read data: {exc}") from exc
 
     # -- the only write operation (never outside manifest-approved ranges) ----
-    def write_flash(self, port: str, offset: int, image_path: Path, *,
-                    final: bool) -> None:
+    def write_flash(self, port: str, offset: int, image_path: Path) -> None:
+        # Every write keeps the board in the bootloader (``--after no-reset``);
+        # the single reset happens afterwards via reset(), only once every
+        # written range has been read back and verified.
         self._run(
-            self._global_args(port, after="hard-reset" if final else "no-reset")
+            self._global_args(port, after="no-reset")
             + [
                 "write-flash",
                 "--flash-mode", FLASH_MODE,
@@ -841,6 +855,19 @@ class EsptoolTransport:
             ],
             WRITE_TIMEOUT_SECONDS,
         )
+
+    # -- the one and only reset (after ALL verification succeeded) ------------
+    def reset(self, port: str) -> None:
+        """Hard-reset the board exactly once, after read-back verification.
+
+        Runs the read-only ``flash-id`` command with ``--after hard-reset``
+        so esptool itself performs the only reset of the install (verified
+        against the pinned 5.4.0 CLI: ``--before`` accepts
+        ``default-reset`` and ``--after`` accepts ``hard-reset``;
+        esptool/__init__.py:418-428).
+        """
+        self._run(self._global_args(port, after="hard-reset") + ["flash-id"],
+                  CONNECT_TIMEOUT_SECONDS)
 
 
 def resolve_esptool_command(explicit_python: str | None) -> list[str]:
@@ -1071,13 +1098,19 @@ class InstallerApp:
             )
             lines.append(
                 f"invoke: {esptool_hint} --chip esp32s3 --port <port> --before default-reset "
-                f"--after {'hard-reset' if image['role'] == 'application' else 'no-reset'} "
+                f"--after no-reset "
                 f"write-flash --flash-mode {FLASH_MODE} --flash-size {FLASH_SIZE} "
                 f"--flash-freq {FLASH_FREQ} 0x{image['offset']:x} {image['file']}"
             )
         lines.append(
             "read-back verify: each written range is read back and compared to the "
-            "manifest sha256"
+            "manifest sha256; on any mismatch NO reset is performed (manual power "
+            "cycle needed)"
+        )
+        lines.append(
+            f"invoke: {esptool_hint} --chip esp32s3 --port <port> --before default-reset "
+            f"--after hard-reset flash-id  # the single explicit reset, only after "
+            "every digest matched"
         )
         lines.append("never written: NVS, phy_init, storage, SD card, security fuses")
         return lines
@@ -1140,25 +1173,36 @@ class InstallerApp:
             self._consent(manifest, confirm_replace=confirm_replace, state=state)
             images = {i["role"]: i for i in manifest["images"]}
             ordered = [images[role] for role in IMAGE_ROLES]
-            for index, image in enumerate(ordered):
-                final = index == len(ordered) - 1
+            # Phase 1 — write every manifest range with --after no-reset, so
+            # the board stays in the bootloader until verification finished.
+            for image in ordered:
                 self.out(
                     f"write: {image['role']} -> 0x{image['offset']:08x} "
                     f"({image['size']} B)"
                 )
                 transport.write_flash(
-                    port, image["offset"], self.package.root / image["file"],
-                    final=final,
+                    port, image["offset"], self.package.root / image["file"]
                 )
+            # Phase 2 — verify every range by read-back BEFORE any reset.
             for image in ordered:
                 back = transport.read_flash(port, image["offset"], image["size"])
                 if sha256_bytes(back) != image["sha256"]:
                     raise InstallerError(
                         f"install failed: read-back verification of {image['role']} "
                         f"at 0x{image['offset']:08x} did not match the manifest digest; "
-                        "the board may need a manual power cycle",
+                        "no reset was performed; the board may need a manual power cycle",
                         EXIT_FLASH_FAILED,
                     )
+            # Phase 3 — exactly one explicit reset, only now.
+            try:
+                transport.reset(port)
+            except EsptoolFailure as exc:
+                raise InstallerError(
+                    f"install: every range was written and read-back verified, but the "
+                    f"single explicit reset failed ({exc}); the board may need a "
+                    "manual power cycle",
+                    EXIT_FLASH_FAILED,
+                ) from exc
             self.out(
                 f"install: OK — build_id={manifest['build_id']} written to ranges "
                 + ", ".join(f"0x{i['offset']:x}" for i in ordered)

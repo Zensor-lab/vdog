@@ -21,12 +21,13 @@ human-reviewable mirror (the test suite enforces they agree).
 | `export_flash_layout.py` | Normalizes builder outputs into `vdog-flash-layout-v1` |
 | `package.py` | Deterministic safe ZIP assembly + `manifest.json` + `SHA256SUMS` + external `.sha256` |
 | `validate_package.py` | Full offline archive validation, including running the ZIP's own `install.py check` in an isolated clean directory |
+| `check_lockfiles.py` | CI lockfile drift checks (round-2 F1/F2): structural component-lock validation (resolved `dependencies:` versions + `component_hash`, dependency constraints ignored) and installer-lock full-pin/full-hash validation with uv `name==version \` continuation lines (`esptool==5.4.0`); called verbatim from `firmware-main.yml` and tested against the real committed lockfiles in `tests/test_check_lockfiles.py` |
 | `publish.py` | Immutable tag + pre-release state machine behind a small GitHub adapter protocol, with a `--dry-run` that performs no network calls |
 | `installer/install.py` | Self-contained stdlib-only installer CLI shipped at the ZIP root (`check`/`ports`/`plan`/`inspect`/`install`) |
 | `installer/install.sh`, `installer/install.ps1` | Setup wrappers: create/reuse the isolated `.venv-installer/`, install the locked dependencies with `--require-hashes`, then exec `install.py` inside it (master plan 0.9.6) |
 | `installer/requirements-installer.{in,lock}` | Hashed end-user installer environment pins (`esptool==5.4.0`, pyserial) |
 | `templates/THIRD_PARTY_NOTICES.md` | Third-party notices source shipped as `THIRD_PARTY_NOTICES.md` |
-| `tests/` | pytest suite (383 tests), including the real-baseline build checks |
+| `tests/` | pytest suite (418 tests), including the real-baseline build checks |
 
 The release-notes source is `docs/release-notes-template.md` and the packaged
 `INSTALL.md` comes from `docs/release-installation.md`; the CI workflows pass
@@ -94,11 +95,16 @@ The ZIP stores no executable bit, so invoke the wrapper through `sh` (or
 `chmod +x` once).
 
 Safety guarantees (CI-T08): explicit `--port` always required; chip must be
-esp32s3 and flash 8MB before any write; pinned esptool 5.4.0 verified and
-never silently substituted; writes go only to the four manifest-approved
-ranges (verified by read-back hashes); no erase/eFuse/security/NVS/SD
-operations exist in the CLI; provisioned or unknown-layout boards are
-refused, never assumed blank.
+esp32s3 and flash 8MB before any write (identification accepts the real
+esptool 5.x `Chip type:          ESP32-S3 …` output and the legacy `Chip is`
+form); pinned esptool 5.4.0 verified and never silently substituted; writes
+go only to the four manifest-approved ranges, every write runs with
+`--after no-reset`, and the board is reset exactly once — via one explicit
+read-only `flash-id --after hard-reset` — only after every written range has
+been read back and matched against the manifest digest; no failure path
+resets the board (the manual power-cycle hint is then shown); no
+erase/eFuse/security/NVS/SD operations exist in the CLI; provisioned or
+unknown-layout boards are refused, never assumed blank.
 
 ## Building a package (maintainer/CI)
 
