@@ -846,10 +846,17 @@ def publish(
             errors.append(f"publish: draft release {release.id} targets tag "
                           f"{release.tag_name!r}, expected {inputs.tag!r}")
         if release.target_commitish not in (None, "", inputs.tag, inputs.full_sha):
-            errors.append(
-                f"publish: draft release {release.id} targets "
-                f"{release.target_commitish!r}, which is neither the verified tag nor "
-                f"the tested SHA {inputs.full_sha!r}; refusing to guess the target"
+            # Informational only. The tag this draft is bound to was just
+            # peeled-verified against the tested SHA, the binding itself is
+            # checked above, and this tool can neither move the tag nor retarget
+            # the release; GitHub also normalises this field (an existing tag is
+            # frequently reported as the default branch). Treating it as fatal
+            # would strand a repairable draft that 0.9.13 requires us to finish.
+            report.warnings.append(
+                f"publish: draft release {release.id} reports "
+                f"target_commitish={release.target_commitish!r} rather than the verified "
+                f"tag or {inputs.full_sha!r}; the bound tag was verified against the "
+                "tested SHA, so the release is repaired against that tag"
             )
         if errors:
             raise PublishConflict(errors)
@@ -923,7 +930,65 @@ def publish_main(
 
 
 class GitHubApiError(PublishAborted):
-    """A GitHub REST call failed."""
+    """A GitHub REST call failed.
+
+    ``status`` carries the numeric HTTP status when the API answered, so
+    "this object does not exist yet" is decided by the status code and never by
+    matching text in a response body.
+    """
+
+    def __init__(self, errors: list[str], *, status: int | None = None) -> None:
+        super().__init__(errors)
+        self.status = status
+
+
+def _is_not_found(exc: BaseException) -> bool:
+    """True only when GitHub itself answered 404 for this request."""
+    return getattr(exc, "status", None) == 404
+
+
+def next_page_url(link_header: str | None) -> str | None:
+    """Parse the RFC 5988 ``Link`` header and return the ``rel="next"`` URL."""
+    if not link_header:
+        return None
+    for part in link_header.split(","):
+        bits = [bit.strip() for bit in part.split(";")]
+        if not bits[0].startswith("<") or ">" not in bits[0]:
+            continue
+        url = bits[0][1:bits[0].index(">")]
+        for parameter in bits[1:]:
+            if parameter.strip().lower() in ('rel="next"', "rel=next"):
+                return url or None
+    return None
+
+
+class _TokenPinnedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never let the workflow token follow a redirect to another host.
+
+    ``urllib`` re-uses the original headers on a redirect, which would re-send
+    ``Authorization`` to whatever host the redirect names. Asset download URLs
+    legitimately leave ``api.github.com`` (they point at GitHub's blob storage),
+    so redirects still work — the credential is simply dropped when the host
+    changes.
+    """
+
+    def redirect_request(  # type: ignore[override]
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: Any,
+        headers: Any,
+        newurl: str,
+    ) -> Any:
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        origin = urllib.parse.urlsplit(req.full_url).netloc
+        target = urllib.parse.urlsplit(newurl).netloc
+        if target != origin and redirected.has_header("Authorization"):
+            redirected.remove_header("Authorization")
+        return redirected
 
 
 class RestGitHubAdapter(GitHubAdapter):
@@ -960,6 +1025,9 @@ class RestGitHubAdapter(GitHubAdapter):
                            or DEFAULT_UPLOAD_URL).rstrip("/")
         self.timeout = timeout
         self._log = log
+        # One opener for the run: redirects keep working (asset downloads need
+        # them) but the token never crosses a host boundary.
+        self._opener = urllib.request.build_opener(_TokenPinnedRedirectHandler())
 
     # -- transport ---------------------------------------------------------
     def _request(
@@ -971,7 +1039,7 @@ class RestGitHubAdapter(GitHubAdapter):
         raw: bytes | None = None,
         content_type: str = "application/json",
         accept: str = "application/vnd.github+json",
-    ) -> tuple[int, bytes]:
+    ) -> tuple[int, bytes, dict[str, str]]:
         body: bytes | None = None
         if raw is not None:
             body = raw
@@ -985,12 +1053,13 @@ class RestGitHubAdapter(GitHubAdapter):
         if body is not None:
             request.add_header("Content-Type", content_type)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return response.status, response.read()
+            with self._opener.open(request, timeout=self.timeout) as response:
+                return response.status, response.read(), dict(response.headers.items())
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:2000]
             raise GitHubApiError(
-                [f"publish: GitHub {method} {url} failed with {exc.code}: {detail}"]
+                [f"publish: GitHub {method} {url} failed with {exc.code}: {detail}"],
+                status=exc.code,
             ) from exc
         except urllib.error.URLError as exc:
             raise GitHubApiError(
@@ -998,7 +1067,7 @@ class RestGitHubAdapter(GitHubAdapter):
             ) from exc
 
     def _json(self, method: str, url: str, *, payload: Any = None) -> Any:
-        status, data = self._request(method, url, payload=payload)
+        status, data, _headers = self._request(method, url, payload=payload)
         if not data.strip():
             return {}
         try:
@@ -1008,6 +1077,37 @@ class RestGitHubAdapter(GitHubAdapter):
                 [f"publish: GitHub {method} {url} returned unparseable JSON "
                  f"(status {status}): {data[:200]!r}"]
             ) from exc
+
+    def _json_all_pages(self, url: str, *, max_pages: int = 50) -> list[Any]:
+        """Collect every item of a paginated list endpoint.
+
+        ``list_assets`` must see the *whole* set: a half-enumerated draft would
+        leave stale assets behind, and the pre-publish completeness check would
+        then reject a repair that actually succeeded.
+        """
+        items: list[Any] = []
+        page_url: str | None = url
+        pages = 0
+        while page_url is not None:
+            pages += 1
+            if pages > max_pages:
+                raise GitHubApiError(
+                    [f"publish: {url} did not finish paginating within {max_pages} pages; "
+                     "refusing to work from a partial asset list"]
+                )
+            status, data, headers = self._request("GET", page_url)
+            try:
+                doc = json.loads(data.decode("utf-8") or "[]")
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise GitHubApiError(
+                    [f"publish: GitHub GET {page_url} returned unparseable JSON "
+                     f"(status {status}): {data[:200]!r}"]
+                ) from exc
+            if isinstance(doc, dict):          # tolerate an enveloped response
+                doc = doc.get("assets") or doc.get("items") or []
+            items.extend(doc)
+            page_url = next_page_url(headers.get("Link") or headers.get("link"))
+        return items
 
     def _assets_of(self, doc: dict[str, Any]) -> tuple[Asset, ...]:
         return tuple(
@@ -1029,7 +1129,7 @@ class RestGitHubAdapter(GitHubAdapter):
         try:
             doc = self._json("GET", url)
         except GitHubApiError as exc:
-            if "failed with 404" in str(exc):
+            if _is_not_found(exc):
                 return None
             raise
         obj = doc.get("object") or {}
@@ -1072,7 +1172,7 @@ class RestGitHubAdapter(GitHubAdapter):
         try:
             doc = self._json("GET", url)
         except GitHubApiError as exc:
-            if "failed with 404" in str(exc):
+            if _is_not_found(exc):
                 return None
             raise
         if not doc.get("id"):
@@ -1146,11 +1246,9 @@ class RestGitHubAdapter(GitHubAdapter):
         return self._release(doc)
 
     def list_assets(self, release_id: int) -> tuple[Asset, ...]:
-        docs = self._json(
-            "GET", f"{self.api_url}/repos/{self.repo}/releases/{release_id}/assets?per_page=100"
+        docs = self._json_all_pages(
+            f"{self.api_url}/repos/{self.repo}/releases/{release_id}/assets?per_page=100"
         )
-        if isinstance(docs, dict):
-            docs = docs.get("assets", [])
         return tuple(
             Asset(id=int(item["id"]), name=str(item["name"]),
                   size=int(item.get("size", 0)),
@@ -1161,8 +1259,8 @@ class RestGitHubAdapter(GitHubAdapter):
     def upload_asset(self, release_id: int, asset: PublishAsset) -> Asset:
         query = urllib.parse.urlencode({"name": asset.name})
         url = (f"{self.upload_url}/repos/{self.repo}/releases/{release_id}/assets?{query}")
-        _, data = self._request("POST", url, raw=asset.data,
-                               content_type=asset.content_type)
+        _, data, _headers = self._request("POST", url, raw=asset.data,
+                                          content_type=asset.content_type)
         try:
             doc = json.loads(data.decode("utf-8") or "{}")
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -1189,7 +1287,7 @@ class RestGitHubAdapter(GitHubAdapter):
         if url.startswith("https://") is False:
             url = f"{self.api_url}{url}"
         try:
-            _, data = self._request("GET", url, accept="application/octet-stream")
+            _, data, _headers = self._request("GET", url, accept="application/octet-stream")
         except GitHubApiError as exc:
             self.log(f"warning: {exc}")
             return None

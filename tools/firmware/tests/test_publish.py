@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -574,14 +575,40 @@ def test_partial_draft_asset_set_is_replaced_wholesale(tmp_path: Path) -> None:
     assert adapter.asset_data(report.release_id, inputs.zip_name) == zip_path.read_bytes()
 
 
-def test_draft_targeting_a_branch_is_a_conflict(tmp_path: Path) -> None:
+def test_draft_reporting_a_branch_target_is_still_repaired(tmp_path: Path) -> None:
+    """0.9.13 interrupted-rerun recovery must survive GitHub's normalisation.
+
+    GitHub frequently reports ``target_commitish`` as the default branch for a
+    release created against an existing tag. The bound tag is verified against
+    the tested SHA and the tool cannot move it, so this is a warning — not a
+    conflict that would strand the draft forever (the adapter has no delete).
+    """
     zip_path, _sha, _manifest = build_main_package(tmp_path)
     inputs = load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A)
-    adapter = FakeGitHubAdapter()
-    adapter.seed_draft(TAG_A, target_commitish="main", assets=[])
+    adapter = FakeGitHubAdapter(tags={TAG_A: MAIN_SHA_A})
+    adapter.seed_draft(TAG_A, target_commitish="main", assets=["partial.zip"])
+    report = publish_run(adapter, inputs)
+    assert report.decision == "published-repaired-draft"
+    assert any("target_commitish" in w and "main" in w for w in report.warnings)
+    assert adapter.asset_names(report.release_id) == sorted(inputs.asset_names)
+    assert "partial.zip" not in adapter.asset_names(report.release_id)
+    assert adapter.releases[TAG_A].draft is False
+
+
+def test_draft_for_the_wrong_tag_is_still_a_hard_conflict(tmp_path: Path) -> None:
+    """The warning above must not soften the one field that really matters."""
+    zip_path, _sha, _manifest = build_main_package(tmp_path)
+    inputs = load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A)
+    adapter = FakeGitHubAdapter(tags={TAG_A: MAIN_SHA_A})
+    release = adapter.seed_draft(TAG_A, target_commitish=MAIN_SHA_A, assets=[])
+    adapter.releases[TAG_A] = Release(
+        id=release.id, tag_name="firmware-main-000000000000", draft=True,
+        prerelease=True, make_latest="false", title="stale",
+        target_commitish=inputs.full_sha,
+    )
     with pytest.raises(PublishConflict) as exc:
         publish_run(adapter, inputs)
-    assert any("neither the verified tag" in e for e in exc.value.errors)
+    assert any("targets tag" in e for e in exc.value.errors)
     assert adapter.uploads == []
 
 
@@ -748,3 +775,104 @@ def test_rest_adapter_requires_a_token(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(PublishAborted) as exc:
         publish.RestGitHubAdapter(repo=publish.DEFAULT_REPO)
     assert any("GITHUB_TOKEN" in e for e in exc.value.errors)
+
+
+# ---------------------------------------------------------------------------
+# REST adapter internals (transport hardening, no live network)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "header, expected",
+    [
+        (None, None),
+        ("", None),
+        ('<https://api.github.com/a?page=2>; rel="next"', "https://api.github.com/a?page=2"),
+        ('<https://api.github.com/a?page=2>; rel=next', "https://api.github.com/a?page=2"),
+        ('<https://api.github.com/a?page=1>; rel="prev", '
+         '<https://api.github.com/a?page=2>; rel="next"', "https://api.github.com/a?page=2"),
+        ('<https://api.github.com/a?page=3>; rel="last"', None),
+        ('<>; rel="next"', None),
+        ('garbage', None),
+    ],
+)
+def test_next_page_url_parses_the_link_header(header: str | None,
+                                              expected: str | None) -> None:
+    assert publish.next_page_url(header) == expected
+
+
+class _StubRestAdapter(publish.RestGitHubAdapter):
+    """RestGitHubAdapter with the HTTP layer replaced by canned responses."""
+
+    def __init__(self, pages: list[tuple[list[dict[str, Any]], dict[str, str]]]) -> None:
+        super().__init__(repo=publish.DEFAULT_REPO, token="t", log=lambda _m: None)
+        self.pages = pages
+        self.seen: list[str] = []
+
+    def _request(self, method: str, url: str, **_kw: Any) -> tuple[int, bytes, dict[str, str]]:
+        assert method == "GET"
+        self.seen.append(url)
+        if not self.pages:
+            raise AssertionError(f"unexpected extra request to {url}")
+        items, headers = self.pages.pop(0)
+        return 200, json.dumps(items).encode("utf-8"), headers
+
+
+def test_list_assets_follows_pagination() -> None:
+    """A >100-asset draft must be enumerated fully, not page 1 only."""
+    page1 = [{"id": i, "name": f"a{i}.bin", "size": 1} for i in range(100)]
+    page2 = [{"id": 100 + i, "name": f"b{i}.bin", "size": 1} for i in range(6)]
+    adapter = _StubRestAdapter([
+        (page1, {"Link": '<https://api.github.com/x?page=2>; rel="next"'}),
+        (page2, {}),
+    ])
+    assets = adapter.list_assets(7)
+    assert [a.name for a in assets][:2] == ["a0.bin", "a1.bin"]
+    assert len(assets) == 106
+    assert assets[-1].name == "b5.bin"
+    assert len(adapter.seen) == 2          # no third page requested
+
+
+def test_list_assets_refuses_to_run_out_of_pages_silently() -> None:
+    pages = [([{ "id": i, "name": f"a{i}", "size": 1} for i in range(3)],
+              {"Link": '<https://api.github.com/x?page=n>; rel="next"'})
+             for _ in range(60)]
+    adapter = _StubRestAdapter(pages)
+    with pytest.raises(publish.GitHubApiError) as exc:
+        adapter.list_assets(7)
+    assert "did not finish paginating" in " ".join(exc.value.errors)
+
+
+def test_api_errors_carry_the_status_and_only_404_means_absent() -> None:
+    gone = publish.GitHubApiError(["nope"], status=404)
+    forbidden = publish.GitHubApiError(["nope"], status=403)
+    plain = publish.PublishAborted(["nope"])
+    assert publish._is_not_found(gone) is True          # noqa: SLF001
+    assert publish._is_not_found(forbidden) is False    # noqa: SLF001
+    assert publish._is_not_found(plain) is False        # noqa: SLF001
+    assert gone.status == 404 and forbidden.status == 403
+
+
+def _redirect(from_url: str, to_url: str) -> urllib.request.Request:
+    request = urllib.request.Request(from_url, method="GET")
+    request.add_header("Authorization", "Bearer super-secret")
+    request.add_header("Accept", "application/vnd.github+json")
+    return publish._TokenPinnedRedirectHandler().redirect_request(  # noqa: SLF001
+        request, None, 302, "Found", {}, to_url
+    )
+
+
+def test_token_never_follows_a_cross_host_redirect() -> None:
+    """urllib re-sends Authorization on redirect; publish must not."""
+    same = _redirect("https://api.github.com/repos/x/y", "https://api.github.com/repos/z")
+    assert same is not None and same.has_header("Authorization")
+    assert same.full_url == "https://api.github.com/repos/z"
+
+    cross = _redirect("https://api.github.com/repos/x/y",
+                      "https://evil.example.com/collect")
+    assert cross is not None
+    assert not cross.has_header("Authorization")
+    # The legitimate asset-download hop to blob storage still works, unsigned.
+    blob = _redirect("https://api.github.com/repos/x/y",
+                     "https://objects.githubusercontent.com/asset/1")
+    assert blob is not None and not blob.has_header("Authorization")

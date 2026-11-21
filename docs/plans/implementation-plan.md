@@ -851,7 +851,7 @@ incomplete. Documentation review does not replace the outputs below.
 | 0.6 Contracts | Written baseline only | Media/API prose exists; schemas, OpenAPI files, real golden fixtures and validator absent |
 | 0.7 Card/bench | Planned, unverified | FAT32/no-autoformat policy exists; actual card/preparation and authorized identified-device bench record absent |
 | 0.8 Role ownership | Not established | Flutter/Dart and qualified hardware implementation/review routing still needs a concrete recorded assignment |
-| 0.9 CI and installation releases | **IN PROGRESS** — implemented on `opencode/0.9-ci-release`; hosted run pending | [0.9.1–0.9.16](0.9-firmware-ci-release.md): both workflows, `publish.py`, isolated installer wrappers and the prebuilt guide exist with 369 host tests (BUILD/HOST). `actionlint`, `pwsh`, GitHub credentials and a device are absent, so CI-T08/T11/T14 hosted visibility and CI-T15 remain unverified; 0.9.15 (device install) is deliberately deferred |
+| 0.9 CI and installation releases | **IN PROGRESS** — implemented on `opencode/0.9-ci-release`; hosted run pending | [0.9.1–0.9.16](0.9-firmware-ci-release.md): both workflows, `publish.py`, isolated installer wrappers and the prebuilt guide exist with 383 host tests (BUILD/HOST). `actionlint`, `pwsh`, GitHub credentials and a device are absent, so CI-T08/T11/T14 hosted visibility and CI-T15 remain unverified; 0.9.15 (device install) is deliberately deferred |
 
 Package 0.2 completed 2026-11-19 with BUILD/HOST evidence
 ([toolchain](../toolchain.md)); Stage-0 hardware-dependent acceptance still

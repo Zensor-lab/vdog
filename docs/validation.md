@@ -140,7 +140,7 @@ this is the evidence status of each row:
 | --- | --- | --- |
 | CI-T01 no path filters | PASS (HOST, structural) | `tests/test_workflows.py` asserts neither workflow declares `on.*.paths` |
 | CI-T02 PR builds head SHA | PASS (HOST, structural) | checkout `ref: github.event.pull_request.head.sha` + a step that fails unless `git rev-parse HEAD` equals it |
-| CI-T03 complete hash-named package | PASS (HOST) | package/validate runs in `firmware-build`; 14-day artifact; `install.py check` on the extracted ZIP; digest re-verified |
+| CI-T03 complete hash-named package | PASS (HOST) | the `firmware-build` job *definition* packages, validates, uploads a 14-day artifact and runs `install.py check` on the extracted ZIP with the digest re-verified (asserted structurally); the equivalent local chain actually ran end to end — the hosted run of that job is still pending |
 | CI-T04 stable check names | PASS (HOST, structural) | three job names, no variable in any `name:` |
 | CI-T05 main rebuild from source | PASS (HOST, structural) | no `download-artifact` outside the publish job; publish can only reach its own `run-id` |
 | CI-T06 exact tested SHA tag | PASS (HOST) | `publish.py` tags the full SHA, re-peels it, reuses only on exact match; conflict paths tested |

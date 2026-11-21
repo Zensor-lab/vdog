@@ -273,6 +273,28 @@ def test_main_publish_uses_the_tested_publish_module_with_the_event_sha() -> Non
     assert "--allow-" not in body  # no bypass flag is ever passed
 
 
+def test_publish_locates_the_bundle_without_assuming_the_artifact_layout() -> None:
+    """upload-artifact v4 roots inputs at their least common ancestor.
+
+    The only publish path must not depend on that detail: it finds the ZIP by
+    name, verifies the digest beside it, and hands that exact path to publish.
+    """
+    publish = load("firmware-main")["jobs"]["publish"]
+    locate = next(s for s in steps(publish) if s.get("id") == "locate")
+    body = str(locate["run"])
+    assert 'find bundle -type f -name "$PACKAGE_ZIP"' in body
+    assert 'dir="$(dirname "$zip")"' in body
+    assert '(cd "$dir" && sha256sum -c "$PACKAGE_ZIP.sha256")' in body
+    assert 'zip_path=%s' in body                      # handed on via the step output
+    assert locate["env"]["PACKAGE_ZIP"] == "${{ needs.firmware-build.outputs.package-zip }}"
+    # Nothing may hard-code a flat "bundle/<zip>" path any more.
+    assert 'zip="bundle/' not in body
+    assert "bundle/${{" not in body
+    published = str(steps(publish)[-1]["run"])
+    assert 'zip="${{ steps.locate.outputs.zip_path }}"' in published
+    assert "--zip \"$zip\"" in published
+
+
 def test_main_package_job_checks_lockfiles() -> None:
     job = load("firmware-main")["jobs"]["firmware-package-tests"]
     body = "\n".join(str(s.get("run", "")) for s in steps(job))

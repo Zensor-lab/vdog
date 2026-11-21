@@ -31,9 +31,11 @@ on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     # Deliberately NO `paths:` filter (CI-01): documentation-only PRs must run
-    # the same firmware build, and drafts are not skipped - GitHub does not
-    # fire `opened` for a draft, so `synchronize` covers draft updates and
-    # `ready_for_review` covers the transition. Do not add a draft condition.
+    # the same firmware build. Drafts are not skipped either: GitHub fires
+    # `opened` for a PR created as a draft (with `draft: true`) and then
+    # `synchronize` for each draft update, with `ready_for_review` on the
+    # transition - and no job here is conditioned on `draft`, so every draft
+    # head gets built. Do not add a draft condition.
 
 permissions:
   contents: read

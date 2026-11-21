@@ -371,15 +371,34 @@ jobs:
           repository: ${{ github.repository }}
 
       - name: Re-validate the downloaded bundle offline
+        # The bundle is located by name rather than by a hard-coded layout:
+        # actions/upload-artifact v4 roots multiple file inputs at their least
+        # common ancestor (tools/firmware/dist here), and depending on that
+        # detail would make the only publish path fail on a detail that is not
+        # part of the contract. Finding the file also turns a missing artifact
+        # into an unambiguous error instead of a confusing `test -f` failure.
+        id: locate
+        env:
+          PACKAGE_ZIP: ${{ needs.firmware-build.outputs.package-zip }}
         run: |
           set -euo pipefail
-          zip="bundle/${{ needs.firmware-build.outputs.package-zip }}"
-          test -f "$zip"
-          test -f "$zip.sha256"
-          (cd bundle && sha256sum -c "${{ needs.firmware-build.outputs.package-zip }}.sha256")
+          zip="$(find bundle -type f -name "$PACKAGE_ZIP" -print -quit)"
+          if [ -z "$zip" ]; then
+            echo "::error::this run's artifact does not contain $PACKAGE_ZIP" >&2
+            echo "downloaded files:" >&2
+            find bundle -type f | sed 's/^/  /' >&2 || true
+            exit 1
+          fi
+          dir="$(dirname "$zip")"
+          if [ ! -f "$dir/$PACKAGE_ZIP.sha256" ]; then
+            echo "::error::$PACKAGE_ZIP was uploaded without its external digest" >&2
+            exit 1
+          fi
+          (cd "$dir" && sha256sum -c "$PACKAGE_ZIP.sha256")
           uv run --python "$VDOG_PYTHON" \
             --with-requirements tools/firmware/requirements-dev.lock \
             python -m tools.firmware.validate_package "$zip"
+          printf 'zip_path=%s\n' "$zip" >> "$GITHUB_OUTPUT"
 
       - name: Create/verify the immutable tag and publish the Release
         # State logic lives in tools/firmware/publish.py so it is unit-tested
@@ -389,10 +408,13 @@ jobs:
         # start a second main workflow run.
         run: |
           set -euo pipefail
+          zip="${{ steps.locate.outputs.zip_path }}"
+          test -n "$zip"
+          test -f "$zip"
           uv run --python "$VDOG_PYTHON" \
             --with-requirements tools/firmware/requirements-dev.lock \
             python -m tools.firmware.publish \
-              --zip "bundle/${{ needs.firmware-build.outputs.package-zip }}" \
+              --zip "$zip" \
               --expected-sha "$GITHUB_SHA" \
               --repo "$GITHUB_REPOSITORY" \
               --ref "$GITHUB_REF" \
