@@ -829,7 +829,7 @@ def test_an_integral_byte_position_in_any_notation_validates(
     entry = synthetic_media_entry(tmp_path, f"notation-{case_id}", files)
     observed = [violation for violation in validate_media_fixture(tmp_path, entry, schemas)]
     assert {violation.code for violation in observed} == codes, [
-        (violation.code, violation.location, violation.message) for violation in observed
+        violation.render() for violation in observed
     ]
 
 
