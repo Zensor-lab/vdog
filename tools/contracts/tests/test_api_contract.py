@@ -565,10 +565,14 @@ def _header_codes(name: str, value: str, status: int, extra: dict[str, str] | No
     return {violation.code for violation in HEADER_RULES[name.lower()](context, name, value)}
 
 
-#: The §4 gates that are evaluated before a range is parsed or served (RFC 9110
-#: §13.2.2, §14.4). Such a response says nothing about the specifier, so every
-#: range form must be silent on every one of them.
-GATE_STATUSES: tuple[int, ...] = (401, 404, 409, 410, 412)
+#: The statuses the contract defines for `device.get_clip_file` that neither grant nor
+#: refuse bytes: the 400 request-level malformation plus the §4 gates (authentication,
+#: existence, lease, eviction, the `If-Match` precondition), all of which RFC 9110
+#: §13.2.2 and §14.4 evaluate before a range is parsed or served. A response at one of
+#: them says nothing about the specifier, so every range form must be silent at every
+#: one of them. 200, 206 and 416 are the only statuses excluded here, because those are
+#: exactly the ones that speak about the range.
+GATE_STATUSES: tuple[int, ...] = (400, 401, 404, 409, 410, 412)
 
 #: Range spellings the contract does not support at all: multipart, suffix, a
 #: missing hyphen, and something that is not a byte-range specifier to begin with.
@@ -631,6 +635,20 @@ def _range_table() -> list[tuple[str, int, dict[str, str], set[str], str]]:
         ),
         ("bytes=0-99", 206, GRANTED_206, set(), "granted-range-206"),
         ("bytes=999-", 206, GRANTED_206, set(), "open-ended-206"),
+        # A supported, ordered specifier is silent at 200 as well as at 206: the rule
+        # under test judges whether a response *misuses* the range form, and an
+        # ordered one is not a misuse at either granting status. Pinned at 200 too so
+        # that status cannot be special-cased into the flagged set unnoticed; whether a
+        # 200 full body is the right answer to a supported range is a separate §4
+        # question this rule does not own (and no committed vector asserts one).
+        (
+            "bytes=0-99",
+            200,
+            {"Content-Length": "1000"},
+            set(),
+            "granted-range-200-full-body",
+        ),
+        ("bytes=999-", 200, {"Content-Length": "1000"}, set(), "open-ended-200-full-body"),
     ]
     return cases
 

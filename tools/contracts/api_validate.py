@@ -575,13 +575,14 @@ def _rule_content_range(context: _HeaderContext, name: str, value: str) -> list[
 #: means). The two questions are separate: what the contract *supports* at all, and
 #: what is *satisfiable* for this file.
 #:
-#: A response is only a range statement when it is about the range. The §4 gates —
-#: 401 authentication, 404 unknown clip, 409 expired lease, 410 evicted clip and the
-#: 412 `If-Match` precondition of a resume — are all evaluated before a range is
-#: parsed or served (RFC 9110 §13.2.2, §14.4), so such a refusal says nothing about
-#: the specifier and may echo whatever `Range` it was given. Only three statuses speak
-#: about the range at all: 200 and 206 grant bytes, and 416 refuses them. Every row
-#: below therefore reads: 416 clean, 200/206 flagged, anything else silent.
+#: A response is only a range statement when it is about the range. The gates ahead of
+#: it — 400 request-level malformation, 401 authentication, 404 unknown clip, 409
+#: expired lease, 410 evicted clip and the 412 `If-Match` precondition of a resume —
+#: are all evaluated before a range is parsed or served (RFC 9110 §13.2.2, §14.4), so
+#: such a refusal says nothing about the specifier and may echo whatever `Range` it
+#: was given. Only three statuses speak about the range at all: 200 and 206 grant
+#: bytes, and 416 refuses them. Every row below therefore reads: 416 clean, 200/206
+#: flagged, anything else silent.
 #:
 #: * **Unsupported syntax** — anything the anchored ``_SINGLE_RANGE`` refuses
 #:   (multipart, suffix, ``bytes=10``, junk). Granting bytes for a form the contract
