@@ -722,22 +722,36 @@ def test_an_integral_float_still_meets_its_dedicated_bound(
     assert observed == {code}, (key, notation, sorted(observed))
 
 
-@pytest.mark.parametrize("field_name", ["offset", "size"], ids=["offset", "size"])
-def test_a_float_byte_position_is_a_finding_not_a_crash(tmp_path, schemas, field_name) -> None:
-    """``size: 1024.0`` is a JSON integer but not a slice a reader can take.
+@pytest.mark.parametrize(
+    ("field_name", "raw", "case_id"),
+    [
+        ("offset", "434.5", "offset-half"),
+        ("size", "413.5", "size-half"),
+        ("offset", '"434"', "offset-string"),
+        ("size", '"413"', "size-string"),
+        ("offset", "true", "offset-bool"),
+        ("size", "true", "size-bool"),
+    ],
+    ids=["offset-half", "size-half", "offset-string", "size-string", "offset-bool", "size-bool"],
+)
+def test_a_float_byte_position_is_a_finding_not_a_crash(
+    tmp_path, schemas, field_name: str, raw: str, case_id: str
+) -> None:
+    """A byte position that is not a JSON integer is named, never raised through.
 
-    The bounds accept it, so without this refusal the payload slice below them would be
-    taken with float indices and the run would die on a TypeError instead of naming the
-    line.
+    `type: integer` refuses a half, a string and the bool Python calls an int, and
+    neither the walk's arithmetic nor its payload slice could use any of them: without
+    the refusal the run dies on a `TypeError` instead of naming the line. Integral
+    notations — `434.0`, `4.34e2` — are the opposite case and belong to
+    :func:`test_an_integral_byte_position_in_any_notation_validates`.
     """
     files = _baseline_files_without_checksums()
     lines = files[INDEX_NAME].split(b"\n")
     record = json.loads(lines[1])
-    notation = f"{record[field_name]}.0"
     member = field_name.encode("utf-8")
     replaced, count = re.subn(
         rb'"%b":-?[0-9]+' % member,
-        b'"%b":%b' % (member, notation.encode("utf-8")),
+        b'"%b":%b' % (member, raw.encode("utf-8")),
         lines[1],
         count=1,
     )
@@ -746,8 +760,103 @@ def test_a_float_byte_position_is_a_finding_not_a_crash(tmp_path, schemas, field
     files[INDEX_NAME] = b"\n".join(lines)
     _repoint_manifest_entry(files, INDEX_NAME)
 
-    entry = synthetic_media_entry(tmp_path, f"float-{field_name}", files)
+    entry = synthetic_media_entry(tmp_path, f"float-{case_id}", files)
     observed = {violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)}
+    assert observed == {E.FRAME_SCHEMA}, sorted(observed)
+
+
+@pytest.mark.parametrize(
+    ("edits", "bad_crc", "codes", "case_id"),
+    [
+        ((("offset", "0.0"),), False, set(), "offset-decimal"),
+        ((("size", "434.0"),), False, set(), "size-decimal"),
+        ((("size", "4.34e2"),), False, set(), "size-exponent"),
+        ((("offset", "0.0"), ("size", "4.34e2")), False, set(), "both-notations"),
+        ((("size", "434.0"),), True, {E.FRAME_CRC_MISMATCH}, "size-decimal-bad-crc"),
+    ],
+    ids=[
+        "offset-decimal",
+        "size-decimal",
+        "size-exponent",
+        "both-notations",
+        "size-decimal-bad-crc",
+    ],
+)
+def test_an_integral_byte_position_in_any_notation_validates(
+    tmp_path,
+    schemas,
+    edits: tuple[tuple[str, str], ...],
+    bad_crc: bool,
+    codes: set[str],
+    case_id: str,
+) -> None:
+    """`0.0` and `4.34e2` are JSON integers, so they are byte positions too (AC-03).
+
+    The frame record publishes `type: integer`, which every whole-number JSON notation
+    satisfies, and the shared :func:`_is_int` the dedicated bounds use agrees; the
+    walk may not be stricter than the contract it certifies. It has to normalise to
+    `int` and then do exactly what it does for the plain spelling. The last case
+    corrupts the CRC of the *same* float-written record: if normalisation let the walk
+    skip the line, that finding would be missing too. And because the record is the
+    first one, a clean run also proves the following record's plain integer `offset`
+    continues from the `previous_end` these notations produced.
+    """
+    files = _baseline_files_without_checksums()
+    lines = files[INDEX_NAME].split(b"\n")
+    record = lines[0]
+    for field_name, raw in edits:
+        member = field_name.encode("utf-8")
+        replaced, count = re.subn(
+            rb'"%b":-?[0-9]+' % member,
+            b'"%b":%b' % (member, raw.encode("utf-8")),
+            record,
+            count=1,
+        )
+        assert count == 1, (field_name, raw)
+        record = replaced
+    if bad_crc:
+        declared = f'"crc32":"{json.loads(record)["crc32"]}"'.encode("utf-8")
+        assert declared in record
+        record = record.replace(declared, b'"crc32":"deadbeef"')
+    lines[0] = record
+    files[INDEX_NAME] = b"\n".join(lines)
+    _repoint_manifest_entry(files, INDEX_NAME)
+
+    entry = synthetic_media_entry(tmp_path, f"notation-{case_id}", files)
+    observed = [violation for violation in validate_media_fixture(tmp_path, entry, schemas)]
+    assert {violation.code for violation in observed} == codes, [
+        (violation.code, violation.location, violation.message) for violation in observed
+    ]
+
+
+@pytest.mark.parametrize(("raw", "case_id"), [("434.5", "half"), ("true", "bool")])
+def test_a_byte_position_the_schema_no_longer_types_is_still_a_finding(
+    tmp_path, schemas, raw: str, case_id: str
+) -> None:
+    """The walk's own integer check stops a byte position `int()` would fudge.
+
+    `type: integer` in the frame record refuses a half and a bool today, so the schema
+    report names the line first and the walk never sees either value. That ordering is
+    not something the walk may lean on: converting with `int()` is what makes the
+    payload slice legal, and `int()` on its own is no judge — it truncates `434.5` to a
+    byte position the writer never wrote, and reads `true` as `1`. Either one would be
+    checked against the *wrong* bytes, reported as a CRC or continuity defect, or pass
+    unnoticed. Here the type keyword is lifted out of the schema — the state a later
+    edit to that document could put it in — so it is the walk's own check or a wrong
+    answer, and it has to be a finding.
+    """
+    weakened = copy.deepcopy(schemas)
+    del weakened["frame"]["properties"]["offset"]["type"]
+    files = _baseline_files_without_checksums()
+    lines = files[INDEX_NAME].split(b"\n")
+    replaced, count = re.subn(rb'"offset":-?[0-9]+', b'"offset":%b' % raw.encode("utf-8"), lines[1], count=1)
+    assert count == 1
+    lines[1] = replaced
+    files[INDEX_NAME] = b"\n".join(lines)
+    _repoint_manifest_entry(files, INDEX_NAME)
+
+    entry = synthetic_media_entry(tmp_path, f"offset-untyped-{case_id}", files)
+    observed = {violation.code for violation in validate_media_fixture(tmp_path, entry, weakened)}
     assert observed == {E.FRAME_SCHEMA}, sorted(observed)
 
 

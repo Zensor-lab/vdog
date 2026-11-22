@@ -66,6 +66,23 @@ def load_media_schemas(media_dir: Path) -> tuple[dict[str, Mapping[str, Any]], l
         except (ValueError, UnicodeDecodeError) as error:
             found.append(Violation(E.SCHEMA_DOCUMENT_INVALID, str(path), str(error)))
             continue
+        if not isinstance(document, Mapping):
+            # A JSON document whose root is not an object — `[]`, `null`, `true`, a
+            # number or a string — is not a schema document at all. Some of them
+            # survive the metaschema (an array of schemas is a valid 2020-12 schema,
+            # and so is a boolean), so the first thing that notices the difference
+            # would otherwise be `.get` below or `iter_errors` far later, raising
+            # `AttributeError` out of the CLI as exit 2 "validator internal error".
+            # Refusing here also keeps the document out of `schemas`, which is what
+            # makes the vectors that use it report "no usable schema" honestly.
+            found.append(
+                Violation(
+                    E.SCHEMA_DOCUMENT_INVALID,
+                    str(path),
+                    f"root is {type(document).__name__}, not a JSON object",
+                )
+            )
+            continue
         failure = check_metaschema(document)
         if failure is None:
             # Valid keywords are not enough: a typo'd local pointer is a valid schema

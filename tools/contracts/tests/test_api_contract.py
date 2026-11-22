@@ -132,6 +132,10 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "device/invalid/clip-file-response-206-multi-range": ("RANGE_MULTI_NOT_ALLOWED",),
     "device/invalid/clip-file-response-206-hyphenless": ("RANGE_MULTI_NOT_ALLOWED",),
     "device/invalid/clip-file-response-206-reversed": ("RANGE_MULTI_NOT_ALLOWED",),
+    "device/invalid/clip-file-request-hyphenless": ("RANGE_MULTI_NOT_ALLOWED",),
+    "device/invalid/clip-file-request-multi-range": ("RANGE_MULTI_NOT_ALLOWED",),
+    "device/invalid/clip-file-request-reversed": ("RANGE_MULTI_NOT_ALLOWED",),
+    "device/valid/clip-file-request-with-lease": (),
     "device/valid/clip-file-response-409-lease-expired": (),
     "device/valid/clip-file-response-410-clip-gone": (),
     "device/invalid/clip-file-response-206-bad-etag_invalid": ("ETAG_INVALID",),
@@ -549,7 +553,13 @@ def test_invalid_api_vectors_never_pass_silently(index: list[dict], specs: dict,
 GRANTED_206 = {"Content-Range": "bytes 0-99/1000", "Content-Length": "100"}
 
 
-def _header_codes(name: str, value: str, status: int, extra: dict[str, str] | None = None) -> set[str]:
+def _header_codes(
+    name: str,
+    value: str,
+    status: int | None,
+    extra: dict[str, str] | None = None,
+    direction: str = "response",
+) -> set[str]:
     """One header rule's verdict on one value, away from any committed vector."""
     from tools.contracts.api_validate import HEADER_RULES, _HeaderContext
 
@@ -558,7 +568,7 @@ def _header_codes(name: str, value: str, status: int, extra: dict[str, str] | No
     context = _HeaderContext(
         location="unit:range",
         operation=ALL_OPERATIONS["device.get_clip_file"],
-        direction="response",
+        direction=direction,
         status=status,
         headers=headers,
     )
@@ -581,14 +591,16 @@ UNSUPPORTED_FORMS: tuple[str, ...] = ("bytes=0-99,200-299", "bytes=-500", "bytes
 _GRANTING = (200, 206)
 
 
-def _range_table() -> list[tuple[str, int, dict[str, str], set[str], str]]:
-    """``(value, status, extra, codes, id)`` for the whole decision table.
+def _range_table() -> list[tuple[str, int | None, dict[str, str], set[str], str, str]]:
+    """``(value, status, extra, codes, id, direction)`` for the whole decision table.
 
-    Built rather than listed so the two rejected-form branches are exercised against
-    every status the contract defines: a branch that is quiet about a §4 gate by
-    accident, and one that is quiet by design, have to look different here.
+    Built rather than listed so each rejected-form branch is exercised against every
+    status the contract defines and every spelling is exercised as a request too: a
+    branch that is quiet about a §4 gate by accident, and one that is quiet by design,
+    have to look different here, and a request row that silently skipped a spelling
+    would leave that form unjudged on the side of the wire that has no status at all.
     """
-    cases: list[tuple[str, int, dict[str, str], set[str], str]] = []
+    cases: list[tuple[str, int | None, dict[str, str], set[str], str, str]] = []
     for form in UNSUPPORTED_FORMS:
         tag = {
             "bytes=0-99,200-299": "multipart",
@@ -597,44 +609,96 @@ def _range_table() -> list[tuple[str, int, dict[str, str], set[str], str]]:
             "nonsense": "junk",
         }[form]
         # 416 is the required refusal; 200/206 grant bytes the contract never supports.
-        cases.append((form, 416, {}, set(), f"{tag}-416"))
+        cases.append((form, 416, {}, set(), f"{tag}-416", "response"))
         for status in _GRANTING:
             extra = GRANTED_206 if status == 206 else {"Content-Length": "1000"}
             cases.append(
-                (form, status, extra, {E.RANGE_MULTI_NOT_ALLOWED}, f"{tag}-{status}-grants")
+                (
+                    form,
+                    status,
+                    extra,
+                    {E.RANGE_MULTI_NOT_ALLOWED},
+                    f"{tag}-{status}-grants",
+                    "response",
+                )
             )
         for status in GATE_STATUSES:
-            cases.append((form, status, {}, set(), f"{tag}-{status}-gate"))
+            cases.append((form, status, {}, set(), f"{tag}-{status}-gate", "response"))
+        # A request has no status to be quiet about, so every unsupported spelling is
+        # the violation, with no gate and no granting status to vary against.
+        cases.append(
+            (form, None, {}, {E.RANGE_MULTI_NOT_ALLOWED}, f"{tag}-request", "request")
+        )
     # Supported syntax whose endpoints contradict each other.
-    cases.append(("bytes=200-100", 416, {}, set(), "reversed-416"))
+    cases.append(("bytes=200-100", 416, {}, set(), "reversed-416", "response"))
     for status in _GRANTING:
         extra = GRANTED_206 if status == 206 else {"Content-Length": "1000"}
         cases.append(
-            ("bytes=200-100", status, extra, {E.RANGE_MULTI_NOT_ALLOWED}, f"reversed-{status}-grants")
+            (
+                "bytes=200-100",
+                status,
+                extra,
+                {E.RANGE_MULTI_NOT_ALLOWED},
+                f"reversed-{status}-grants",
+                "response",
+            )
         )
     for status in GATE_STATUSES:
-        cases.append(("bytes=200-100", status, {}, set(), f"reversed-{status}-gate"))
+        cases.append(("bytes=200-100", status, {}, set(), f"reversed-{status}-gate", "response"))
+    cases.append(
+        (
+            "bytes=200-100",
+            None,
+            {},
+            {E.RANGE_MULTI_NOT_ALLOWED},
+            "reversed-request",
+            "request",
+        )
+    )
     # Supported, correctly ordered: a claimed 416 has to prove itself.
     cases += [
-        ("bytes=999999999-", 416, {"Content-Range": "bytes */1000"}, set(), "beyond-eof-416"),
-        ("bytes=1000-1999", 416, {"Content-Range": "bytes */1000"}, set(), "start-at-total-416"),
+        (
+            "bytes=999999999-",
+            416,
+            {"Content-Range": "bytes */1000"},
+            set(),
+            "beyond-eof-416",
+            "response",
+        ),
+        (
+            "bytes=1000-1999",
+            416,
+            {"Content-Range": "bytes */1000"},
+            set(),
+            "start-at-total-416",
+            "response",
+        ),
         (
             "bytes=999-",
             416,
             {"Content-Range": "bytes */1000"},
             {E.RANGE_MULTI_NOT_ALLOWED},
             "star-proves-satisfiable-416",
+            "response",
         ),
-        ("bytes=0-99", 416, {}, {E.RANGE_MULTI_NOT_ALLOWED}, "granted-range-416-no-proof"),
+        (
+            "bytes=0-99",
+            416,
+            {},
+            {E.RANGE_MULTI_NOT_ALLOWED},
+            "granted-range-416-no-proof",
+            "response",
+        ),
         (
             "bytes=0-99",
             416,
             {"Content-Range": "bytes 0-99/1000"},
             {E.RANGE_MULTI_NOT_ALLOWED},
             "granted-range-416-granted-form",
+            "response",
         ),
-        ("bytes=0-99", 206, GRANTED_206, set(), "granted-range-206"),
-        ("bytes=999-", 206, GRANTED_206, set(), "open-ended-206"),
+        ("bytes=0-99", 206, GRANTED_206, set(), "granted-range-206", "response"),
+        ("bytes=999-", 206, GRANTED_206, set(), "open-ended-206", "response"),
         # A supported, ordered specifier is silent at 200 as well as at 206: the rule
         # under test judges whether a response *misuses* the range form, and an
         # ordered one is not a misuse at either granting status. Pinned at 200 too so
@@ -647,8 +711,23 @@ def _range_table() -> list[tuple[str, int, dict[str, str], set[str], str]]:
             {"Content-Length": "1000"},
             set(),
             "granted-range-200-full-body",
+            "response",
         ),
-        ("bytes=999-", 200, {"Content-Length": "1000"}, set(), "open-ended-200-full-body"),
+        (
+            "bytes=999-",
+            200,
+            {"Content-Length": "1000"},
+            set(),
+            "open-ended-200-full-body",
+            "response",
+        ),
+        # A correctly ordered request is silent too, and that silence is a different
+        # claim from the response rows above: satisfiability needs the file's length,
+        # which a request does not have, so the only way to fail here is to flag a
+        # form §4 does support. `bytes=0-1023` is the committed valid vector's spelling.
+        ("bytes=0-99", None, {}, set(), "ordered-request", "request"),
+        ("bytes=999-", None, {}, set(), "open-ended-request", "request"),
+        ("bytes=0-1023", None, {}, set(), "baseline-request", "request"),
     ]
     return cases
 
@@ -657,19 +736,25 @@ _RANGE_CASES = _range_table()
 
 
 @pytest.mark.parametrize(
-    ("value", "status", "extra", "codes"),
-    [(value, status, extra, codes) for value, status, extra, codes, _ in _RANGE_CASES],
-    ids=[case_id for *_rest, case_id in _RANGE_CASES],
+    ("value", "status", "extra", "codes", "direction"),
+    [
+        (value, status, extra, codes, direction)
+        for value, status, extra, codes, _id, direction in _RANGE_CASES
+    ],
+    ids=[case_id for *_rest, case_id, _direction in _RANGE_CASES],
 )
 def test_the_range_rule_follows_the_decision_table(
-    value: str, status: int, extra: dict[str, str], codes: set[str]
+    value: str, status: int | None, extra: dict[str, str], codes: set[str], direction: str
 ) -> None:
     """What the contract *supports* and what is merely *satisfiable* differ (AC-06).
 
     A response speaks about the range only when it is 200, 206 or 416; a §4 gate that
-    never reached range handling may echo whatever `Range` it was given.
+    never reached range handling may echo whatever `Range` it was given. A request is
+    judged on its specifier alone, since nothing was evaluated ahead of it.
     """
-    assert _header_codes("Range", value, status, extra) == codes, (value, status, extra)
+    assert (
+        _header_codes("Range", value, status, extra, direction) == codes
+    ), (direction, value, status, extra)
 
 
 @pytest.mark.parametrize(

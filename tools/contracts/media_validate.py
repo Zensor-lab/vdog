@@ -381,6 +381,31 @@ def _walk_index(
 
         # Gating findings: these make every later record unverifiable, so the walk
         # stops at the first one (section 6 keeps only the maximal valid prefix).
+        #
+        # Byte positions come first, because everything below does arithmetic with
+        # them. `type: integer` in the frame schema accepts any JSON integer notation,
+        # so `0`, `0.0` and `0e0` are all a legal way to write the same offset; the
+        # published contract says so, and this package's own bounds checks agree. What
+        # the schema cannot express is that a byte position has to *index*: a slice and
+        # a length need real `int`s. So the notation is accepted on the schema's terms
+        # and normalised before the first addition, rather than refused for a spelling
+        # the contract publishes as valid. A value that is not an integer in any
+        # notation (5.5, a string, a bool, absent) is refused here as well: the schema
+        # report above already names it, and this keeps such a value out of the
+        # arithmetic and the slice whatever path it came by.
+        if not all(_is_int(record[name]) for name in ("offset", "size")):
+            walk.violations.append(
+                Violation(
+                    E.FRAME_SCHEMA,
+                    location,
+                    f"offset {offset!r} and size {size!r} must be JSON integers in any "
+                    f"notation, per the frame record's `type: integer`",
+                )
+            )
+            walk.stopped = True
+            return walk
+        offset, size = int(offset), int(size)
+
         if seq != position:
             walk.violations.append(
                 Violation(
@@ -454,23 +479,9 @@ def _walk_index(
             walk.stopped = True
             return walk
 
-        # An integral number written in decimal or exponent notation is still a JSON
-        # integer to the schema and to every bound above, but it is not a byte position
-        # a reader can index with: the wire form spells offsets and sizes as plain
-        # integers. Refusing here is also what keeps such a line from reaching the
-        # payload slice below, which can only be taken with real integers.
-        if not all(type(record[name]) is int for name in ("offset", "size")):
-            walk.violations.append(
-                Violation(
-                    E.FRAME_SCHEMA,
-                    location,
-                    f"offset {offset!r} and size {size!r} must be written as JSON integers",
-                )
-            )
-            walk.stopped = True
-            return walk
-
-        # Content findings for this one record: collect all of them, then stop.
+        # Content findings for this one record: collect all of them, then stop. The
+        # two positions are plain `int`s by now whatever notation the line used, so
+        # this slice is always one a reader could take.
         frame = payload[offset : offset + size]
         if format(zlib.crc32(frame) & 0xFFFFFFFF, "08x") != record["crc32"]:
             walk.violations.append(

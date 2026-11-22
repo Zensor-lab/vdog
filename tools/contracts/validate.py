@@ -119,14 +119,30 @@ def validate_contracts(repository_root: Path) -> Report:
             )
             continue
         try:
-            documents[contract] = load_yaml(path)
+            document = load_yaml(path)
         except Exception as error:  # noqa: BLE001 - any parse failure is one contract code
             report.contract_violations.append(
                 Violation(E.SPEC_PARSE_FAILED, str(path), str(error).replace("\n", " "))
             )
             continue
-        report.contract_violations.extend(check_openapi(contract, documents[contract]))
-        report.contract_violations.extend(check_headers_contract(documents[contract], contract))
+        if not isinstance(document, Mapping):
+            # YAML that parses but is not a mapping — `[1, 2]`, `true`, a bare scalar —
+            # is not an OpenAPI document. It parses cleanly, so no exception reports it,
+            # and `check_openapi` would raise on the first `.get` and reach the CLI as
+            # exit 2 "validator internal error". Name the file and the root type, and
+            # withhold the document: everything downstream already reports honestly
+            # when a contract document is missing.
+            report.contract_violations.append(
+                Violation(
+                    E.SPEC_PARSE_FAILED,
+                    str(path),
+                    f"root is {type(document).__name__}, not a mapping",
+                )
+            )
+            continue
+        documents[contract] = document
+        report.contract_violations.extend(check_openapi(contract, document))
+        report.contract_violations.extend(check_headers_contract(document, contract))
 
     if len(documents) == 2:
         report.contract_violations.extend(check_shared_error_envelope(documents))

@@ -1791,6 +1791,61 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         },
         invariant="AC-04 range request requires X-Clip-Lease and one single range only",
     )
+    # A request carries no status to excuse its specifier: the gates that keep a
+    # refusal silent are a property of answers, so each unsupported form is here a
+    # violation of the request itself. X-Clip-Lease keeps each one otherwise
+    # well-formed, so the range finding is the only thing that can fire.
+    out.add(
+        id="clip-file-request-hyphenless",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="request",
+        headers={
+            "X-Clip-Lease": lease_id,
+            "Range": "bytes=10",
+        },
+        expected="invalid",
+        codes=(RANGE_MULTI_NOT_ALLOWED,),
+        invariant=(
+            "AC-06 range: `bytes=10` has no hyphen, so it is not one of the two "
+            "specifiers §4 makes a request; a lease cannot make it one"
+        ),
+    )
+    out.add(
+        id="clip-file-request-multi-range",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="request",
+        headers={
+            "X-Clip-Lease": lease_id,
+            "Range": "bytes=0-99,200-299",
+        },
+        expected="invalid",
+        codes=(RANGE_MULTI_NOT_ALLOWED,),
+        invariant=(
+            "AC-06 range: multipart is not a single range, and §4 supports single "
+            "ranges only, so asking for two is contract misuse at the request"
+        ),
+    )
+    out.add(
+        id="clip-file-request-reversed",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="request",
+        headers={
+            "X-Clip-Lease": lease_id,
+            "Range": "bytes=200-100",
+        },
+        expected="invalid",
+        codes=(RANGE_MULTI_NOT_ALLOWED,),
+        invariant=(
+            "AC-06 range: an endpoint below its own start can never be served, so it "
+            "may never be asked for, whatever the device would eventually answer"
+        ),
+    )
     out.add(
         id="clip-file-response-200",
         contract="device",

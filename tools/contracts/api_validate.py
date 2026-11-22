@@ -10,7 +10,9 @@ What the contract *supports* (interfaces.md §4) and what is *satisfiable* for t
 file (RFC 9110 §14.4) are different questions, and a response only speaks about the
 range when its status is about the range: the §4 gates — authentication, existence,
 lease, the ``If-Match`` precondition — come first (RFC 9110 §13.2.2), so 200, 206 and
-416 are the only statuses that can grant or refuse bytes.
+416 are the only statuses that can grant or refuse bytes. That precedence is a
+property of answers. A request is judged on its specifier alone, because nothing has
+been evaluated ahead of it to excuse a form §4 does not support.
 """
 
 from __future__ import annotations
@@ -573,7 +575,9 @@ def _rule_content_range(context: _HeaderContext, name: str, value: str) -> list[
 #: The Range decision table, in the words the validator applies (interfaces.md §4 for
 #: what the contract allows, RFC 9110 §13.2.2, §14.4 and §15.5.17 for what a refusal
 #: means). The two questions are separate: what the contract *supports* at all, and
-#: what is *satisfiable* for this file.
+#: what is *satisfiable* for this file. The table has one row per direction, and they
+#: are read differently on purpose: the precedence below belongs to answers only, and
+#: is no licence for a request to use a form the contract never supports.
 #:
 #: A response is only a range statement when it is about the range. The gates ahead of
 #: it — 400 request-level malformation, 401 authentication, 404 unknown clip, 409
@@ -603,11 +607,44 @@ def _rule_content_range(context: _HeaderContext, name: str, value: str) -> list[
 #:   or with a start inside the file, the claim is unfounded and is
 #:   ``RANGE_MULTI_NOT_ALLOWED``. This row is keyed on the 416, because it is about a
 #:   device *claiming* a refusal it cannot support.
+#: * **A request's own specifier** (``direction == "request"``), which has no status to
+#:   be silent about. The precedence above describes how a server *replies*; a request
+#:   is not an answer to anything, so nothing has been evaluated ahead of it and no
+#:   precondition can explain its spelling. §4 supports "single ``Range:
+#:   bytes=start-end`` or ``bytes=start-`` only", so multipart, suffix, ``bytes=10``
+#:   and junk, and an ordering that can never be served (``end < start``), are outside
+#:   the contract as requests whatever the device eventually answers, and each is
+#:   ``RANGE_MULTI_NOT_ALLOWED``. A correctly ordered request is silent: satisfiability
+#:   needs this file's length, which a request does not have.
 
 
 def _rule_range(context: _HeaderContext, name: str, value: str) -> list[Violation]:
     location = f"{context.location}: {name}"
     match = _SINGLE_RANGE.match(value)
+    if context.direction == "request":
+        # The table's request row. A request has no status, and the precedence that
+        # keeps a gated response silent describes how a server replies; nothing was
+        # evaluated ahead of a request, so its specifier is judged on its own.
+        if match is None:
+            return [
+                Violation(
+                    E.RANGE_MULTI_NOT_ALLOWED,
+                    location,
+                    f"{value!r} is not a single bytes=start-end or bytes=start- range, "
+                    f"the only two forms the contract makes a request",
+                )
+            ]
+        start = int(match.group(1))
+        end = match.group(2)
+        if end and int(end) < start:
+            return [
+                Violation(
+                    E.RANGE_MULTI_NOT_ALLOWED,
+                    location,
+                    f"{value!r} asks for bytes beyond their own end, which no request may ask for",
+                )
+            ]
+        return []
     if match is None:
         # Unsupported syntax: only a response that grants bytes is wrong. A 416 is
         # the required refusal, and a §4 gate that never reached range processing is

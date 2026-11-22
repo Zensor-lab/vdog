@@ -192,7 +192,7 @@ checkout.
 
 `tools/contracts/` is the host-side validator for the published wire contract in
 [`contracts/`](../contracts/README.md): the two OpenAPI 3.1 documents, the three
-media JSON Schemas, and the 354 committed golden fixtures. It shares no code with
+media JSON Schemas, and the 357 committed golden fixtures. It shares no code with
 the release tooling above and needs no firmware toolchain.
 
 | Path | Role |

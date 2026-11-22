@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools.contracts import cli
 
 from conftest import REPO_ROOT
@@ -131,6 +133,62 @@ def test_cli_exits_one_when_a_committed_schema_refers_nowhere(tmp_path: Path, mo
     output = capsys.readouterr().out
     assert "RESULT: FAIL" in output
     assert "SCHEMA_DOCUMENT_INVALID" in output
+    assert "validator internal error" not in output
+
+
+@pytest.mark.parametrize("root", ["[]", "null", "true"])
+@pytest.mark.parametrize(
+    "file_name",
+    ["frame-record.schema.json", "manifest.schema.json", "active-record.schema.json"],
+    ids=["frame", "manifest", "active"],
+)
+def test_cli_exits_one_when_a_media_schema_root_is_not_an_object(
+    tmp_path: Path, monkeypatch, capsys, file_name: str, root: str
+) -> None:
+    """A media schema whose root is not an object is a finding, not an `AttributeError`.
+
+    `[]` and `true` are legal 2020-12 schemas (an array of schemas, a boolean schema),
+    so the metaschema lets them through and `null` fails only the metaschema; what all
+    three have in common is that the first `.get` on them raises. Uncaught, that is the
+    CLI's catch-all reporting "validator internal error" and exit 2 for what is a
+    broken contract file. The refusal also withholds the document, so the vectors that
+    need it say so instead of pretending to have been checked.
+    """
+    broken = tmp_path / "contracts"
+    shutil.copytree(REPO_ROOT / "contracts", broken)
+    (broken / "media-v1" / file_name).write_text(root, encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == 1
+    output = capsys.readouterr().out
+    assert "RESULT: FAIL" in output
+    assert "SCHEMA_DOCUMENT_INVALID" in output
+    assert file_name in output, "the finding has to name the file it refused"
+    assert "no media schema loaded" in output, "vectors must report the missing schema"
+    assert "validator internal error" not in output
+
+
+@pytest.mark.parametrize("root", ["[1, 2]", "true"])
+def test_cli_exits_one_when_an_openapi_root_is_not_a_mapping(
+    tmp_path: Path, monkeypatch, capsys, root: str
+) -> None:
+    """A YAML contract that parses but is not a mapping is exit 1, not a crash.
+
+    `[1, 2]` and `true` are valid YAML, so nothing raises on load; `check_openapi` is
+    the first thing to treat the result as a document and would raise on its first
+    `.get`. That reaches the CLI's catch-all as exit 2 for a contract file that is
+    simply not an OpenAPI document.
+    """
+    broken = tmp_path / "contracts"
+    shutil.copytree(REPO_ROOT / "contracts", broken)
+    (broken / "device-v1.yaml").write_text(root, encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == 1
+    output = capsys.readouterr().out
+    assert "RESULT: FAIL" in output
+    assert "SPEC_PARSE_FAILED" in output
+    assert "device-v1.yaml" in output, "the finding has to name the file it refused"
     assert "validator internal error" not in output
 
 
