@@ -1958,8 +1958,9 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         expected="invalid",
         codes=(RANGE_MULTI_NOT_ALLOWED,),
         invariant=(
-            "AC-06 range: 416 is only ever the answer to a multipart or suffix range, so claiming "
-            "it for a supported single range is contract misuse"
+            "AC-06 range: a 416 explains itself with the contract's rejection list or "
+            "with a `Content-Range: bytes */<total>` proving the range starts past the "
+            "end, and a plain ordered `bytes=0-99` has neither, so the refusal is wrong"
         ),
     )
     out.add(

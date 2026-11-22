@@ -574,10 +574,16 @@ def _header_codes(name: str, value: str, status: int, extra: dict[str, str] | No
         ("bytes=-500", 200, {"Content-Length": "1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
         ("bytes=10", 206, GRANTED_206, {E.RANGE_MULTI_NOT_ALLOWED}),
         ("nonsense", 200, {"Content-Length": "1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
-        # Supported syntax, unsatisfiable endpoint ordering: 416 answers it.
+        # Supported syntax, unsatisfiable endpoint ordering: 416 answers it, and a
+        # refusal for a higher-priority reason is not a range violation at all
+        # (interfaces.md §4 If-Match/§4 lease paths, RFC 9110 §13.2.2, §14.4).
         ("bytes=200-100", 416, {}, set()),
         ("bytes=200-100", 206, GRANTED_206, {E.RANGE_MULTI_NOT_ALLOWED}),
         ("bytes=200-100", 200, {"Content-Length": "1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
+        ("bytes=200-100", 412, {}, set()),
+        ("bytes=200-100", 401, {}, set()),
+        ("bytes=200-100", 409, {}, set()),
+        ("bytes=200-100", 410, {}, set()),
         # Supported syntax, correctly ordered: a 416 needs proof from Content-Range.
         ("bytes=999999999-", 416, {"Content-Range": "bytes */1000"}, set()),
         ("bytes=1000-1999", 416, {"Content-Range": "bytes */1000"}, set()),
@@ -598,6 +604,10 @@ def _header_codes(name: str, value: str, status: int, extra: dict[str, str] | No
         "reversed-416",
         "reversed-206",
         "reversed-200",
+        "reversed-412-precondition",
+        "reversed-401-unauthenticated",
+        "reversed-409-lease-expired",
+        "reversed-410-gone",
         "beyond-eof-416",
         "start-at-total-416",
         "star-proves-satisfiable-416",
@@ -620,6 +630,9 @@ def test_the_range_rule_follows_the_decision_table(
         ("bytes */1000", 416, {}, set()),
         ("bytes */1000", 206, GRANTED_206, {E.CONTENT_RANGE_INVALID}),
         ("bytes */1000", 200, {"Content-Length": "1000"}, {E.CONTENT_RANGE_INVALID}),
+        # A refusal for a higher-priority reason may echo the header, as a 416 does.
+        ("bytes */1000", 412, {}, set()),
+        ("bytes */1000", 410, {}, set()),
         ("bytes */0", 416, {}, {E.CONTENT_RANGE_INVALID}),
         ("bytes 0-99/1000", 416, {}, {E.CONTENT_RANGE_INVALID}),
         ("bytes 0-99/1000", 206, GRANTED_206, set()),
@@ -632,6 +645,8 @@ def test_the_range_rule_follows_the_decision_table(
         "star-416",
         "star-206",
         "star-200",
+        "star-412-precondition",
+        "star-410-gone",
         "star-zero-total-416",
         "granted-on-416",
         "granted-206",

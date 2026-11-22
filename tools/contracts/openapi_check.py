@@ -18,7 +18,7 @@ from . import errors as E
 from .api_model import Operation, operation_for
 from .bounds import DOCUMENTED_ERROR_STATUSES
 from .errors import Violation
-from .schema_docs import canonical, check_metaschema, resolve_refs
+from .schema_docs import canonical, check_local_refs, check_metaschema, resolve_refs
 
 #: Operations the spec leaves unauthenticated: pairing happens before a token
 #: exists, and the two health probes are documented as "minimal health only".
@@ -67,6 +67,10 @@ def load_media_schemas(media_dir: Path) -> tuple[dict[str, Mapping[str, Any]], l
             found.append(Violation(E.SCHEMA_DOCUMENT_INVALID, str(path), str(error)))
             continue
         failure = check_metaschema(document)
+        if failure is None:
+            # Valid keywords are not enough: a typo'd local pointer is a valid schema
+            # that explodes only when it is used, so it is refused here too.
+            failure = check_local_refs(document)
         if failure is not None:
             found.append(Violation(E.SCHEMA_DOCUMENT_INVALID, str(path), failure))
         if document.get("$schema") != "https://json-schema.org/draft/2020-12/schema":

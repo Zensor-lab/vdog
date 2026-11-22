@@ -555,6 +555,25 @@ def test_the_format_checker_owns_only_the_formats_it_registers() -> None:
     ] == [("", "format")]
 
 
+def test_an_unresolvable_local_ref_is_a_finding_not_a_crash() -> None:
+    """A valid schema that cannot be *resolved* is as unusable as an invalid one.
+
+    ``check_schema`` accepts any URI-reference as ``$ref``, so only resolution notices
+    a typo'd pointer — and resolution is lazy, so without this the ``KeyError`` arrives
+    from inside ``iter_errors`` as a validator internal error.
+    """
+    from tools.contracts.schema_docs import check_local_refs
+
+    assert not check_local_refs({"$defs": {"a": {"type": "integer"}}, "properties": {"x": {"$ref": "#/$defs/a"}}})
+    for broken in (
+        {"properties": {"x": {"$ref": "#/$defs/nope"}}},
+        {"$defs": {"a": {"$ref": "#/$defs/a"}}, "properties": {"x": {"$ref": "#/$defs/a"}}},
+        {"properties": {"x": {"$ref": "https://example.com/other.json"}}},
+    ):
+        failure = check_local_refs(broken)
+        assert failure is not None and "\n" not in failure, broken
+
+
 def test_an_invalid_keyword_value_is_a_finding_not_a_crash() -> None:
     """A parseable schema whose keyword is nonsense is a failed check, not exit 2.
 

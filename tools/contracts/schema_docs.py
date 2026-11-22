@@ -132,6 +132,24 @@ def resolve_refs(document: Any, *, root: Mapping[str, Any] | None = None, _stack
     return document
 
 
+def check_local_refs(document: Mapping[str, Any]) -> str | None:
+    """Return a short failure description when a document's local ``$ref``s do not resolve.
+
+    The metaschema accepts any ``$ref`` that is a URI-reference, so a typo'd pointer
+    (``#/$defs/index_file_entry`` written as ``#/$defs/index_file``) is a perfectly
+    valid schema and still cannot be used: resolution happens lazily inside
+    ``iter_errors``, where the raised ``KeyError`` would leave the CLI at exit 2
+    "validator internal error". Checking resolution here, while the file is the thing
+    being reported, is what turns that class of bad contract file into an exit-1
+    finding named after the file.
+    """
+    try:
+        resolve_refs(document)
+    except (ValueError, KeyError, IndexError, TypeError) as error:
+        return f"unresolvable $ref: {error}"
+    return None
+
+
 def schema_error_report(
     schema: Mapping[str, Any], instance: Any
 ) -> list[tuple[str, str, str]]:

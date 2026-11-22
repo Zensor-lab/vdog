@@ -3445,7 +3445,7 @@
         "device/invalid/clip-file-response-416-without-multi-range.json"
       ],
       "id": "device/invalid/clip-file-response-416-without-multi-range",
-      "invariant": "AC-06 range: 416 is only ever the answer to a multipart or suffix range, so claiming it for a supported single range is contract misuse",
+      "invariant": "AC-06 range: a 416 explains itself with the contract's rejection list or with a `Content-Range: bytes */<total>` proving the range starts past the end, and a plain ordered `bytes=0-99` has neither, so the refusal is wrong",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_file",

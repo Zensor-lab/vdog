@@ -505,9 +505,13 @@ def _rule_content_range(context: _HeaderContext, name: str, value: str) -> list[
     location = f"{context.location}: {name}"
     star = _STAR_CONTENT_RANGE.match(value)
     if star is not None:
-        # ``bytes */<total>`` promises no bytes, so it belongs to the refusal alone;
-        # and a total of zero would describe a file this contract never stores.
-        if context.status != 416:
+        # ``bytes */<total>`` promises no bytes, so it belongs to the refusal alone.
+        # A total of zero would describe a file this contract never stores. Only a
+        # response that grants bytes is wrong to carry it: a refusal for a
+        # higher-priority reason may echo the header it was given, exactly as a 416
+        # does, and calling that a contract violation would fail a device the spec
+        # requires to answer 412, 401, 404, 409 or 410 instead.
+        if context.status in (200, 206):
             return [
                 Violation(
                     E.CONTENT_RANGE_INVALID,
@@ -515,7 +519,7 @@ def _rule_content_range(context: _HeaderContext, name: str, value: str) -> list[
                     f"{value!r} is the unsatisfiable-range form, which only a 416 may carry",
                 )
             ]
-        if int(star.group(1)) < 1:
+        if context.status == 416 and int(star.group(1)) < 1:
             return [
                 Violation(
                     E.CONTENT_RANGE_INVALID,
@@ -597,15 +601,20 @@ def _rule_range(context: _HeaderContext, name: str, value: str) -> list[Violatio
     start = int(match.group(1))
     end = match.group(2)
     if end and int(end) < start:
-        if context.status == 416:
-            return []
-        return [
-            Violation(
-                E.RANGE_MULTI_NOT_ALLOWED,
-                location,
-                f"{value!r} asks for bytes beyond their own end, which only a 416 may answer",
-            )
-        ]
+        # Only a response that *grants* bytes is wrong here. A refusal for some
+        # higher-priority reason — 412 `CONTENT_CHANGED` on an `If-Match` mismatch,
+        # 401, 404, 409, 410 — is required by interfaces.md §4 whatever the Range
+        # asked for (RFC 9110 §13.2.2, §14.4), and a 416 is the natural answer to
+        # the ordering itself.
+        if context.status in (200, 206):
+            return [
+                Violation(
+                    E.RANGE_MULTI_NOT_ALLOWED,
+                    location,
+                    f"{value!r} asks for bytes beyond their own end, which only a 416 may answer",
+                )
+            ]
+        return []
     if context.status == 416:
         proven_beyond_end = False
         declared = _lookup_header(context.headers, "Content-Range")
