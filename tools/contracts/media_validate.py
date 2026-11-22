@@ -71,8 +71,11 @@ FRAME_DEDICATED_RULES: Final[Mapping[tuple[str, str], tuple[str, ...]]] = {
     ("size", "maximum"): (E.FRAME_SIZE_INVALID,),
     ("t_us", "minimum"): (E.FRAME_T_US_TOO_LARGE,),
     ("t_us", "maximum"): (E.FRAME_T_US_TOO_LARGE,),
-    # seq must equal its own record number, and the manifest count is bounded, so a
-    # seq outside 0..3599 can only arrive through one of those two findings.
+    # seq must equal its own record number, and :func:`_walk_index` refuses any record
+    # at or past ``MAX_FRAMES_PER_CLIP`` before it is even parsed, so a seq outside
+    # 0..3599 can only arrive through one of those two findings. The walk gate is what
+    # covers an active segment: it has no ``frame_count`` for the manifest bound to
+    # catch, so without that gate this suppression would silence the ceiling entirely.
     ("seq", "minimum"): (E.FRAME_SEQ_NOT_CONSECUTIVE, E.FRAME_COUNT_MISMATCH),
     ("seq", "maximum"): (E.FRAME_SEQ_NOT_CONSECUTIVE, E.FRAME_COUNT_MISMATCH),
     # offset is bounded by the payload walk and the 2^53-1 arithmetic gate.
@@ -321,6 +324,21 @@ def _walk_index(
     previous_end = 0
     previous_t_us: int | None = None
     for position, (raw_line, body) in enumerate(split_index_lines(index)):
+        if position >= MAX_FRAMES_PER_CLIP:
+            # One gate for both segment kinds, before this record is measured or
+            # parsed: media-format.md §2 keeps at most 3,600 frames in a clip, and an
+            # active segment has no `frame_count` for the manifest bound to catch, so
+            # the walk is the only thing that can refuse the 3,601st record.
+            walk.violations.append(
+                Violation(
+                    E.FRAME_COUNT_MISMATCH,
+                    f"line {position + 1}",
+                    f"a clip retains at most {MAX_FRAMES_PER_CLIP} frames, and this is "
+                    f"record number {position}",
+                )
+            )
+            walk.stopped = True
+            return walk
         location = f"line {position + 1}"
         if len(raw_line) > MAX_INDEX_LINE_BYTES:
             walk.violations.append(
@@ -674,7 +692,19 @@ def _validate_manifest(
                 continue  # the schema reports a missing file entry
             declared_bytes = entry.get("bytes")
             declared_sha = entry.get("sha256")
-            if _is_int(declared_bytes) and declared_bytes != len(data):
+            # A file entry the validator cannot measure is a defect, not a check to
+            # skip: silently passing a malformed declaration would let a manifest
+            # state no length at all and still certify the bytes beside it.
+            if not _is_int(declared_bytes):
+                found.append(
+                    Violation(
+                        E.MANIFEST_SIZE_MISMATCH,
+                        f"manifest.files.{name}.bytes",
+                        f"declares {declared_bytes!r}; the length must be a JSON integer "
+                        f"so the {len(data)} committed bytes can be checked against it",
+                    )
+                )
+            elif declared_bytes != len(data):
                 found.append(
                     Violation(
                         E.MANIFEST_SIZE_MISMATCH,
@@ -682,7 +712,16 @@ def _validate_manifest(
                         f"declares {declared_bytes}, the file is {len(data)}",
                     )
                 )
-            if isinstance(declared_sha, str) and _LOWER_HEX_64.match(declared_sha) and declared_sha != sha256_hex(data):
+            if not isinstance(declared_sha, str) or _LOWER_HEX_64.match(declared_sha) is None:
+                found.append(
+                    Violation(
+                        E.MANIFEST_HASH_MISMATCH,
+                        f"manifest.files.{name}.sha256",
+                        f"declares {_shape(declared_sha)}; the digest must be exactly 64 "
+                        f"lowercase hexadecimal characters to be compared at all",
+                    )
+                )
+            elif declared_sha != sha256_hex(data):
                 found.append(
                     Violation(
                         E.MANIFEST_HASH_MISMATCH,
@@ -814,6 +853,18 @@ def _clock_violations(clock: Any, location: str) -> list[Violation]:
                     f"{uncertainty} is negative; an estimate is never negative",
                 )
             )
+        elif _is_int(uncertainty) and uncertainty > UINT53_MAX:
+            # media-format.md §2 puts every JSON integer of this format inside the
+            # range a conforming reader represents exactly, so an uncertainty the
+            # schema's own ceiling keyword also refuses is reported here, where the
+            # pairing rule lives and where the number can be named.
+            found.append(
+                Violation(
+                    E.CLOCK_NULLITY_MISMATCH,
+                    f"{location}.uncertainty_ms",
+                    f"{uncertainty} is above the {UINT53_MAX} shared JSON integer ceiling",
+                )
+            )
     if isinstance(start_utc, str):
         if _RFC3339_MS_Z.match(start_utc) is None:
             found.append(
@@ -867,7 +918,20 @@ def _validate_checksums(fixture_dir: Path, committed: list[str]) -> list[Violati
             found.append(Violation(E.CHECKSUMS_SCHEMA, f"{name}:{file_name}", "entry missing"))
             continue
         declared_bytes = entry.get("bytes")
-        if _is_int(declared_bytes) and declared_bytes != len(data):
+        declared_sha = entry.get("sha256")
+        # Both integrity fields are compared or reported, never skipped: a digest with
+        # a stray byte or a length that is not a number would otherwise certify a file
+        # nobody ever measured.
+        if not _is_int(declared_bytes):
+            found.append(
+                Violation(
+                    E.CHECKSUMS_SCHEMA,
+                    f"{name}:{file_name}",
+                    f"records {_shape(declared_bytes)} as its length; the byte count must be "
+                    f"a JSON integer to be compared at all",
+                )
+            )
+        elif declared_bytes != len(data):
             found.append(
                 Violation(
                     E.CHECKSUM_SIZE_MISMATCH,
@@ -875,8 +939,16 @@ def _validate_checksums(fixture_dir: Path, committed: list[str]) -> list[Violati
                     f"records {declared_bytes} bytes, the file is {len(data)}",
                 )
             )
-        declared_sha = entry.get("sha256")
-        if isinstance(declared_sha, str) and _LOWER_HEX_64.match(declared_sha) and declared_sha != sha256_hex(data):
+        if not isinstance(declared_sha, str) or _LOWER_HEX_64.match(declared_sha) is None:
+            found.append(
+                Violation(
+                    E.CHECKSUMS_SCHEMA,
+                    f"{name}:{file_name}",
+                    f"records {_shape(declared_sha)} as its digest; the checksum must be "
+                    f"exactly 64 lowercase hexadecimal characters to be compared at all",
+                )
+            )
+        elif declared_sha != sha256_hex(data):
             found.append(
                 Violation(
                     E.CHECKSUM_HASH_MISMATCH,
@@ -885,6 +957,19 @@ def _validate_checksums(fixture_dir: Path, committed: list[str]) -> list[Violati
                 )
             )
     return found
+
+
+def _shape(value: Any) -> str:
+    """How a malformed integrity value is worth naming in a finding.
+
+    The repr is what makes the defect reviewable: a trailing ``\\n`` on a digest is
+    exactly the hole this check exists to close, so it has to be visible rather than
+    inferred from a code.
+    """
+    if isinstance(value, str):
+        rendered = repr(value if len(value) <= 80 else value[:77] + "...")
+        return f"a {len(value)}-character string {rendered}"
+    return f"a {type(value).__name__} {value!r}"
 
 
 def _is_int(value: Any) -> bool:

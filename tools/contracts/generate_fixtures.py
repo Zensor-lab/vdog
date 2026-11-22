@@ -83,8 +83,10 @@ class _Editable:
 
     def set_line(self, position: int, record: Mapping[str, Any]) -> None:
         lines = self.lines()
+        # ``allow_nan=False``: a frame record carries integers and hex strings, and if it
+        # ever carried a non-finite float that would be a generator bug, not a wire form.
         lines[position] = json.dumps(
-            dict(record), ensure_ascii=False, separators=(",", ":")
+            dict(record), ensure_ascii=False, separators=(",", ":"), allow_nan=False
         ).encode("utf-8")
         self.built.index = b"".join(line + b"\n" for line in lines)
 
@@ -287,6 +289,33 @@ def _corrupt_checksum_size(editable: _Editable) -> None:
     assert editable.built.checksums is not None
     entry = editable.built.checksums["files"][CLIP_FILE_NAMES[0]]
     entry["bytes"] = entry["bytes"] + 7
+
+
+def _corrupt_manifest_sha_trailing_newline(editable: _Editable) -> None:
+    assert editable.built.manifest is not None
+    entry = editable.built.manifest["files"][CLIP_FILE_NAMES[0]]
+    # The shape, not the value: a digest with one byte of padding glued to it still looks
+    # like a hash to a reader that only asks whether the field is a string, and a hash it
+    # cannot compare is a file it never verified.
+    entry["sha256"] = entry["sha256"] + "\n"
+
+
+def _corrupt_manifest_bytes_non_integer(editable: _Editable) -> None:
+    assert editable.built.manifest is not None
+    entry = editable.built.manifest["files"][CLIP_FILE_NAMES[1]]
+    entry["bytes"] = str(entry["bytes"])  # a length that arrived as text, not a number
+
+
+def _corrupt_checksums_sha_trailing_newline(editable: _Editable) -> None:
+    assert editable.built.checksums is not None
+    entry = editable.built.checksums["files"][CLIP_FILE_NAMES[0]]
+    entry["sha256"] = entry["sha256"] + "\n"
+
+
+def _corrupt_checksums_bytes_non_integer(editable: _Editable) -> None:
+    assert editable.built.checksums is not None
+    entry = editable.built.checksums["files"][CLIP_FILE_NAMES[1]]
+    entry["bytes"] = str(entry["bytes"])
 
 
 def _corrupt_index_bom(editable: _Editable) -> None:
@@ -541,6 +570,10 @@ CORRUPTIONS: Final[Mapping[str, Callable[[_Editable], None]]] = {
     "jpeg_entropy_garbage": _corrupt_jpeg_entropy,
     "checksums_missing_entry": _corrupt_checksums_missing_entry,
     "manifest_size_mismatch": _corrupt_manifest_size,
+    "manifest_sha_trailing_newline": _corrupt_manifest_sha_trailing_newline,
+    "manifest_bytes_non_integer": _corrupt_manifest_bytes_non_integer,
+    "checksums_sha_trailing_newline": _corrupt_checksums_sha_trailing_newline,
+    "checksums_bytes_non_integer": _corrupt_checksums_bytes_non_integer,
     "frame_count_mismatch": _corrupt_frame_count,
     "frame_version": _corrupt_frame_version,
     "nominal_fps_high": _corrupt_nominal_fps_high,
@@ -557,6 +590,12 @@ PRESERVES_INTEGRITY: Final[frozenset[str]] = frozenset(
         "checksum_size_mismatch",
         "checksums_missing_entry",
         "manifest_size_mismatch",
+        # These four defect *is* a malformed integrity field, so recomputing the
+        # manifest or the sidecar afterwards would repair the very thing under test.
+        "manifest_sha_trailing_newline",
+        "manifest_bytes_non_integer",
+        "checksums_sha_trailing_newline",
+        "checksums_bytes_non_integer",
     }
 )
 
@@ -803,14 +842,25 @@ def _build_all() -> dict[str, bytes]:
         for name, data in committed_files(fixture).items():
             out[f"{fixture.dir_path}/{name}"] = data
     for fixture in api:
-        if fixture.body is not None:
+        if fixture.raw_body is not None:
+            # Written verbatim: the whole point of such a vector is a wire form that no
+            # serializer in this module may produce, so the bytes are the specification.
+            out[fixture.body_file or ""] = fixture.raw_body
+        elif fixture.body is not None:
             out[fixture.body_file or ""] = dump_json(fixture.body)
         if fixture.headers is not None:
             out[fixture.headers_file or ""] = dump_json(
                 {key: fixture.headers[key] for key in sorted(fixture.headers)}
             )
     out["fixtures.json"] = (
-        json.dumps(fixtures_index(media, api), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        json.dumps(
+            fixtures_index(media, api),
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n"
     ).encode("utf-8")
     return out
 

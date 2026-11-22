@@ -65,6 +65,17 @@ ILLUSTRATIVE_CODES: Final[frozenset[str]] = frozenset(
 ALLOWED_ERROR_CODES: Final[frozenset[str]] = SPEC_ERROR_CODES | ILLUSTRATIVE_CODES
 
 
+#: The media type of every JSON body of both contracts (interfaces.md §1).
+JSON_CONTENT_TYPE: Final[str] = "application/json"
+
+#: The media type of a raw byte body: the chunk of a PATCH and the deferred OTA image.
+BINARY_CONTENT_TYPE: Final[str] = "application/octet-stream"
+
+#: The media type of the live preview stream, exactly as interfaces.md §3 spells it
+#: (the ``boundary`` parameter is part of what the document publishes, not decoration).
+PREVIEW_CONTENT_TYPE: Final[str] = "multipart/x-mixed-replace; boundary=frame"
+
+
 @dataclass(frozen=True)
 class Operation:
     """One documented operation of one contract."""
@@ -80,6 +91,16 @@ class Operation:
     error_codes: Mapping[int, tuple[str, ...]] = field(default_factory=dict)
     required_request_headers: tuple[str, ...] = ()
     required_response_headers: Mapping[int, tuple[str, ...]] = field(default_factory=dict)
+    #: Headers a response of this status may carry because the contract documents them
+    #: without requiring them. A header rule accepts such a header only here, so a
+    #: conforming preview answer is not refused and an invented one elsewhere is.
+    documented_response_headers: Mapping[int, tuple[str, ...]] = field(default_factory=dict)
+    #: Media types of a documented request body that is not the bound JSON schema: the
+    #: raw chunk of a PATCH upload and the deferred OTA image.
+    request_content_types: tuple[str, ...] = ()
+    #: Media types of a documented response body that is not a JSON schema: the preview
+    #: multipart stream and the two binary file downloads, per status.
+    response_content_types: Mapping[int, tuple[str, ...]] = field(default_factory=dict)
     body_bound_bytes: int | None = None
 
     @property
@@ -87,10 +108,39 @@ class Operation:
         """Every status the spec assigns this operation, sorted."""
         return tuple(sorted(set(self.success_statuses) | set(self.error_codes)))
 
+    @property
+    def is_head(self) -> bool:
+        """True for the operation whose answer is headers and status alone."""
+        return self.method.upper() == "HEAD"
+
     def allowed_codes_for(self, status: int) -> frozenset[str]:
         """Codes the spec (or the documented illustrative set) allows for a status."""
         listed = self.error_codes.get(status, ())
         return frozenset(listed) | ILLUSTRATIVE_CODES
+
+    def content_types_for(self, direction: str, status: int | None) -> frozenset[str]:
+        """Media types the contract documents for one direction and status.
+
+        The two documents publish exactly these: a JSON body carries the bound schema,
+        the preview 200 carries its multipart, the file downloads carry octet-stream,
+        the raw chunk and deferred image carry octet-stream, and a HEAD answer or a
+        204 carries nothing at all (RFC 9110 §9.3.2, §15.3.3). A ``Content-Type``
+        outside this set is a value the selected operation never promised.
+        """
+        if direction == "request":
+            if self.request_schema is not None:
+                return frozenset({JSON_CONTENT_TYPE})
+            return frozenset(self.request_content_types)
+        if status is None:
+            return frozenset()
+        if status in self.response_content_types:
+            return frozenset(self.response_content_types[status])
+        if status in self.response_schemas:
+            return frozenset({JSON_CONTENT_TYPE}) if self.response_schemas[status] else frozenset()
+        if status in self.error_codes:
+            # A HEAD refusal is still a HEAD: no content, so no media type either.
+            return frozenset() if self.is_head else frozenset({JSON_CONTENT_TYPE})
+        return frozenset()
 
 
 def _op(key: str, contract: str, operation_id: str, method: str, path: str, **kwargs: object) -> Operation:
@@ -109,7 +159,15 @@ DEVICE_OPERATIONS: Final[dict[str, Operation]] = {
             request_schema="PairRequest",
             response_schemas={201: "PairResponse"},
             success_statuses=(201,),
-            error_codes={400: ("MALFORMED_REQUEST",), 409: ("ALREADY_OWNED",), 429: ("RATE_LIMITED",)},
+            # interfaces.md §1-2: the claim window is opened by a qualified physical
+            # control, so a pairing attempt outside that window is refused with 403
+            # (the same status §1 assigns to "wrong privilege/physical window").
+            error_codes={
+                400: ("MALFORMED_REQUEST",),
+                403: ("FORBIDDEN",),
+                409: ("ALREADY_OWNED",),
+                429: ("RATE_LIMITED",),
+            },
         ),
         _op(
             "device.revoke_token",
@@ -187,6 +245,11 @@ DEVICE_OPERATIONS: Final[dict[str, Operation]] = {
             response_schemas={200: None},
             success_statuses=(200,),
             error_codes={401: ("UNAUTHENTICATED",), 503: ("UNAVAILABLE",)},
+            # device-v1.yaml documents `Cache-Control` on the 200 with a `no-store`
+            # const (components/headers/CacheControlNoStore) and does not mark it
+            # required, so it is allowed here and nowhere else.
+            documented_response_headers={200: ("Cache-Control",)},
+            response_content_types={200: (PREVIEW_CONTENT_TYPE,)},
         ),
         _op(
             "device.list_clips",
@@ -279,6 +342,10 @@ DEVICE_OPERATIONS: Final[dict[str, Operation]] = {
                 200: ("Accept-Ranges", "ETag", "Content-Length"),
                 206: ("Accept-Ranges", "Content-Range", "ETag", "Content-Length"),
             },
+            # device-v1.yaml serves both range answers as raw `application/octet-stream`
+            # (the manifest summary's own media type), so those are the only media types
+            # this operation may name.
+            response_content_types={200: (BINARY_CONTENT_TYPE,), 206: (BINARY_CONTENT_TYPE,)},
         ),
         _op(
             "device.post_ota",
@@ -288,6 +355,10 @@ DEVICE_OPERATIONS: Final[dict[str, Operation]] = {
             "/ota",
             response_schemas={202: "OtaStageResponse"},
             success_statuses=(202,),
+            # device-v1.yaml documents the image itself as `application/octet-stream`;
+            # there is no JSON request schema on this operation, so that raw media type
+            # is the only one a request here may carry.
+            request_content_types=(BINARY_CONTENT_TYPE,),
             error_codes={
                 400: ("MALFORMED_REQUEST",),
                 401: ("UNAUTHENTICATED",),
@@ -454,6 +525,9 @@ BACKEND_OPERATIONS: Final[dict[str, Operation]] = {
                 200: ("Accept-Ranges", "ETag", "Content-Length"),
                 206: ("Accept-Ranges", "Content-Range", "ETag", "Content-Length"),
             },
+            # backend-v1.yaml serves both range answers as raw `application/octet-stream`,
+            # so those are the only media types this operation may name.
+            response_content_types={200: (BINARY_CONTENT_TYPE,), 206: (BINARY_CONTENT_TYPE,)},
         ),
         _op(
             "backend.get_derivative_file",
@@ -474,6 +548,9 @@ BACKEND_OPERATIONS: Final[dict[str, Operation]] = {
                 200: ("Accept-Ranges", "ETag", "Content-Length"),
                 206: ("Accept-Ranges", "Content-Range", "ETag", "Content-Length"),
             },
+            # backend-v1.yaml serves both range answers as raw `application/octet-stream`,
+            # so those are the only media types this operation may name.
+            response_content_types={200: (BINARY_CONTENT_TYPE,), 206: (BINARY_CONTENT_TYPE,)},
         ),
         _op(
             "backend.create_upload",
@@ -518,11 +595,19 @@ BACKEND_OPERATIONS: Final[dict[str, Operation]] = {
                 403: ("FORBIDDEN",),
                 404: ("NOT_FOUND",),
                 409: ("OFFSET_CONFLICT",),
+                # interfaces.md §8: an upload whose session has expired has already
+                # answered 410 on HEAD and commit, and a chunk that arrives after the
+                # window closes is the same refusal — the session is gone, so the
+                # offset it was writing at is gone with it.
+                410: ("EXPIRED",),
                 413: ("BOUND_EXCEEDED",),
                 422: ("INTEGRITY_FAILURE",),
             },
             required_request_headers=("Upload-Offset", "Upload-Checksum", "Content-Length"),
             required_response_headers={204: ("Upload-Offset",), 409: ("Upload-Offset",)},
+            # backend-v1.yaml §/uploads/{id}/files/{name} PATCH documents exactly one
+            # media type for the chunk: `application/octet-stream` of 1-1,048,576 bytes.
+            request_content_types=(BINARY_CONTENT_TYPE,),
         ),
         _op(
             "backend.commit_upload",

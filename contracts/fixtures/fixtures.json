@@ -165,6 +165,28 @@
         "API_SCHEMA"
       ],
       "files": [
+        "backend/invalid/job-response-200-progress-nan.json"
+      ],
+      "id": "backend/invalid/job-response-200-progress-nan",
+      "invariant": "AC-05/AC-06 wire JSON: RFC 8259 §6 admits no NaN, so a progress value written in that notation is not a JSON body at all and cannot reach the schema",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_job",
+      "operation_id": "getJob",
+      "path": "/jobs/{id}",
+      "schema": "JobRecord",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "boundary",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
         "backend/invalid/job-response-200-progress-out-of-range.json"
       ],
       "id": "backend/invalid/job-response-200-progress-out-of-range",
@@ -382,6 +404,28 @@
       "path": "/uploads",
       "schema": "CreateUploadRequest",
       "status": null
+    },
+    {
+      "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "FIXTURE_INDEX_INVALID"
+      ],
+      "files": [
+        "backend/invalid/upload-head-response-410-with-body.json"
+      ],
+      "id": "backend/invalid/upload-head-response-410-with-body",
+      "invariant": "AC-05/RFC 9110 §9.3.2: a HEAD answer is status and headers alone, so an expired session is reported by 410 itself. A vector that ships an Error body here describes bytes no conforming server sends, and the body is refused before its envelope is ever read",
+      "kind": "api",
+      "method": "HEAD",
+      "operation": "backend.head_upload_file",
+      "operation_id": "headUploadFile",
+      "path": "/uploads/{id}/files/{name}",
+      "schema": null,
+      "status": 410
     },
     {
       "api_error_code": null,
@@ -669,6 +713,26 @@
       ],
       "id": "backend/valid/clips-page-response-200",
       "invariant": "AC-05 clips page carries the device id and an original-manifest summary",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.list_clips",
+      "operation_id": "listClips",
+      "path": "/clips",
+      "schema": "BackendClipsPage",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "boundary",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "backend/valid/clips-page-response-200-full-page.json"
+      ],
+      "id": "backend/valid/clips-page-response-200-full-page",
+      "invariant": "AC-05/AC-06 boundary: a full page of the 100 items the contract's own limit permits is a legitimate answer even though it exceeds the 16 KiB ceiling that governs request bodies — the bound is on what a client sends, not on what the catalog is allowed to say",
       "kind": "api",
       "method": "GET",
       "operation": "backend.list_clips",
@@ -2136,17 +2200,15 @@
       "status": 404
     },
     {
-      "api_error_code": "UNAUTHENTICATED",
+      "api_error_code": null,
       "category": "error",
       "contract": "backend-v1",
       "direction": "response",
       "expected": "valid",
       "expected_error_codes": [],
-      "files": [
-        "backend/valid/head_upload_file-response-401-unauthenticated.json"
-      ],
+      "files": [],
       "id": "backend/valid/head_upload_file-response-401-unauthenticated",
-      "invariant": "AC-05 backend.head_upload_file documents 401; the refusal arrives in the shared envelope with the code the contract allows for it",
+      "invariant": "AC-05 backend.head_upload_file documents 401; a HEAD carries the refusal in the status alone (RFC 9110 §9.3.2), so this vector ships no body and no envelope to read it from",
       "kind": "api",
       "method": "HEAD",
       "operation": "backend.head_upload_file",
@@ -2156,17 +2218,15 @@
       "status": 401
     },
     {
-      "api_error_code": "NOT_FOUND",
+      "api_error_code": null,
       "category": "error",
       "contract": "backend-v1",
       "direction": "response",
       "expected": "valid",
       "expected_error_codes": [],
-      "files": [
-        "backend/valid/head_upload_file-response-404-not_found.json"
-      ],
+      "files": [],
       "id": "backend/valid/head_upload_file-response-404-not_found",
-      "invariant": "AC-05 backend.head_upload_file documents 404; the refusal arrives in the shared envelope with the code the contract allows for it",
+      "invariant": "AC-05 backend.head_upload_file documents 404; a HEAD carries the refusal in the status alone (RFC 9110 §9.3.2), so this vector ships no body and no envelope to read it from",
       "kind": "api",
       "method": "HEAD",
       "operation": "backend.head_upload_file",
@@ -2176,17 +2236,15 @@
       "status": 404
     },
     {
-      "api_error_code": "EXPIRED",
+      "api_error_code": null,
       "category": "error",
       "contract": "backend-v1",
       "direction": "response",
       "expected": "valid",
       "expected_error_codes": [],
-      "files": [
-        "backend/valid/head_upload_file-response-410-expired.json"
-      ],
+      "files": [],
       "id": "backend/valid/head_upload_file-response-410-expired",
-      "invariant": "AC-05 backend.head_upload_file documents 410; the refusal arrives in the shared envelope with the code the contract allows for it",
+      "invariant": "AC-05 backend.head_upload_file documents 410; a HEAD carries the refusal in the status alone (RFC 9110 §9.3.2), so this vector ships no body and no envelope to read it from",
       "kind": "api",
       "method": "HEAD",
       "operation": "backend.head_upload_file",
@@ -2716,6 +2774,26 @@
       "path": "/uploads/{id}/files/{name}",
       "schema": null,
       "status": 404
+    },
+    {
+      "api_error_code": "EXPIRED",
+      "category": "error",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "backend/valid/patch_upload_file-response-410-expired.json"
+      ],
+      "id": "backend/valid/patch_upload_file-response-410-expired",
+      "invariant": "AC-05 backend.patch_upload_file documents 410; the refusal arrives in the shared envelope with the code the contract allows for it",
+      "kind": "api",
+      "method": "PATCH",
+      "operation": "backend.patch_upload_file",
+      "operation_id": "patchUploadFile",
+      "path": "/uploads/{id}/files/{name}",
+      "schema": null,
+      "status": 410
     },
     {
       "api_error_code": "MALFORMED_REQUEST",
@@ -3810,6 +3888,28 @@
     },
     {
       "api_error_code": null,
+      "category": "auth",
+      "contract": "device-v1",
+      "direction": "request",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "device/invalid/pair-request-missing-body.headers.json"
+      ],
+      "id": "device/invalid/pair-request-missing-body",
+      "invariant": "AC-04/AC-06 POST /pair declares a required PairRequest body: a request that names the media type and then sends nothing cannot be checked against the schema it promises, so the missing body is itself the defect",
+      "kind": "api",
+      "method": "POST",
+      "operation": "device.pair",
+      "operation_id": "pair",
+      "path": "/pair",
+      "schema": "PairRequest",
+      "status": null
+    },
+    {
+      "api_error_code": null,
       "category": "version",
       "contract": "device-v1",
       "direction": "request",
@@ -3854,6 +3954,51 @@
     },
     {
       "api_error_code": null,
+      "category": "auth",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "device/invalid/pair-response-201-missing-body.headers.json"
+      ],
+      "id": "device/invalid/pair-response-201-missing-body",
+      "invariant": "AC-04 a 201 that claims to answer with a PairResponse has to carry one: an empty claim grants no token and cannot be schema-checked, so presence is checked before contents",
+      "kind": "api",
+      "method": "POST",
+      "operation": "device.pair",
+      "operation_id": "pair",
+      "path": "/pair",
+      "schema": "PairResponse",
+      "status": 201
+    },
+    {
+      "api_error_code": null,
+      "category": "auth",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "HEADER_INVALID"
+      ],
+      "files": [
+        "device/invalid/pair-response-201-no-store.headers.json",
+        "device/invalid/pair-response-201-no-store.json"
+      ],
+      "id": "device/invalid/pair-response-201-no-store",
+      "invariant": "AC-04 only the live preview documents Cache-Control, so an ownership token answered with a storage directive is a header no document of this operation publishes, whatever the body says",
+      "kind": "api",
+      "method": "POST",
+      "operation": "device.pair",
+      "operation_id": "pair",
+      "path": "/pair",
+      "schema": "PairResponse",
+      "status": 201
+    },
+    {
+      "api_error_code": null,
       "category": "version",
       "contract": "device-v1",
       "direction": "response",
@@ -3873,6 +4018,28 @@
       "path": "/pair",
       "schema": "PairResponse",
       "status": 201
+    },
+    {
+      "api_error_code": null,
+      "category": "preview",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "HEADER_INVALID"
+      ],
+      "files": [
+        "device/invalid/preview-response-200-json-content-type.headers.json"
+      ],
+      "id": "device/invalid/preview-response-200-json-content-type",
+      "invariant": "AC-04 application/json is a media type these documents publish, but not one GET /preview ever answers with: a stream that arrives as one JSON document is not a live preview, whatever the status line says",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_preview",
+      "operation_id": "getPreview",
+      "path": "/preview",
+      "schema": null,
+      "status": 200
     },
     {
       "api_error_code": null,
@@ -5158,6 +5325,26 @@
       "status": 400
     },
     {
+      "api_error_code": "FORBIDDEN",
+      "category": "error",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/pair-response-403-forbidden.json"
+      ],
+      "id": "device/valid/pair-response-403-forbidden",
+      "invariant": "AC-04 device.pair documents 403; the refusal arrives in the shared envelope with the code the contract allows for it",
+      "kind": "api",
+      "method": "POST",
+      "operation": "device.pair",
+      "operation_id": "pair",
+      "path": "/pair",
+      "schema": null,
+      "status": 403
+    },
+    {
       "api_error_code": "ALREADY_OWNED",
       "category": "auth",
       "contract": "device-v1",
@@ -5329,6 +5516,26 @@
       ],
       "id": "device/valid/preview-response-200",
       "invariant": "AC-04 GET /preview is documented as a multipart MJPEG stream, so it carries no schema-validated JSON body",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_preview",
+      "operation_id": "getPreview",
+      "path": "/preview",
+      "schema": null,
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "preview",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/preview-response-200-no-store.headers.json"
+      ],
+      "id": "device/valid/preview-response-200-no-store",
+      "invariant": "AC-04 device-v1.yaml documents Cache-Control no-store on the preview 200 (components/headers/CacheControlNoStore) without marking it required, so a stream that declares it is conformant and one that omits it is too",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_preview",
@@ -5959,6 +6166,42 @@
       "kind": "clip"
     },
     {
+      "category": "hash",
+      "contract": "media-v1",
+      "corruption": "checksums_sha_trailing_newline",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CHECKSUMS_SCHEMA"
+      ],
+      "files": [
+        "checksums.json",
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/checksums-sha-trailing-newline",
+      "invariant": "AC-06 hash: a sidecar digest with a trailing newline names no checksum, so the sidecar is refused rather than quietly skipping the comparison it cannot make",
+      "kind": "clip"
+    },
+    {
+      "category": "hash",
+      "contract": "media-v1",
+      "corruption": "checksums_bytes_non_integer",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CHECKSUMS_SCHEMA"
+      ],
+      "files": [
+        "checksums.json",
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/checksums-size-non-integer",
+      "invariant": "AC-06 hash: a sidecar entry whose byte count is text records no length, and a file nobody stated the length of is not a verified file",
+      "kind": "clip"
+    },
+    {
       "category": "id",
       "contract": "media-v1",
       "corruption": "clip_boot_prefix_mismatch",
@@ -6041,6 +6284,24 @@
       ],
       "id": "media/invalid/clock-timestamp-invalid",
       "invariant": "AC-06 time: start_utc is RFC3339 UTC with millisecond precision and trailing Z",
+      "kind": "clip"
+    },
+    {
+      "category": "clock",
+      "contract": "media-v1",
+      "corruption": null,
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CLOCK_NULLITY_MISMATCH",
+        "MANIFEST_SCHEMA"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/clock-uncertainty-above-uint53",
+      "invariant": "AC-06 time: an uncertainty above the shared 2^53-1 JSON integer ceiling is not a measurement a conforming reader represents exactly, so the ceiling that media-format.md §2 states for every integer of this format is refused here and in the schema keyword beside it",
       "kind": "clip"
     },
     {
@@ -6420,6 +6681,23 @@
       "kind": "clip"
     },
     {
+      "category": "boundary",
+      "contract": "media-v1",
+      "corruption": null,
+      "expected": "invalid",
+      "expected_error_codes": [
+        "FRAME_COUNT_MISMATCH"
+      ],
+      "files": [
+        "active.json",
+        "frames.jsonl.part",
+        "video.mjpg.part"
+      ],
+      "id": "media/invalid/index-records-above-clip-ceiling",
+      "invariant": "AC-03 boundary: media-format.md §2 retains at most 3,600 frames per clip, and an active segment publishes no frame_count for a manifest bound to catch, so the walk itself has to refuse the 3,601st record before it is measured or parsed",
+      "kind": "active"
+    },
+    {
       "category": "encoding",
       "contract": "media-v1",
       "corruption": "index_blank_line",
@@ -6593,6 +6871,24 @@
     {
       "category": "hash",
       "contract": "media-v1",
+      "corruption": "manifest_sha_trailing_newline",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "MANIFEST_HASH_MISMATCH",
+        "MANIFEST_SCHEMA"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/manifest-sha-trailing-newline",
+      "invariant": "AC-06 hash: a digest with a trailing newline is not the SHA-256 of anything, so the manifest schema refuses its shape and the comparison refuses the digest instead of passing a file nobody measured",
+      "kind": "clip"
+    },
+    {
+      "category": "hash",
+      "contract": "media-v1",
       "corruption": "manifest_size_mismatch",
       "expected": "invalid",
       "expected_error_codes": [
@@ -6605,6 +6901,24 @@
       ],
       "id": "media/invalid/manifest-size-mismatch",
       "invariant": "AC-06 hash: the manifest declares an index length the file does not have",
+      "kind": "clip"
+    },
+    {
+      "category": "hash",
+      "contract": "media-v1",
+      "corruption": "manifest_bytes_non_integer",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "MANIFEST_SCHEMA",
+        "MANIFEST_SIZE_MISMATCH"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/manifest-size-non-integer",
+      "invariant": "AC-06 hash: a file entry whose byte count is text has no length, so the schema refuses the entry and the length comparison reports that it was never given a number to compare against",
       "kind": "clip"
     },
     {

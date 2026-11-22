@@ -158,21 +158,39 @@ def validate_api_fixture(
         body_bytes = None
     body: dict[str, Any] | None = None
 
+    if not file_violations:
+        presence = _body_presence(operation, entry, direction, status, body_bytes)
+        if presence:
+            # A body that is not supposed to exist is not decoded, and a body that is
+            # supposed to exist is not substituted by an empty walk: either way the
+            # contents rules have nothing legitimate to judge.
+            violations.extend(presence)
+            body_bytes = None
     if body_bytes is not None:
-        bound = operation.body_bound_bytes or MAX_CONTROL_BODY_BYTES
-        if len(body_bytes) > bound:
-            violations.append(
-                Violation(
-                    E.API_BODY_TOO_LARGE,
-                    str(entry["id"]),
-                    f"{len(body_bytes)} bytes exceeds the {bound}-byte request limit",
+        if direction == "request":
+            # Only a request meets a published body ceiling here: the request is what
+            # the receiving side has to buffer, and the upload-init exception (32 KiB)
+            # belongs to that direction. A response is bounded by what the contract
+            # publishes about it — the manifest-binding rules and the Content-Length
+            # header rule — not by a request limit applied backwards to it.
+            bound = operation.body_bound_bytes or MAX_CONTROL_BODY_BYTES
+            if len(body_bytes) > bound:
+                violations.append(
+                    Violation(
+                        E.API_BODY_TOO_LARGE,
+                        str(entry["id"]),
+                        f"{len(body_bytes)} bytes exceeds the {bound}-byte request limit",
+                    )
                 )
-            )
-            # Refuse an over-limit body before decoding any further of it.
-            return violations
+                # Refuse an over-limit body before decoding any further of it.
+                return violations
         try:
-            parsed = json.loads(body_bytes.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            parsed = json.loads(body_bytes.decode("utf-8"), parse_constant=_reject_nonfinite)
+        except ValueError as error:
+            # One path for every way a body fails to be JSON: the decoder's
+            # ``JSONDecodeError``, the strict UTF-8 read's ``UnicodeDecodeError`` and
+            # ``_reject_nonfinite``'s refusal of ``NaN``/``Infinity`` — all three mean
+            # these bytes are not a JSON body, and none of them can be schema-checked.
             violations.append(
                 Violation(E.API_SCHEMA, str(entry["id"]), f"body is not JSON: {error}")
             )
@@ -290,6 +308,93 @@ def validate_api_fixture(
             Violation(E.FIXTURE_INDEX_INVALID, str(entry["id"]), "vector carries neither body nor headers")
         )
     return violations
+
+
+def _reject_nonfinite(name: str) -> float:
+    """Refuse the three JavaScript literals Python's decoder accepts by default.
+
+    ``NaN``, ``Infinity`` and ``-Infinity`` are not JSON (RFC 8259 §6 forbids them and
+    a conforming parser has to refuse them), so a committed vector carrying one would
+    be bytes this contract's readers cannot parse. Turning the token into a parse
+    failure routes it into the one path that reports undecodable bodies, which is
+    where a non-JSON wire value belongs.
+    """
+    raise ValueError(f"{name} is not a JSON notation (RFC 8259 §6)")
+
+
+def _body_presence(
+    operation: Operation,
+    entry: Mapping[str, Any],
+    direction: str,
+    status: Any,
+    body_bytes: bytes | None,
+) -> list[Violation]:
+    """Whether this vector may carry a body at all, judged before its contents.
+
+    interfaces.md §1 binds a body to every request whose schema the contract names, to
+    every documented success that answers with a record, and to every rejection, which
+    answers with the shared error envelope. RFC 9110 §9.3.2 and §15.3.3 take the body
+    away from a HEAD answer and from a 204, so those two are exempt both ways round.
+    Checking presence before contents is what stops a vector that ships nothing from
+    printing a clean PASS on the strength of the checks it never reached.
+    """
+    if direction == "response" and (operation.is_head or status == 204):
+        if body_bytes is None:
+            return []
+        named = [str(name) for name in entry.get("files", []) if not str(name).endswith(
+            ".headers.json"
+        )]
+        reason = (
+            f"a {status} answer carries no body (RFC 9110 §15.3.3)"
+            if status == 204
+            else "a HEAD answer carries no content (RFC 9110 §9.3.2)"
+        )
+        return [
+            Violation(
+                E.FIXTURE_INDEX_INVALID,
+                str(entry["id"]),
+                f"{operation.key} {reason}, but the index ships {', '.join(named)}",
+            )
+        ]
+    if body_bytes is not None:
+        return []
+    required = _required_body_reason(operation, direction, status)
+    if required is None:
+        return []
+    return [Violation(E.API_SCHEMA, str(entry["id"]), required)]
+
+
+def _required_body_reason(
+    operation: Operation, direction: str, status: Any
+) -> str | None:
+    """Why this vector has to ship a body, or ``None`` when it may stay empty.
+
+    A documented non-JSON body (the preview stream, the two downloads) is deliberately
+    absent from this list: those vectors carry headers and status, and the bytes are
+    outside what this gate can judge.
+    """
+    if direction == "request":
+        if operation.request_schema is not None:
+            return (
+                f"{operation.key} requires a {operation.request_schema} request body; "
+                "the index names no body file"
+            )
+        return None
+    if not isinstance(status, int):
+        return None
+    if status in operation.response_schemas:
+        if operation.response_schemas[status] is None:
+            return None
+        return (
+            f"{operation.key} {status} requires a {operation.response_schemas[status]} "
+            "response body; the index names no body file"
+        )
+    if status in operation.error_codes:
+        return (
+            f"{operation.key} {status} answers with the shared error envelope; the index "
+            "names no body file"
+        )
+    return None
 
 
 def _load_body(root: Path, entry: Mapping[str, Any]) -> tuple[bytes | None, list[Violation]]:
@@ -790,7 +895,10 @@ def _rule_upload_name(context: _HeaderContext, name: str, value: str) -> list[Vi
     return []
 
 
-#: The only media types the two contracts ever put on a JSON/multipart/binary hop.
+#: The media types the two contracts ever put on a JSON/multipart/binary hop, as
+#: published by the two documents. The per-operation table in
+#: :mod:`tools.contracts.api_model` decides what one operation may carry; this set is
+#: only the shared vocabulary that message and the OpenAPI tie-out quote.
 DOCUMENTED_CONTENT_TYPES: frozenset[str] = frozenset(
     {
         "application/json",
@@ -801,13 +909,54 @@ DOCUMENTED_CONTENT_TYPES: frozenset[str] = frozenset(
 
 
 def _rule_content_type(context: _HeaderContext, name: str, value: str) -> list[Violation]:
-    if value not in DOCUMENTED_CONTENT_TYPES:
+    # Judged against the selected operation, not against the corpus-wide vocabulary:
+    # ``application/json`` is documented, which is exactly why an operation that never
+    # promises a JSON body has to be refused here rather than waved through.
+    allowed = context.operation.content_types_for(context.direction, context.status)
+    if value not in allowed:
         return [
             Violation(
                 E.HEADER_INVALID,
                 f"{context.location}: {name}",
-                f"{value!r} is not one of the documented media types "
-                f"({', '.join(sorted(DOCUMENTED_CONTENT_TYPES))})",
+                f"{value!r} is not a media type {context.operation.key} documents for this "
+                f"{'request' if context.direction == 'request' else f'answer at {context.status}'} "
+                f"({', '.join(sorted(allowed)) or 'no body, so no media type'})",
+            )
+        ]
+    return []
+
+
+def _rule_cache_control(context: _HeaderContext, name: str, value: str) -> list[Violation]:
+    """``Cache-Control`` where the contract documents it, and nowhere else.
+
+    Only the live preview documents it — ``components/headers/CacheControlNoStore`` in
+    device-v1.yaml, a ``const`` of ``no-store`` — and it documents it without marking it
+    required, so a preview answer may carry it and no other operation may carry it at
+    all: a directive is a claim about how a response may be stored, and no document
+    makes that claim for anything else.
+    """
+    documented = {
+        header.lower()
+        for header in context.operation.documented_response_headers.get(
+            context.status or -1, ()
+        )
+    }
+    if name.lower() not in documented:
+        return [
+            Violation(
+                E.HEADER_INVALID,
+                f"{context.location}: {name}",
+                f"{context.operation.key} documents no Cache-Control at "
+                f"{context.status}; only the live preview answers with one",
+            )
+        ]
+    if value != "no-store":
+        return [
+            Violation(
+                E.HEADER_INVALID,
+                f"{context.location}: {name}",
+                f"{value!r} is not the documented directive `no-store`: live preview parts "
+                "are never cached",
             )
         ]
     return []
@@ -843,6 +992,7 @@ HEADER_RULES: Mapping[str, Rule] = {
     "x-upload-name": _rule_upload_name,
     "retry-after": _rule_retry_after,
     "content-type": _rule_content_type,
+    "cache-control": _rule_cache_control,
 }
 
 

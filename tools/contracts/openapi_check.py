@@ -391,6 +391,67 @@ def _check_operation(
                         "the spec requires this header in that response",
                     )
                 )
+    for status, names in operation.documented_response_headers.items():
+        response = _resolve(responses.get(str(status), {}), document)
+        header_names = {str(key).lower() for key in response.get("headers", {})}
+        for name in names:
+            if name.lower() not in header_names:
+                found.append(
+                    Violation(
+                        E.SPEC_STRUCTURE_MISSING,
+                        f"{where} responses/{status} headers/{name}",
+                        "the spec documents this header for that response, which is what "
+                        "lets a vector carry it without requiring it",
+                    )
+                )
+    # The media types :mod:`tools.contracts.api_validate` accepts are the ones this
+    # document publishes, per operation and status, so the operation table cannot drift
+    # into a second source of truth: a media type added to one side and not the other is
+    # a finding here rather than a rule that quietly stops matching anything.
+    if operation.request_schema is None:
+        body = _resolve(item.get("requestBody", {}), document)
+        published = set(body.get("content", {})) if isinstance(body, Mapping) else set()
+        if published != set(operation.request_content_types):
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} requestBody content",
+                    f"publishes {sorted(published)}, the operation table carries "
+                    f"{sorted(operation.request_content_types)}",
+                )
+            )
+    for status, types in operation.response_content_types.items():
+        response = _resolve(responses.get(str(status), {}), document)
+        published = set(response.get("content", {})) if isinstance(response, Mapping) else set()
+        if published != set(types):
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} responses/{status} content",
+                    f"publishes {sorted(published)}, the operation table carries "
+                    f"{sorted(types)}",
+                )
+            )
+    for status_key, response in responses.items():
+        # RFC 9110 §9.3.2 and §15.3.3: a HEAD answer is headers and status alone and a
+        # 204 describes its result without a body. A document that promises content on
+        # one of those teaches a generator to build a client that reads bytes no
+        # conforming server ever sends.
+        try:
+            status = int(status_key)
+        except ValueError:
+            continue
+        if not (operation.is_head or status == 204):
+            continue
+        resolved = _resolve(response, document)
+        if isinstance(resolved, Mapping) and resolved.get("content"):
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} responses/{status} content",
+                    "promises a body the method or status forbids",
+                )
+            )
 
     if operation.request_schema is not None:
         body = item.get("requestBody", {})

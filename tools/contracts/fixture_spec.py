@@ -33,6 +33,7 @@ from .bounds import (
     MAX_CHUNK_BYTES,
     MAX_CURSOR_CHARS,
     MAX_FRAME_BYTES,
+    MAX_FRAMES_PER_CLIP,
     MAX_INDEX_LINE_BYTES,
     MAX_MANIFEST_BYTES,
     MAX_PAGE_LIMIT,
@@ -72,6 +73,7 @@ from .errors import (
     ERROR_ENVELOPE_INVALID,
     ETAG_INVALID,
     FILE_NAME_NOT_ALLOWED,
+    FIXTURE_INDEX_INVALID,
     FRAME_COUNT_MISMATCH,
     FRAME_CRC_MISMATCH,
     FRAME_LINE_MALFORMED,
@@ -234,12 +236,18 @@ class ApiFixture:
     status: int | None = None
     schema: str | None = None
     body: dict[str, Any] | None = None
+    #: A vector whose wire form is not something this module can serialize. ``NaN`` and
+    #: ``Infinity`` are not JSON values (RFC 8259 §6), so a vector that demonstrates one
+    #: cannot carry it as a ``dict`` — ``json.dumps`` would happily invent the notation
+    #: back. Those few vectors name their exact bytes here instead, and the generator
+    #: writes them verbatim.
+    raw_body: bytes | None = None
     headers: dict[str, str] | None = None
     api_error_code: str | None = None
 
     @property
     def body_file(self) -> str | None:
-        if self.body is None:
+        if self.body is None and self.raw_body is None:
             return None
         return f"{self.id}.json"
 
@@ -401,11 +409,18 @@ class _Negative:
 
     id: str
     category: str
-    corruption: str
+    corruption: str | None
     codes: tuple[str, ...]
     invariant: str
     kind: str = "clip"
     checksums: bool = False
+    #: A defect that lives in the segment's shape rather than in one of its bytes is
+    #: built, not corrupted: this vector's frames (and so its record count, offsets and
+    #: timestamps) come from here instead of from the four-frame baseline every other
+    #: negative starts from. ``None`` keeps the baseline.
+    times: Sequence[int] | None = None
+    #: The same idea for the clock block, which no byte-level corruption reaches.
+    clock: ClockPlan | None = None
 
 
 _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
@@ -699,6 +714,28 @@ _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
         invariant="AC-06 hash: the manifest declares an index length the file does not have",
     ),
     _Negative(
+        id="media/invalid/manifest-sha-trailing-newline",
+        category="hash",
+        corruption="manifest_sha_trailing_newline",
+        codes=(MANIFEST_HASH_MISMATCH, MANIFEST_SCHEMA),
+        invariant=(
+            "AC-06 hash: a digest with a trailing newline is not the SHA-256 of anything, so "
+            "the manifest schema refuses its shape and the comparison refuses the digest "
+            "instead of passing a file nobody measured"
+        ),
+    ),
+    _Negative(
+        id="media/invalid/manifest-size-non-integer",
+        category="hash",
+        corruption="manifest_bytes_non_integer",
+        codes=(MANIFEST_SIZE_MISMATCH, MANIFEST_SCHEMA),
+        invariant=(
+            "AC-06 hash: a file entry whose byte count is text has no length, so the schema "
+            "refuses the entry and the length comparison reports that it was never given a "
+            "number to compare against"
+        ),
+    ),
+    _Negative(
         id="media/invalid/frame-count-mismatch",
         category="manifest",
         corruption="frame_count_mismatch",
@@ -817,6 +854,28 @@ _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
         invariant="AC-06 hash: checksums.json must describe every file the clip ships",
     ),
     _Negative(
+        id="media/invalid/checksums-sha-trailing-newline",
+        category="hash",
+        corruption="checksums_sha_trailing_newline",
+        checksums=True,
+        codes=(CHECKSUMS_SCHEMA,),
+        invariant=(
+            "AC-06 hash: a sidecar digest with a trailing newline names no checksum, so the "
+            "sidecar is refused rather than quietly skipping the comparison it cannot make"
+        ),
+    ),
+    _Negative(
+        id="media/invalid/checksums-size-non-integer",
+        category="hash",
+        corruption="checksums_bytes_non_integer",
+        checksums=True,
+        codes=(CHECKSUMS_SCHEMA,),
+        invariant=(
+            "AC-06 hash: a sidecar entry whose byte count is text records no length, and a "
+            "file nobody stated the length of is not a verified file"
+        ),
+    ),
+    _Negative(
         id="media/invalid/duration-too-long-decimal",
         category="time",
         corruption="duration_too_long_decimal",
@@ -912,6 +971,32 @@ _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
             "completion manifest here would claim a close that never happened"
         ),
     ),
+    _Negative(
+        id="media/invalid/clock-uncertainty-above-uint53",
+        category="clock",
+        corruption=None,
+        clock=ClockPlan("sntp", "2026-03-04T11:02:03.250Z", UINT53_MAX + 1),
+        codes=(CLOCK_NULLITY_MISMATCH, MANIFEST_SCHEMA),
+        invariant=(
+            "AC-06 time: an uncertainty above the shared 2^53-1 JSON integer ceiling is not a "
+            "measurement a conforming reader represents exactly, so the ceiling that media-"
+            "format.md §2 states for every integer of this format is refused here and in the "
+            "schema keyword beside it"
+        ),
+    ),
+    _Negative(
+        id="media/invalid/index-records-above-clip-ceiling",
+        kind="active",
+        category="boundary",
+        corruption=None,
+        times=tuple(index * 33_000 for index in range(MAX_FRAMES_PER_CLIP + 1)),
+        codes=(FRAME_COUNT_MISMATCH,),
+        invariant=(
+            "AC-03 boundary: media-format.md §2 retains at most 3,600 frames per clip, and an "
+            "active segment publishes no frame_count for a manifest bound to catch, so the "
+            "walk itself has to refuse the 3,601st record before it is measured or parsed"
+        ),
+    ),
 )
 
 
@@ -923,7 +1008,15 @@ def media_fixtures() -> tuple[MediaFixture, ...]:
             id=item.id,
             kind=item.kind,
             category=item.category,
-            plan=_plan("baseline", VALID_BASELINE_TIMES, clock=SNTP_CLOCK, capture_order=42),
+            # Every negative starts from the baseline segment and differs in exactly one
+            # declared way, so the defect a vector names is the only thing a reviewer has
+            # to diff against ``media/valid/baseline``.
+            plan=_plan(
+                "baseline",
+                VALID_BASELINE_TIMES if item.times is None else item.times,
+                clock=SNTP_CLOCK if item.clock is None else item.clock,
+                capture_order=42,
+            ),
             invariant=item.invariant,
             expected="invalid",
             codes=item.codes,
@@ -965,11 +1058,16 @@ class _ApiList:
         status: int | None = None,
         schema: str | None = None,
         body: dict[str, Any] | None = None,
+        raw_body: bytes | None = None,
         headers: dict[str, str] | None = None,
         api_error_code: str | None = None,
     ) -> None:
         if operation not in ALL_OPERATIONS:
             raise KeyError(f"undeclared operation {operation}")
+        if body is not None and raw_body is not None:
+            # One vector, one body: two bodies for one wire file means whichever the
+            # generator picked, the other would be a silent second truth about it.
+            raise ValueError(f"{id} declares both a structured and a raw body")
         self.items.append(
             ApiFixture(
                 id=f"{contract}/{'valid' if expected == 'valid' else 'invalid'}/{id}",
@@ -983,6 +1081,7 @@ class _ApiList:
                 status=status,
                 schema=schema,
                 body=body,
+                raw_body=raw_body,
                 headers=headers,
                 api_error_code=api_error_code,
             )
@@ -1079,6 +1178,62 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         expected="invalid",
         codes=(API_SCHEMA,),
         invariant="AC-04/AC-06 auth: base64url padding is not the documented unpadded credential form",
+    )
+    out.add(
+        id="pair-request-missing-body",
+        contract="device",
+        category="auth",
+        operation=op,
+        direction="request",
+        schema="PairRequest",
+        headers={"Content-Type": "application/json"},
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-04/AC-06 POST /pair declares a required PairRequest body: a request that "
+            "names the media type and then sends nothing cannot be checked against the "
+            "schema it promises, so the missing body is itself the defect"
+        ),
+    )
+    out.add(
+        id="pair-response-201-missing-body",
+        contract="device",
+        category="auth",
+        operation=op,
+        direction="response",
+        status=201,
+        schema="PairResponse",
+        headers={"Content-Type": "application/json"},
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-04 a 201 that claims to answer with a PairResponse has to carry one: an "
+            "empty claim grants no token and cannot be schema-checked, so presence is "
+            "checked before contents"
+        ),
+    )
+    out.add(
+        id="pair-response-201-no-store",
+        contract="device",
+        category="auth",
+        operation=op,
+        direction="response",
+        status=201,
+        schema="PairResponse",
+        body={
+            "v": API_VERSION,
+            "device_id": DEVICE_ID,
+            "token_id": "tok-owner-1",
+            "access_token": _token("access-token-1"),
+        },
+        headers={"Cache-Control": "no-store"},
+        expected="invalid",
+        codes=(HEADER_INVALID,),
+        invariant=(
+            "AC-04 only the live preview documents Cache-Control, so an ownership token "
+            "answered with a storage directive is a header no document of this operation "
+            "publishes, whatever the body says"
+        ),
     )
     out.add(
         id="pair-response-unsupported-version",
@@ -1623,6 +1778,39 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         expected="invalid",
         codes=(HEADER_INVALID,),
         invariant="AC-04 a preview that answers text/plain is not the documented multipart stream",
+    )
+    out.add(
+        id="preview-response-200-json-content-type",
+        contract="device",
+        category="preview",
+        operation="device.get_preview",
+        direction="response",
+        status=200,
+        headers={"Content-Type": "application/json"},
+        expected="invalid",
+        codes=(HEADER_INVALID,),
+        invariant=(
+            "AC-04 application/json is a media type these documents publish, but not one "
+            "GET /preview ever answers with: a stream that arrives as one JSON document is "
+            "not a live preview, whatever the status line says"
+        ),
+    )
+    out.add(
+        id="preview-response-200-no-store",
+        contract="device",
+        category="preview",
+        operation="device.get_preview",
+        direction="response",
+        status=200,
+        headers={
+            "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+            "Cache-Control": "no-store",
+        },
+        invariant=(
+            "AC-04 device-v1.yaml documents Cache-Control no-store on the preview 200 "
+            "(components/headers/CacheControlNoStore) without marking it required, so a "
+            "stream that declares it is conformant and one that omits it is too"
+        ),
     )
     out.add(
         id="clip-manifest-response-200",
@@ -2544,6 +2732,44 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         invariant="AC-05 clips page carries the device id and an original-manifest summary",
     )
     out.add(
+        id="clips-page-response-200-full-page",
+        contract="backend",
+        category="boundary",
+        operation="backend.list_clips",
+        direction="response",
+        status=200,
+        schema="BackendClipsPage",
+        body={
+            "v": API_VERSION,
+            "items": [
+                {
+                    "device_id": DEVICE_ID,
+                    "clip_id": f"{index:032x}-{index:08x}",
+                    "start_utc": f"2026-03-04T{index // 60:02d}:{index % 60:02d}:03.250Z",
+                    "duration_us": 266_667 + index,
+                    "frame_count": 4,
+                    "bytes": media.baseline_payload_bytes + media.baseline_index_bytes + index,
+                    "recovered": False,
+                    "manifest_summary": {
+                        "duration_us": 266_667 + index,
+                        "frame_count": 4,
+                        "clock_source": "sntp",
+                        "close_reason": "duration",
+                        "recovered": False,
+                    },
+                }
+                for index in range(MAX_PAGE_LIMIT)
+            ],
+            "next_cursor": "cur_" + "d" * 40,
+        },
+        invariant=(
+            "AC-05/AC-06 boundary: a full page of the 100 items the contract's own limit "
+            "permits is a legitimate answer even though it exceeds the 16 KiB ceiling that "
+            "governs request bodies — the bound is on what a client sends, not on what the "
+            "catalog is allowed to say"
+        ),
+    )
+    out.add(
         id="clips-page-request-cursor-too-long",
         contract="backend",
         category="pagination",
@@ -3060,6 +3286,43 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         codes=(HEADER_MISSING,),
         invariant="AC-05 HEAD without the authoritative Upload-Offset cannot steer a retry",
     )
+    # Hand-authored rather than left to the status-coverage pass: that pass covers one
+    # vector per (operation, status), and the defect vector beside this one also answers
+    # 410, so relying on it here would silently delete the corpus's only conformant
+    # expired-upload refusal. The refusal is what RFC 9110 §9.3.2 leaves a HEAD: status,
+    # and nothing to read an envelope from.
+    out.add(
+        id="head_upload_file-response-410-expired",
+        contract="backend",
+        category="error",
+        operation="backend.head_upload_file",
+        direction="response",
+        status=410,
+        invariant=(
+            "AC-05 backend.head_upload_file documents 410; a HEAD carries the refusal in the "
+            "status alone (RFC 9110 §9.3.2), so this vector ships no body and no envelope to "
+            "read it from"
+        ),
+    )
+    out.add(
+        id="upload-head-response-410-with-body",
+        contract="backend",
+        category="upload",
+        operation="backend.head_upload_file",
+        direction="response",
+        status=410,
+        body=_error_body(
+            "EXPIRED", "Upload session expired", retryable=False, request_id="req-hb-1"
+        ),
+        expected="invalid",
+        codes=(FIXTURE_INDEX_INVALID,),
+        invariant=(
+            "AC-05/RFC 9110 §9.3.2: a HEAD answer is status and headers alone, so an "
+            "expired session is reported by 410 itself. A vector that ships an Error body "
+            "here describes bytes no conforming server sends, and the body is refused "
+            "before its envelope is ever read"
+        ),
+    )
     out.add(
         id="upload-commit-request",
         contract="backend",
@@ -3377,6 +3640,27 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         codes=(API_SCHEMA,),
         invariant="AC-05/AC-06 boundary: progress is a fraction in [0,1]",
     )
+    out.add(
+        id="job-response-200-progress-nan",
+        contract="backend",
+        category="boundary",
+        operation="backend.get_job",
+        direction="response",
+        status=200,
+        schema="JobRecord",
+        # Written verbatim: `NaN` has no JSON notation, so the only way to commit a
+        # vector that carries one is to carry the bytes themselves.
+        raw_body=(
+            '{"v":' + str(API_VERSION) + ',"job_id":"job-0004","state":"running",'
+            '"progress":NaN,"error_code":null,"derivative_id":null}\n'
+        ).encode("utf-8"),
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-05/AC-06 wire JSON: RFC 8259 §6 admits no NaN, so a progress value written "
+            "in that notation is not a JSON body at all and cannot reach the schema"
+        ),
+    )
 
     out.add(
         id="derivative-response-200",
@@ -3617,6 +3901,25 @@ def _complete_status_coverage(
                 candidate = f"{slug}-response-{status}-{code.lower()}-{suffix}"
                 suffix += 1
             taken.add(f"{contract}/valid/{candidate}")
+            if operation.is_head:
+                # RFC 9110 §9.3.2: a HEAD answers with status and headers alone, so the
+                # refusal this vector exists to demonstrate cannot arrive in the shared
+                # envelope. Committing the Error body the JSON components used to promise
+                # here would certify bytes no conforming server ever sends.
+                out.add(
+                    id=candidate,
+                    contract=contract,
+                    category="error",
+                    operation=key,
+                    direction="response",
+                    status=status,
+                    invariant=(
+                        f"{ac} {key} documents {status}; a HEAD carries the refusal in the "
+                        "status alone (RFC 9110 §9.3.2), so this vector ships no body and no "
+                        "envelope to read it from"
+                    ),
+                )
+                continue
             out.add(
                 id=candidate,
                 contract=contract,

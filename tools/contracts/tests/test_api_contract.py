@@ -23,6 +23,7 @@ from tools.contracts.api_model import (
 from tools.contracts.api_validate import validate_api_fixture
 from tools.contracts.bounds import MAX_CURSOR_CHARS, MAX_PAGE_LIMIT
 from tools.contracts.openapi_check import load_media_schemas
+from tools.contracts.schema_docs import resolve_refs
 
 from conftest import FIXTURES, REPO_ROOT
 
@@ -207,6 +208,17 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "backend/valid/health-ready-response-503": (),
     "backend/valid/clip-delete-response-409-clip-protected": (),
     "backend/valid/clip-file-response-410-clip-gone": (),
+    # Round 4: the nine findings' own vectors.
+    "device/invalid/pair-request-missing-body": ("API_SCHEMA",),
+    "device/invalid/pair-response-201-missing-body": ("API_SCHEMA",),
+    "device/invalid/pair-response-201-no-store": ("HEADER_INVALID",),
+    "device/valid/pair-response-403-forbidden": (),
+    "device/invalid/preview-response-200-json-content-type": ("HEADER_INVALID",),
+    "device/valid/preview-response-200-no-store": (),
+    "backend/invalid/job-response-200-progress-nan": ("API_SCHEMA",),
+    "backend/invalid/upload-head-response-410-with-body": ("FIXTURE_INDEX_INVALID",),
+    "backend/valid/clips-page-response-200-full-page": (),
+    "backend/valid/patch_upload_file-response-410-expired": (),
 }
 
 
@@ -386,18 +398,37 @@ def test_every_required_error_header_has_a_committed_value() -> None:
 
 
 def test_coverage_refusals_use_the_shared_envelope(index: list[dict]) -> None:
-    """Each coverage vector refuses with a code that status is allowed to carry."""
+    """Each coverage vector refuses the way its own method and status have to.
+
+    A refusal with content arrives in the shared envelope, with a code that status is
+    allowed to carry. A HEAD has no content to carry it in (RFC 9110 §9.3.2), so its
+    vector ships neither a body nor an index-level code: asserting an envelope there
+    would pin the very defect this round removed from the document and the corpus.
+    """
     seen = 0
+    status_only = 0
     for entry in index:
         if entry["category"] != "error" or entry["expected"] != "valid":
             continue
         seen += 1
         operation = ALL_OPERATIONS[entry["operation"]]
+        if operation.is_head:
+            status_only += 1
+            assert not entry["files"], f"{entry['id']} gives a HEAD a body"
+            assert entry["api_error_code"] is None, entry["id"]
+            assert entry["status"] in operation.error_codes, entry["id"]
+            continue
         assert entry["api_error_code"] in operation.allowed_codes_for(entry["status"]), entry["id"]
         error = _body(entry)["error"]
         assert {"code", "message", "retryable", "request_id"} <= set(error), entry["id"]
         assert error["code"] == entry["api_error_code"], entry["id"]
     assert seen > 100, seen
+    head_refusals = sum(
+        len(operation.error_codes)
+        for operation in ALL_OPERATIONS.values()
+        if operation.is_head
+    )
+    assert status_only == head_refusals, (status_only, head_refusals)
 
 
 def test_every_spec_named_error_code_is_demonstrated(index: list[dict]) -> None:
@@ -817,3 +848,447 @@ def test_the_content_range_rule_grants_only_on_a_success(
 ) -> None:
     """``bytes */<total>`` promises nothing, so only a 416 may carry it (and total ≥ 1)."""
     assert _header_codes("Content-Range", value, status, extra) == codes, (value, status, extra)
+
+
+# --- Round 4: body presence, the request-only ceiling, strict wire JSON, and the
+#     media types and headers one operation actually documents -------------------
+
+
+def _vector(
+    tmp_path,
+    *,
+    operation: str,
+    direction: str,
+    status: int | None = None,
+    schema: str | None = None,
+    body: dict | None = None,
+    raw_body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+):
+    """An ad-hoc API vector in ``tmp_path``, indexed exactly as ``fixtures.json`` does.
+
+    A defect about whether a body exists at all cannot ride along as a second copy of a
+    committed vector, so these vectors are built where they are judged. The entry carries
+    the same fields the generator writes, so nothing here is validated more leniently
+    than a committed vector is.
+    """
+    from tools.contracts.media_model import dump_json
+
+    key = ALL_OPERATIONS[operation]
+    vector_id = f"{key.contract}/valid/adhoc-{operation}-{direction}-{status}"
+    (tmp_path / vector_id).parent.mkdir(parents=True, exist_ok=True)
+    files: list[str] = []
+    if raw_body is not None:
+        (tmp_path / f"{vector_id}.json").write_bytes(raw_body)
+        files.append(f"{vector_id}.json")
+    elif body is not None:
+        (tmp_path / f"{vector_id}.json").write_bytes(dump_json(body))
+        files.append(f"{vector_id}.json")
+    if headers is not None:
+        (tmp_path / f"{vector_id}.headers.json").write_bytes(
+            dump_json({name: headers[name] for name in sorted(headers)})
+        )
+        files.append(f"{vector_id}.headers.json")
+    entry = {
+        "id": vector_id,
+        "kind": "api",
+        "contract": f"{key.contract}-v1",
+        "category": "round-4",
+        "expected": "valid",
+        "expected_error_codes": [],
+        "files": sorted(files),
+        "invariant": "AC-06 wire rule exercised in a temporary directory",
+        "operation": operation,
+        "operation_id": key.operation_id,
+        "method": key.method,
+        "path": key.path,
+        "direction": direction,
+        "status": status,
+        "schema": schema,
+        "api_error_code": None,
+    }
+    return tmp_path, entry
+
+
+def _codes(tmp_path, entry: dict, specs: dict, media_schemas: dict) -> set[str]:
+    return {
+        violation.code
+        for violation in validate_api_fixture(tmp_path, entry, specs, media_schemas)
+    }
+
+
+@pytest.mark.parametrize(
+    ("operation", "direction", "status", "schema"),
+    [
+        ("device.pair", "request", None, "PairRequest"),
+        ("device.pair", "response", 201, "PairResponse"),
+        ("device.pair", "response", 400, None),
+        ("backend.get_job", "response", 200, "JobRecord"),
+    ],
+    ids=["pair-request", "pair-201", "pair-400-envelope", "job-200-record"],
+)
+def test_a_vector_missing_a_body_the_contract_requires_is_refused(
+    tmp_path, specs, media_schemas, operation, direction, status, schema
+) -> None:
+    """Presence is checked before contents: an absent body is a finding, not a pass.
+
+    Each case names a body interfaces.md §1 binds — a request schema, a documented
+    record, the shared error envelope — and ships headers only, which is the shape that
+    used to walk away clean because every rule that could object was waiting for bytes.
+    """
+    entry = _vector(
+        tmp_path,
+        operation=operation,
+        direction=direction,
+        status=status,
+        schema=schema,
+        headers={"Content-Type": "application/json"},
+    )
+    assert _codes(*entry, specs, media_schemas) == {E.API_SCHEMA}
+
+
+@pytest.mark.parametrize(
+    ("operation", "status", "headers"),
+    [
+        ("backend.head_upload_file", 410, None),
+        ("backend.head_upload_file", 200, {"Upload-Offset": "0", "Upload-Length": "4096"}),
+        ("backend.patch_upload_file", 204, {"Upload-Offset": "1024"}),
+    ],
+    ids=["head-410", "head-200", "patch-204"],
+)
+def test_a_body_where_the_contract_allows_none_is_an_index_defect(
+    tmp_path, specs, media_schemas, operation, status, headers
+) -> None:
+    """RFC 9110 §9.3.2 and §15.3.3 leave a HEAD and a 204 without content.
+
+    The defect is the index naming a body file at all, so it reports the index code and
+    the body is never read: an envelope under a HEAD is not a malformed envelope, it is
+    bytes that should not exist.
+    """
+    entry = _vector(
+        tmp_path,
+        operation=operation,
+        direction="response",
+        status=status,
+        body={"v": 1, "error": {"code": "EXPIRED", "message": "gone", "retryable": False, "request_id": "req-1"}},
+        headers=headers,
+    )
+    assert _codes(*entry, specs, media_schemas) == {E.FIXTURE_INDEX_INVALID}
+
+
+@pytest.mark.parametrize(
+    ("operation", "status", "headers"),
+    [
+        ("device.get_preview", 200, {"Content-Type": "multipart/x-mixed-replace; boundary=frame"}),
+        (
+            "backend.get_clip_file",
+            200,
+            {"Accept-Ranges": "bytes", "ETag": '"' + "0" * 64 + '"', "Content-Length": "434"},
+        ),
+    ],
+    ids=["preview-stream", "binary-download"],
+)
+def test_the_presence_check_leaves_the_documented_non_json_bodies_alone(
+    tmp_path, specs, media_schemas, operation, status, headers
+) -> None:
+    """A body the contract publishes as bytes or a stream stays a headers-only vector."""
+    entry = _vector(
+        tmp_path, operation=operation, direction="response", status=status, headers=headers
+    )
+    assert _codes(*entry, specs, media_schemas) == set()
+
+
+def test_the_body_ceiling_governs_requests_and_leaves_responses_alone(
+    tmp_path, specs, media_schemas, by_id
+) -> None:
+    """R4: the published control bound is a bound on what a client sends.
+
+    Both halves are needed. A request past 16 KiB still has to be refused, or the gate
+    would have been deleted rather than scoped; a full catalog page past 16 KiB has to
+    pass, or the request bound was being applied to answers it never governed.
+    """
+    from tools.contracts.bounds import MAX_CONTROL_BODY_BYTES
+
+    oversized = _vector(
+        tmp_path,
+        operation="device.pair",
+        direction="request",
+        schema="PairRequest",
+        body={"v": 1, "setup_secret": "A" * 86, "client_name": "n" * (MAX_CONTROL_BODY_BYTES * 2)},
+    )
+    assert _codes(*oversized, specs, media_schemas) == {E.API_BODY_TOO_LARGE}
+
+    page = by_id["backend/valid/clips-page-response-200-full-page"]
+    body = json.dumps(_body(page), separators=(",", ":")).encode("utf-8")
+    assert len(body) > MAX_CONTROL_BODY_BYTES, len(body)
+    assert page["expected"] == "valid"
+    assert _observed(page, specs, media_schemas) == set()
+
+
+def test_a_body_using_a_non_json_literal_is_refused_before_the_schema(
+    tmp_path, specs, media_schemas, by_id
+) -> None:
+    """RFC 8259 §6 admits no NaN, so a body carrying one is not JSON at all.
+
+    Python's decoder accepts the literal by default, which is how such a vector could
+    once have been generated *and* validated; the strict hook makes both halves refuse.
+    """
+    entry = _vector(
+        tmp_path,
+        operation="backend.get_job",
+        direction="response",
+        status=200,
+        schema="JobRecord",
+        raw_body=b'{"v":1,"job_id":"job-1","state":"running","progress":NaN,'
+        b'"error_code":null,"derivative_id":null}\n',
+    )
+    assert _codes(*entry, specs, media_schemas) == {E.API_SCHEMA}
+
+    committed = by_id["backend/invalid/job-response-200-progress-nan"]
+    shipped = (FIXTURES / committed["files"][0]).read_bytes()
+    assert b'"progress":NaN' in shipped, shipped
+    assert _observed(committed, specs, media_schemas) == {E.API_SCHEMA}
+
+
+def test_no_conforming_body_carries_a_non_json_literal() -> None:
+    """The generator cannot produce one, so only a deliberate defect may carry one.
+
+    ``dump_json`` refusing the value is the writer's contract; this is the corpus half of
+    the same statement, read with the validator's own hook: every committed wire file
+    either parses as strict JSON or is the vector whose declared defect is that it does
+    not. A second offender would be a defect nobody declared.
+    """
+    from tools.contracts.api_validate import _reject_nonfinite
+    from tools.contracts.media_model import dump_json
+
+    with pytest.raises(ValueError):
+        dump_json({"v": 1, "progress": float("nan")})
+
+    offenders = []
+    for entry in _all_api_entries():
+        for name in entry["files"]:
+            if name.endswith(".headers.json"):
+                continue
+            data = (FIXTURES / name).read_bytes()
+            try:
+                json.loads(data.decode("utf-8"), parse_constant=_reject_nonfinite)
+            except ValueError:
+                offenders.append((name, entry["expected"], entry["expected_error_codes"]))
+    assert offenders == [
+        (
+            "backend/invalid/job-response-200-progress-nan.json",
+            "invalid",
+            ["API_SCHEMA"],
+        )
+    ], offenders
+
+
+def _all_api_entries() -> list[dict]:
+    document = json.loads((FIXTURES / "fixtures.json").read_bytes().decode("utf-8"))
+    return [entry for entry in document["fixtures"] if entry["kind"] == "api"]
+
+
+def test_the_preview_media_type_is_the_stream_the_document_publishes(
+    specs: dict, by_id: dict, media_schemas: dict
+) -> None:
+    """R6: the one non-JSON body this contract publishes says the same thing everywhere.
+
+    The operation table decides what the validator accepts, the YAML is what a client is
+    generated from, and the vector is what a reviewer can read off the wire. If the
+    published media type drifts in any of the three, a consumer is coded against a stream
+    no conforming device sends, and the corpus still passes.
+    """
+    from tools.contracts.api_model import PREVIEW_CONTENT_TYPE
+
+    preview = ALL_OPERATIONS["device.get_preview"]
+    assert PREVIEW_CONTENT_TYPE == "multipart/x-mixed-replace; boundary=frame"
+    assert preview.content_types_for("response", 200) == frozenset({PREVIEW_CONTENT_TYPE})
+    published = specs["device"]["paths"][preview.path]["get"]["responses"]["200"]
+    assert set(published["content"]) == {PREVIEW_CONTENT_TYPE}, sorted(published["content"])
+    assert set(published["headers"]) == {"Cache-Control"}, sorted(published["headers"])
+
+    stream = by_id["device/valid/preview-response-200-no-store"]
+    assert _headers(stream)["Content-Type"] == PREVIEW_CONTENT_TYPE
+    assert _observed(stream, specs, media_schemas) == set()
+    # The vector that answers the stream with a JSON document is the regression this
+    # tie-out exists to keep refused.
+    impostor = by_id["device/invalid/preview-response-200-json-content-type"]
+    assert _headers(impostor)["Content-Type"] == "application/json"
+    assert _observed(impostor, specs, media_schemas) == {E.HEADER_INVALID}
+
+
+def _rule_codes(operation: str, direction: str, status: int | None, name: str, value: str):
+    """One header value through the one rule a committed vector would send it through."""
+    from tools.contracts.api_validate import HEADER_RULES, _HeaderContext
+
+    rule = HEADER_RULES.get(name.lower())
+    assert rule is not None, f"{name} has no documented rule"
+    context = _HeaderContext(
+        location=f"round-4:{operation}",
+        operation=ALL_OPERATIONS[operation],
+        direction=direction,
+        status=status,
+        headers={name: value},
+    )
+    return {violation.code for violation in rule(context, name, value)}
+
+
+@pytest.mark.parametrize(
+    ("operation", "direction", "status", "value", "codes"),
+    [
+        ("device.get_preview", "response", 200, "multipart/x-mixed-replace; boundary=frame", set()),
+        ("device.get_preview", "response", 200, "application/json", {E.HEADER_INVALID}),
+        ("device.get_preview", "response", 200, "text/plain", {E.HEADER_INVALID}),
+        ("device.pair", "response", 201, "application/json", set()),
+        ("device.pair", "response", 201, "multipart/x-mixed-replace; boundary=frame", {E.HEADER_INVALID}),
+        ("device.pair", "response", 201, "application/octet-stream", {E.HEADER_INVALID}),
+        ("device.get_clip_file", "response", 200, "application/octet-stream", set()),
+        ("device.get_clip_file", "response", 206, "application/json", {E.HEADER_INVALID}),
+        ("backend.head_upload_file", "response", 200, "application/octet-stream", {E.HEADER_INVALID}),
+        ("backend.head_upload_file", "response", 410, "application/json", {E.HEADER_INVALID}),
+        ("backend.patch_upload_file", "request", None, "application/octet-stream", set()),
+        ("backend.patch_upload_file", "request", None, "application/json", {E.HEADER_INVALID}),
+        ("device.post_ota", "request", None, "application/octet-stream", set()),
+        ("device.pair", "request", None, "application/json", set()),
+    ],
+    ids=[
+        "preview-its-own-stream",
+        "preview-answering-json",
+        "preview-answering-text",
+        "pair-json-record",
+        "pair-with-a-stream",
+        "pair-with-raw-bytes",
+        "download-octet-stream",
+        "download-as-json",
+        "head-claiming-bytes",
+        "head-claiming-json",
+        "chunk-octet-stream",
+        "chunk-as-json",
+        "ota-image-octet-stream",
+        "pair-request-json",
+    ],
+)
+def test_a_media_type_is_judged_against_the_operation_that_sends_it(
+    operation: str, direction: str, status: int | None, value: str, codes: set[str]
+) -> None:
+    """A media type is only conforming *for* the operation that publishes it.
+
+    ``application/json`` is documented by these contracts, which is exactly the hole: the
+    old corpus-wide vocabulary accepted it wherever it appeared, so a preview that
+    answered one JSON document and a HEAD that claimed a body both passed.
+    """
+    assert _rule_codes(operation, direction, status, "Content-Type", value) == codes
+
+
+@pytest.mark.parametrize(
+    ("operation", "direction", "status", "value", "codes"),
+    [
+        ("device.get_preview", "response", 200, "no-store", set()),
+        ("device.get_preview", "response", 200, "max-age=60", {E.HEADER_INVALID}),
+        ("device.pair", "response", 201, "no-store", {E.HEADER_INVALID}),
+        ("device.get_clip_file", "response", 200, "no-store", {E.HEADER_INVALID}),
+        ("device.pair", "request", None, "no-store", {E.HEADER_INVALID}),
+    ],
+    ids=[
+        "preview-no-store",
+        "preview-caching-a-stream",
+        "token-response-with-a-directive",
+        "download-with-a-directive",
+        "request-with-a-directive",
+    ],
+)
+def test_cache_control_is_accepted_only_where_the_contract_documents_it(
+    operation: str, direction: str, status: int | None, value: str, codes: set[str]
+) -> None:
+    """Only the live preview documents ``Cache-Control``, and only as ``no-store``.
+
+    device-v1.yaml publishes ``components/headers/CacheControlNoStore`` on the preview 200
+    without marking it required, so the directive is allowed there and is a claim no other
+    operation is entitled to make.
+    """
+    assert _rule_codes(operation, direction, status, "Cache-Control", value) == codes
+
+
+def test_the_shared_media_type_vocabulary_is_exactly_what_some_operation_publishes() -> None:
+    """No media type may survive in the shared vocabulary that no operation documents.
+
+    The per-operation table decides acceptance; the shared set is the cross-contract
+    vocabulary a message quotes. A stale entry there would be a media type the tests
+    claim exists and no vector or document can name.
+    """
+    from tools.contracts.api_validate import DOCUMENTED_CONTENT_TYPES
+
+    published: set[str] = set()
+    for operation in ALL_OPERATIONS.values():
+        published |= operation.content_types_for("request", None)
+        for status in operation.documented_statuses:
+            published |= operation.content_types_for("response", status)
+    assert published == set(DOCUMENTED_CONTENT_TYPES), (
+        sorted(published ^ set(DOCUMENTED_CONTENT_TYPES)),
+    )
+
+
+def test_the_document_promises_no_content_where_the_method_forbids_it(
+    specs: dict, index: list[dict]
+) -> None:
+    """R9: the HEAD operation answers with status and headers, in both notations.
+
+    The YAML used to point its three refusals at the shared JSON error components, and the
+    corpus shipped three bodies nobody would send; either half regrowing content is a
+    contract that teaches a client to read bytes that never arrive.
+    """
+    head = ALL_OPERATIONS["backend.head_upload_file"]
+    responses = specs["backend"]["paths"][head.path]["head"]["responses"]
+    for status, response in responses.items():
+        # A response may promise a body through a component reference, so the promise is
+        # judged on what a generated client would actually see, not on the key that
+        # carries it: `{"$ref": "#/components/responses/Unauthorized"}` names a JSON body
+        # and is refused here exactly as an inline `content:` block would be.
+        published = resolve_refs(response, root=specs["backend"])
+        assert not published.get("content"), (status, sorted(published.get("content", {})))
+    vectors = [entry for entry in index if entry["operation"] == "backend.head_upload_file"]
+    assert vectors, "the HEAD operation has no vector at all"
+    for entry in vectors:
+        if entry["expected"] == "valid":
+            assert not [
+                name for name in entry["files"] if not name.endswith(".headers.json")
+            ], entry["id"]
+    # Exactly one HEAD vector is allowed to name a body file: the one whose declared
+    # defect is shipping it, and that is the only code it may declare.
+    with_bodies = [
+        entry
+        for entry in vectors
+        if any(not name.endswith(".headers.json") for name in entry["files"])
+    ]
+    assert [entry["id"] for entry in with_bodies] == [
+        "backend/invalid/upload-head-response-410-with-body"
+    ]
+    assert with_bodies[0]["expected_error_codes"] == ["FIXTURE_INDEX_INVALID"]
+
+
+def test_the_two_new_refusals_are_documented_and_demonstrated(
+    specs: dict, by_id: dict, media_schemas: dict
+) -> None:
+    """R8: the pairing window and the expired upload are refusals, not prose.
+
+    Each half has to hold in all three notations at once: the operation table that drives
+    validation, the OpenAPI response a client is generated from, and a committed golden
+    vector that shows the shared envelope arriving with the code the spec names.
+    """
+    pair = ALL_OPERATIONS["device.pair"]
+    assert pair.error_codes.get(403) == ("FORBIDDEN",), pair.error_codes
+    pair_response = specs["device"]["paths"]["/pair"]["post"]["responses"]["403"]
+    assert pair_response["$ref"] == "#/components/responses/Forbidden"
+    forbidden = by_id["device/valid/pair-response-403-forbidden"]
+    assert forbidden["expected"] == "valid"
+    assert forbidden["api_error_code"] == "FORBIDDEN"
+    assert _observed(forbidden, specs, media_schemas) == set()
+
+    patch = ALL_OPERATIONS["backend.patch_upload_file"]
+    assert patch.error_codes.get(410) == ("EXPIRED",), patch.error_codes
+    gone = specs["backend"]["paths"]["/uploads/{id}/files/{name}"]["patch"]["responses"]["410"]
+    assert gone["$ref"] == "#/components/responses/Gone"
+    expired = by_id["backend/valid/patch_upload_file-response-410-expired"]
+    assert expired["expected"] == "valid"
+    assert expired["api_error_code"] == "EXPIRED"
+    assert _observed(expired, specs, media_schemas) == set()

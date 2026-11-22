@@ -330,11 +330,14 @@ paths:
             Upload-Length:
               $ref: '#/components/headers/UploadLength'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          # A HEAD answer is status and headers alone (RFC 9110 §9.3.2): the shared Error
+          # body the other refusals of this contract carry would promise content the
+          # method forbids, so the status is the whole report.
+          description: Missing or invalid bearer token, reported by the status alone.
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: Resource was never known, reported by the status alone.
         '410':
-          $ref: '#/components/responses/Gone'
+          description: Known evicted clip or expired upload, reported by the status alone.
     patch:
       tags: [ingestion]
       operationId: patchUploadFile
@@ -388,6 +391,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '410':
+          # interfaces.md §8: an upload session expires 24 h after its last committed
+          # chunk, and every endpoint of that session answers 410 once it has. A chunk
+          # that arrives after the window closes names an offset that no longer exists.
+          $ref: '#/components/responses/Gone'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '422':
@@ -1073,8 +1081,13 @@ components:
       format: date-time
       pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
     Sha256:
-      description: SHA-256 over the exact file bytes.
+      description: >-
+        SHA-256 over the exact file bytes. The length keywords restate what the
+        pattern already implies here, so a generated client refuses a digest with a
+        stray byte rather than comparing something that was never a digest.
       type: string
+      minLength: 64
+      maxLength: 64
       pattern: '^[0-9a-f]{64}$'
     ClipFileName:
       description: The two file names of the original recording format.
@@ -1809,3 +1822,4 @@ components:
         uncertainty_ms:
           type: ['integer', 'null']
           minimum: 0
+          maximum: 9007199254740991

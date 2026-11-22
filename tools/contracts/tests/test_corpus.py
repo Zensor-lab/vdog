@@ -213,12 +213,18 @@ def test_index_is_self_describing() -> None:
 
 
 def test_every_fixture_declares_files_that_exist() -> None:
+    from tools.contracts.api_model import ALL_OPERATIONS
+
     document = json.loads((FIXTURES / "fixtures.json").read_bytes().decode("utf-8"))
     for entry in document["fixtures"]:
         if not entry["files"]:
-            # Only a bodiless 204 response may ship nothing: its whole contract is
-            # the status the validator still has to find documented.
-            assert entry["status"] == 204, f"{entry['id']} carries no wire file"
+            # Only a response RFC 9110 leaves without content may ship nothing: a 204
+            # (§15.3.3) states its result without a body and a HEAD (§9.3.2) answers with
+            # status and headers alone. For those the absence *is* the vector; anything
+            # else that ships no wire file is an index that lost a file.
+            assert entry["kind"] == "api", f"{entry['id']} carries no wire file"
+            bodiless = entry["status"] == 204 or ALL_OPERATIONS[entry["operation"]].is_head
+            assert bodiless, f"{entry['id']} carries no wire file"
             continue
         for name in entry["files"]:
             relative = f"{entry['id']}/{name}" if entry["kind"] != "api" else name

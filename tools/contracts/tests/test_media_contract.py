@@ -27,6 +27,7 @@ from tools.contracts.bounds import (
     MAX_MANIFEST_BYTES,
     MAX_PAYLOAD_BYTES,
     MEDIA_VERSION,
+    UINT53_MAX,
 )
 from tools.contracts.jpeg import decode_size, sof_dimensions
 from tools.contracts.media_validate import (
@@ -337,6 +338,14 @@ REQUIRED_MEDIA_DEFECTS: dict[str, tuple[str, ...]] = {
     "media/invalid/nominal-fps-high-decimal": (E.NOMINAL_FPS_INVALID,),
     "media/invalid/index-declared-oversize": (E.MANIFEST_SCHEMA, E.MANIFEST_SIZE_MISMATCH),
     "media/invalid/clock-timestamp-impossible-date": (E.CLOCK_TIMESTAMP_INVALID,),
+    # Round 4: malformed integrity fields, the walk's own record ceiling, and the
+    # shared JSON integer bound on a clock estimate.
+    "media/invalid/manifest-sha-trailing-newline": (E.MANIFEST_HASH_MISMATCH, E.MANIFEST_SCHEMA),
+    "media/invalid/manifest-size-non-integer": (E.MANIFEST_SIZE_MISMATCH, E.MANIFEST_SCHEMA),
+    "media/invalid/checksums-sha-trailing-newline": (E.CHECKSUMS_SCHEMA,),
+    "media/invalid/checksums-size-non-integer": (E.CHECKSUMS_SCHEMA,),
+    "media/invalid/index-records-above-clip-ceiling": (E.FRAME_COUNT_MISMATCH,),
+    "media/invalid/clock-uncertainty-above-uint53": (E.CLOCK_NULLITY_MISMATCH, E.MANIFEST_SCHEMA),
 }
 
 
@@ -883,3 +892,187 @@ def test_the_manifest_bounds_the_index_below_the_payload(schemas: dict) -> None:
         schemas["manifest"], manifest
     )]
     assert found == [("bytes", "maximum")], found
+
+
+# --- Round 4: integrity fields are compared or reported, and the bounds the
+#     schema cannot reach are enforced by the walk and the clock check ------------
+
+#: The four ways a manifest or sidecar entry can state an integrity property that is
+#: nothing to compare: a digest with a stray byte, a digest that is not a string at all,
+#: and a length that arrived as text or as nothing.
+_INTEGRITY_DAMAGE = [
+    (MANIFEST_NAME, PAYLOAD_NAME, "sha256", lambda value: value + "\n",
+     {E.MANIFEST_HASH_MISMATCH, E.MANIFEST_SCHEMA}),
+    (MANIFEST_NAME, INDEX_NAME, "sha256", lambda value: None,
+     {E.MANIFEST_HASH_MISMATCH, E.MANIFEST_SCHEMA}),
+    (MANIFEST_NAME, INDEX_NAME, "bytes", str,
+     {E.MANIFEST_SIZE_MISMATCH, E.MANIFEST_SCHEMA}),
+    (MANIFEST_NAME, PAYLOAD_NAME, "bytes", lambda value: None,
+     {E.MANIFEST_SIZE_MISMATCH, E.MANIFEST_SCHEMA}),
+    (CHECKSUMS_NAME, PAYLOAD_NAME, "sha256", lambda value: value + " ",
+     {E.CHECKSUMS_SCHEMA,}),
+    (CHECKSUMS_NAME, INDEX_NAME, "bytes", str, {E.CHECKSUMS_SCHEMA,}),
+]
+
+
+@pytest.mark.parametrize(
+    ("document", "file_name", "property_name", "damage", "codes"),
+    _INTEGRITY_DAMAGE,
+    ids=[
+        "manifest-digest-padded",
+        "manifest-digest-null",
+        "manifest-index-length-as-text",
+        "manifest-payload-length-null",
+        "sidecar-digest-padded",
+        "sidecar-length-as-text",
+    ],
+)
+def test_a_malformed_integrity_field_is_reported_not_skipped(
+    tmp_path, schemas, document, file_name, property_name, damage, codes
+) -> None:
+    """A field the validator cannot measure is a defect, never a check to pass over.
+
+    Every case used to be silent: the dedicated checks only compared a digest once it
+    matched ``[0-9a-f]{64}`` and only compared a length once it was an integer, so the
+    malformed declaration certified the bytes beside it by default. Now each one names
+    the shape it was handed, and the schema keyword refuses it too where a keyword can.
+    """
+    files = baseline_files()
+    if document == MANIFEST_NAME:
+        # The sidecar describes the manifest's own bytes, so a manifest edit travels
+        # without it: a stale sidecar would report a second defect the case is not about.
+        del files[CHECKSUMS_NAME]
+    record = json.loads(files[document])
+    declaration = record["files"][file_name]
+    declaration[property_name] = damage(declaration[property_name])
+    files[document] = json.dumps(record, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    entry = synthetic_media_entry(tmp_path, f"integrity-{property_name}-{file_name}", files)
+    observed = {
+        violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)
+    }
+    assert observed == codes, (document, file_name, property_name, sorted(observed))
+
+
+def test_the_digest_shape_is_pinned_where_the_digest_is_declared(schemas) -> None:
+    """``minLength``/``maxLength``: 64 is a fact about the value, not only the pattern.
+
+    The three notations that publish a digest must say so identically, because the OpenAPI
+    mirrors are what a consumer generates a parser from; a mirror without the length
+    keywords accepts a padded digest the media schema refuses.
+    """
+    import yaml
+
+    node = _find_property(_resolved(schemas["manifest"]), "sha256")
+    assert node is not None, "the manifest declares no sha256 property"
+    assert node["minLength"] == node["maxLength"] == 64, node
+    assert node["pattern"] == "^[0-9a-f]{64}$", node
+
+    for contract in ("device", "backend"):
+        document = yaml.safe_load(
+            (REPO_ROOT / "contracts" / f"{contract}-v1.yaml").read_text(encoding="utf-8")
+        )
+        mirror = document["components"]["schemas"]["Sha256"]
+        assert mirror["minLength"] == mirror["maxLength"] == 64, contract
+        assert mirror["pattern"] == "^[0-9a-f]{64}$", contract
+
+
+def _active_with_frame_count(total: int) -> dict[str, bytes]:
+    """An interrupted segment of ``total`` frames, with nothing declaring the count.
+
+    The same repeated baseline frame keeps every per-frame invariant true; the point is
+    that an active record carries no ``frame_count``, so no manifest bound exists for the
+    3,601st record to trip and only the walk can refuse it.
+    """
+    clip = _clip_with_frame_count(total)
+    return {
+        PAYLOAD_NAME + ".part": clip[PAYLOAD_NAME],
+        INDEX_NAME + ".part": clip[INDEX_NAME],
+        ACTIVE_NAME: _active_files()[ACTIVE_NAME],
+    }
+
+
+@pytest.mark.parametrize(
+    ("kind", "total", "codes"),
+    [
+        ("clip", MAX_FRAMES_PER_CLIP, set()),
+        ("clip", MAX_FRAMES_PER_CLIP + 1, {E.FRAME_COUNT_MISMATCH}),
+        ("active", MAX_FRAMES_PER_CLIP, set()),
+        ("active", MAX_FRAMES_PER_CLIP + 1, {E.FRAME_COUNT_MISMATCH}),
+    ],
+    ids=["clip-at-ceiling", "clip-past-ceiling", "active-at-ceiling", "active-past-ceiling"],
+)
+def test_the_walk_refuses_the_record_past_the_clip_ceiling(
+    tmp_path, schemas, kind, total, codes
+) -> None:
+    """media-format.md §2's 3,600-frame bound is enforced while walking, for both kinds.
+
+    The finalized half of this was already covered by the manifest's ``frame_count``
+    comparison; the active half had nothing to compare against, which is why the gate has
+    to sit in the walk before a record is measured or parsed — the 3,601st record's ``seq``
+    is outside the frame schema, and reporting that instead of the ceiling would blame
+    the record for a bound on the clip.
+    """
+    files = (
+        _clip_with_frame_count(total) if kind == "clip" else _active_with_frame_count(total)
+    )
+    entry = synthetic_media_entry(tmp_path, f"{kind}-records-{total}", files, kind=kind)
+    observed = {
+        violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)
+    }
+    assert observed == codes, (kind, total, sorted(observed))
+
+
+def test_the_committed_over_ceiling_vector_is_an_active_segment(index: list[dict]) -> None:
+    """The one committed over-ceiling vector is the kind no manifest bound can reach."""
+    entry = next(
+        item for item in index if item["id"] == "media/invalid/index-records-above-clip-ceiling"
+    )
+    assert entry["kind"] == "active", entry["kind"]
+    assert entry["expected_error_codes"] == [E.FRAME_COUNT_MISMATCH]
+    lines = [line for line in _index_bytes(entry).split(b"\n") if line]
+    assert len(lines) == MAX_FRAMES_PER_CLIP + 1, len(lines)
+    record = json.loads(_read(entry["id"], ACTIVE_NAME))
+    assert "frame_count" not in record, "an active record must not declare a count"
+
+
+@pytest.mark.parametrize(
+    ("uncertainty", "codes"),
+    [
+        (UINT53_MAX, set()),
+        (UINT53_MAX + 1, {E.CLOCK_NULLITY_MISMATCH, E.MANIFEST_SCHEMA}),
+    ],
+    ids=["at-the-ceiling", "one-past-the-ceiling"],
+)
+def test_the_clock_uncertainty_ceiling_is_enforced_beside_the_schema_keyword(
+    tmp_path, schemas, uncertainty, codes
+) -> None:
+    """media-format.md §2 bounds every JSON integer of this format at 2^53−1.
+
+    The dedicated check owned only the negative half, so an estimate above the range a
+    conforming reader represents exactly was refused by a keyword the harness suppresses
+    for its sibling properties and nothing else named it. Both halves are asserted here:
+    the ceiling value itself is conformant, and one past it reports where it lives.
+    """
+    files = baseline_files()
+    del files[CHECKSUMS_NAME]
+    record = json.loads(files[MANIFEST_NAME])
+    record["clock"]["uncertainty_ms"] = uncertainty
+    files[MANIFEST_NAME] = json.dumps(record, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    entry = synthetic_media_entry(tmp_path, f"clock-uncertainty-{uncertainty}", files)
+    observed = {
+        violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)
+    }
+    assert observed == codes, (uncertainty, sorted(observed))
+
+
+def test_the_committed_uncertainty_vector_carries_the_refused_value(index: list[dict]) -> None:
+    """The dedicated ceiling has a corpus vector of its own, not only a unit test."""
+    entry = next(
+        item for item in index if item["id"] == "media/invalid/clock-uncertainty-above-uint53"
+    )
+    assert entry["expected"] == "invalid"
+    assert entry["expected_error_codes"] == [E.CLOCK_NULLITY_MISMATCH, E.MANIFEST_SCHEMA]
+    manifest = json.loads(_read(entry["id"], MANIFEST_NAME))
+    assert manifest["clock"]["uncertainty_ms"] == UINT53_MAX + 1

@@ -356,6 +356,45 @@ def test_the_documents_and_the_bound_table_agree(device: dict, backend: dict) ->
             "upload expiry",
         ),
     ]
+
+    # media-format.md §2 puts every JSON integer of these formats inside the range a
+    # conforming reader represents exactly. Four documents state that ceiling for the
+    # clock estimate and two more for the shared integer component, and the validator
+    # enforces the clock one arithmetically: any of them drifting from ``bounds.py`` would
+    # let a client accept an estimate the harness refuses.
+    media, media_violations = load_media_schemas(CONTRACTS / "media-v1")
+    assert not media_violations, [violation.render() for violation in media_violations]
+    for name in ("manifest", "active"):
+        checks.append(
+            (
+                media[name]["$defs"]["clock"]["properties"]["uncertainty_ms"]["maximum"],
+                bounds.UINT53_MAX,
+                f"media-v1 {name} uncertainty ceiling",
+            )
+        )
+    for schemas, contract in ((device_schemas, "device"), (backend_schemas, "backend")):
+        checks.append(
+            (
+                schemas["ManifestClock"]["properties"]["uncertainty_ms"]["maximum"],
+                bounds.UINT53_MAX,
+                f"{contract}-v1 ManifestClock uncertainty ceiling",
+            )
+        )
+        checks.append(
+            (
+                schemas["UInt53"]["maximum"],
+                bounds.UINT53_MAX,
+                f"{contract}-v1 shared integer ceiling",
+            )
+        )
+        # A digest is 64 characters by definition, so each notation that declares the
+        # pattern has to carry the pair of length keywords too; the value is pinned beside
+        # the pattern in test_media_contract, and what belongs here is that no notation is
+        # left accepting a padded digest a sibling refuses.
+        assert "minLength" in schemas["Sha256"] and "maxLength" in schemas["Sha256"], contract
+    assert "minLength" in media["manifest"]["$defs"]["sha256"], "media-v1 sha256"
+    assert "maxLength" in media["manifest"]["$defs"]["sha256"], "media-v1 sha256"
+
     for observed, expected, name in checks:
         assert observed == expected, f"{name}: document says {observed!r}, bounds.py says {expected!r}"
 

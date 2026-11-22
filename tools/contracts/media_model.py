@@ -153,8 +153,17 @@ def sha256_hex(data: bytes) -> str:
 
 
 def dump_json(document: Mapping[str, Any]) -> bytes:
-    """Canonical compact JSON with one trailing LF: UTF-8, no BOM, no CR."""
-    return (json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    """Canonical compact JSON with one trailing LF: UTF-8, no BOM, no CR.
+
+    ``allow_nan=False`` is part of the writer's contract, not a nicety: ``NaN`` and
+    ``Infinity`` have no JSON notation (RFC 8259 §6), so a committed vector that
+    carried one would be a wire value no conforming reader can parse. A non-finite
+    float reaching this call is a generator bug, and refusing it here is what keeps
+    the corpus free of them.
+    """
+    return (
+        json.dumps(document, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n"
+    ).encode("utf-8")
 
 
 def frame_record_line(*, seq: int, offset: int, size: int, t_us: int, crc32: str) -> bytes:

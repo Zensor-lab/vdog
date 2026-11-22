@@ -112,8 +112,10 @@
       "pattern": "^[0-9a-f]{32}-[0-9a-f]{8}$"
     },
     "sha256": {
-      "description": "SHA-256 over the exact file bytes.",
+      "description": "SHA-256 over the exact file bytes. The length keywords restate what the pattern already implies in this dialect: a digest with a trailing newline or a stray space is not a digest, and a reader whose regex engine treats $ loosely still has to refuse it.",
       "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
       "pattern": "^[0-9a-f]{64}$"
     },
     "file_entry": {
@@ -188,9 +190,10 @@
           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
         },
         "uncertainty_ms": {
-          "description": "Required and nonnegative when the clock source is known; null when unknown.",
+          "description": "Required and nonnegative when the clock source is known; null when unknown. media-format.md §2 puts every JSON integer of this format inside the range a conforming reader represents exactly, so an estimate above that ceiling is not an estimate at all.",
           "type": ["integer", "null"],
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     }

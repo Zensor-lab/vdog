@@ -63,6 +63,11 @@ paths:
                 $ref: '#/components/schemas/PairResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '403':
+          # interfaces.md §1 reserves 403 for "wrong privilege/physical window", and §2
+          # keeps the claim available only while that window is open, so a pairing
+          # attempt outside it is a refusal to act, not a malformed request.
+          $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
         '429':
@@ -224,7 +229,11 @@ paths:
             Cache-Control:
               $ref: '#/components/headers/CacheControlNoStore'
           content:
-            multipart/x-mixed-replace:
+            # The key is the whole `Content-Type` the operation sends, boundary
+            # parameter included, exactly as the description above and interfaces.md §3
+            # state it: a consumer that generated its parser from the parameterless form
+            # would be looking for the wrong multipart subtype on the wire.
+            'multipart/x-mixed-replace; boundary=frame':
               schema:
                 type: string
                 description: >-
@@ -1442,6 +1451,7 @@ components:
         uncertainty_ms:
           type: ['integer', 'null']
           minimum: 0
+          maximum: 9007199254740991
     CloseReason:
       description: Close cause of a finalized segment; recovered means recovery.
       enum:
@@ -1454,6 +1464,11 @@ components:
         - recovery
         - ota
     Sha256:
-      description: SHA-256 over the exact file bytes.
+      description: >-
+        SHA-256 over the exact file bytes. The length keywords restate what the
+        pattern already implies here, so a generated client refuses a digest with a
+        stray byte rather than comparing something that was never a digest.
       type: string
+      minLength: 64
+      maxLength: 64
       pattern: '^[0-9a-f]{64}$'
