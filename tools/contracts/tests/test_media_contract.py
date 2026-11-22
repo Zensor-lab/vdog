@@ -740,8 +740,12 @@ def test_a_float_byte_position_is_a_finding_not_a_crash(
     """A byte position that is not a JSON integer is named, never raised through.
 
     `type: integer` refuses a half, a string and the bool Python calls an int, and
-    neither the walk's arithmetic nor its payload slice could use any of them: without
-    the refusal the run dies on a `TypeError` instead of naming the line. Integral
+    neither the walk's arithmetic nor its payload slice could use any of them. Today
+    the schema's structural report names all six of these before the walk is asked, so
+    the `TypeError` this guards against is a counterfactual about the layered check as a
+    whole rather than about this branch alone: lift the type keyword the way
+    :func:`test_a_byte_position_the_schema_no_longer_types_is_still_a_finding` does and
+    such a value reaches arithmetic that can only raise or quietly fudge it. Integral
     notations — `434.0`, `4.34e2` — are the opposite case and belong to
     :func:`test_an_integral_byte_position_in_any_notation_validates`.
     """

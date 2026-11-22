@@ -728,6 +728,28 @@ def _range_table() -> list[tuple[str, int | None, dict[str, str], set[str], str,
         ("bytes=0-99", None, {}, set(), "ordered-request", "request"),
         ("bytes=999-", None, {}, set(), "open-ended-request", "request"),
         ("bytes=0-1023", None, {}, set(), "baseline-request", "request"),
+        # `bytes=20-100` orders correctly numerically and wrongly as text, since "100"
+        # sorts before "20". Every other reversed cell (`bytes=200-100`) flags under
+        # either reading, so without these three nothing in the suite would notice the
+        # comparison being changed from `int(end) < start` to `end < start`: the two
+        # granting statuses and the request all go silent on a correctly ordered range.
+        (
+            "bytes=20-100",
+            206,
+            GRANTED_206,
+            set(),
+            "wider-end-206-ordered",
+            "response",
+        ),
+        (
+            "bytes=20-100",
+            200,
+            {"Content-Length": "1000"},
+            set(),
+            "wider-end-200-ordered",
+            "response",
+        ),
+        ("bytes=20-100", None, {}, set(), "wider-end-request", "request"),
     ]
     return cases
 

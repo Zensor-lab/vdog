@@ -390,9 +390,11 @@ def _walk_index(
         # a length need real `int`s. So the notation is accepted on the schema's terms
         # and normalised before the first addition, rather than refused for a spelling
         # the contract publishes as valid. A value that is not an integer in any
-        # notation (5.5, a string, a bool, absent) is refused here as well: the schema
-        # report above already names it, and this keeps such a value out of the
-        # arithmetic and the slice whatever path it came by.
+        # notation (5.5, a string, a bool) is refused here too: the `type` report above
+        # already names it, and this keeps such a value out of the arithmetic and the
+        # slice whatever path it came by. A missing offset or size is not this branch's
+        # to catch — the `required` report above refuses the record before either field
+        # is even read, so there is no absent case to see here.
         if not all(_is_int(record[name]) for name in ("offset", "size")):
             walk.violations.append(
                 Violation(
