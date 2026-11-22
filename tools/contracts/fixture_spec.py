@@ -1827,6 +1827,46 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
+        id="clip-file-response-412-multi-range",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=412,
+        api_error_code="CONTENT_CHANGED",
+        headers={"If-Match": f'"{"0" * 64}"', "Range": "bytes=0-99,200-299"},
+        body=_error_body(
+            "CONTENT_CHANGED", "ETag no longer matches", retryable=False, request_id="req-bfa"
+        ),
+        invariant=(
+            "AC-04/AC-06 range: the If-Match precondition of a resume is evaluated "
+            "before a range is parsed or served (RFC 9110 §13.2.2), so a multipart "
+            "Range in the request does not change the required 412 CONTENT_CHANGED"
+        ),
+    )
+    out.add(
+        id="clip-file-response-206-multi-range",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Range": "bytes=0-99,200-299",
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes 0-1023/{media.baseline_payload_bytes}",
+            "ETag": payload_etag,
+            "Content-Length": "1024",
+        },
+        expected="invalid",
+        codes=(RANGE_MULTI_NOT_ALLOWED,),
+        invariant=(
+            "AC-06 range: only a single bytes=start-end or bytes=start- range is "
+            "supported, so granting bytes for a multipart specifier is contract misuse "
+            "however well-formed the granted range itself looks"
+        ),
+    )
+    out.add(
         id="clip-file-response-412-content-changed",
         contract="device",
         category="etag",

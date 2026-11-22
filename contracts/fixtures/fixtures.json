@@ -3397,6 +3397,28 @@
         "RANGE_MULTI_NOT_ALLOWED"
       ],
       "files": [
+        "device/invalid/clip-file-response-206-multi-range.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-206-multi-range",
+      "invariant": "AC-06 range: only a single bytes=start-end or bytes=start- range is supported, so granting bytes for a multipart specifier is contract misuse however well-formed the granted range itself looks",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
+      "api_error_code": null,
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "RANGE_MULTI_NOT_ALLOWED"
+      ],
+      "files": [
         "device/invalid/clip-file-response-206-reversed.headers.json"
       ],
       "id": "device/invalid/clip-file-response-206-reversed",
@@ -4119,6 +4141,27 @@
       ],
       "id": "device/valid/clip-file-response-412-content-changed",
       "invariant": "AC-04 resume with an If-Match value that is not the original ETag returns 412 CONTENT_CHANGED",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 412
+    },
+    {
+      "api_error_code": "CONTENT_CHANGED",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-file-response-412-multi-range.headers.json",
+        "device/valid/clip-file-response-412-multi-range.json"
+      ],
+      "id": "device/valid/clip-file-response-412-multi-range",
+      "invariant": "AC-04/AC-06 range: the If-Match precondition of a resume is evaluated before a range is parsed or served (RFC 9110 §13.2.2), so a multipart Range in the request does not change the required 412 CONTENT_CHANGED",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_file",

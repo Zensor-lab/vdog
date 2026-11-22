@@ -8,9 +8,12 @@
 #   * checkouts never persist credentials;
 #   * no `pull_request_target`, no privileged `workflow_run`, no artifact promotion.
 #
-# The check runs on the immutable PR head commit (CI-02), and only when the wire
-# contract, the validator that checks it, or the specifications it encodes change:
-# a firmware-only PR pays nothing for contract validation.
+# The check runs on the immutable PR head commit (CI-02). Deliberately NO `paths:`
+# filter, following the repo's own documented CI-01 precedent in firmware-pr.yml: a
+# required check that stays pending because a PR touched none of a filter's patterns
+# is a check that blocks the merge it was added to certify. The suite is offline,
+# needs no device, and finishes in seconds, so running it on every PR is the cheaper
+# failure mode.
 #
 # The two commands below are the ones documented in tools/README.md and are run
 # verbatim, from the repository root, on the qualified interpreter. No flags are
@@ -22,12 +25,6 @@ name: Contracts PR
 
 on:
   pull_request:
-    paths:
-      - "contracts/**"
-      - "tools/contracts/**"
-      - "tools/validate_contracts.py"
-      - "docs/specs/**"
-      - ".github/workflows/contracts-pr.yml"
 
 permissions:
   contents: read

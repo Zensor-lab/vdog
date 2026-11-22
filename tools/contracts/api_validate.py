@@ -5,10 +5,12 @@ map. This module validates both against the published contract *and* against the
 spec-derived operation table in :mod:`tools.contracts.api_model`, so a contract file
 that quietly dropped a documented status or a stable error code cannot pass.
 
-The byte-range rules follow one decision table, written out above :func:`_rule_range`:
-what the contract *rejects* (interfaces.md §4) and what is merely *unsatisfiable* for
-this file (RFC 9110) are different questions, and only the first one makes a 416 the
-required answer.
+The byte-range rules follow one decision table, written out above :func:`_rule_range`.
+What the contract *supports* (interfaces.md §4) and what is *satisfiable* for this
+file (RFC 9110 §14.4) are different questions, and a response only speaks about the
+range when its status is about the range: the §4 gates — authentication, existence,
+lease, the ``If-Match`` precondition — come first (RFC 9110 §13.2.2), so 200, 206 and
+416 are the only statuses that can grant or refuse bytes.
 """
 
 from __future__ import annotations
@@ -569,43 +571,60 @@ def _rule_content_range(context: _HeaderContext, name: str, value: str) -> list[
 
 
 #: The Range decision table, in the words the validator applies (interfaces.md §4 for
-#: what the contract allows, RFC 9110 §14.4 and §15.5.17 for what a refusal means):
+#: what the contract allows, RFC 9110 §13.2.2, §14.4 and §15.5.17 for what a refusal
+#: means). The two questions are separate: what the contract *supports* at all, and
+#: what is *satisfiable* for this file.
+#:
+#: A response is only a range statement when it is about the range. The §4 gates —
+#: 401 authentication, 404 unknown clip, 409 expired lease, 410 evicted clip and the
+#: 412 `If-Match` precondition of a resume — are all evaluated before a range is
+#: parsed or served (RFC 9110 §13.2.2, §14.4), so such a refusal says nothing about
+#: the specifier and may echo whatever `Range` it was given. Only three statuses speak
+#: about the range at all: 200 and 206 grant bytes, and 416 refuses them. Every row
+#: below therefore reads: 416 clean, 200/206 flagged, anything else silent.
 #:
 #: * **Unsupported syntax** — anything the anchored ``_SINGLE_RANGE`` refuses
-#:   (multipart, suffix, ``bytes=10``, junk). 416 is the *required* answer, so a 416
-#:   is clean and any other status is ``RANGE_MULTI_NOT_ALLOWED``.
-#: * **Supported syntax, unsatisfiable ordering** (``end < start``). The request is
-#:   well formed but can never be served, so 416 is acceptable and 200/206 is
-#:   ``RANGE_MULTI_NOT_ALLOWED``: serving bytes a client did not ask for is worse than
-#:   refusing.
-#: * **Supported syntax, correctly ordered** (``bytes=start-end`` or ``bytes=start-``).
-#:   A 416 is honest only when the response *proves* the range is beyond the end of
-#:   this file: ``Content-Range: bytes */<total>`` with ``start >= total``. Without
-#:   that header, or with a start inside the file, the refusal is unfounded and is
-#:   ``RANGE_MULTI_NOT_ALLOWED``.
+#:   (multipart, suffix, ``bytes=10``, junk). Granting bytes for a form the contract
+#:   never supports is the violation, so 200/206 is ``RANGE_MULTI_NOT_ALLOWED`` and
+#:   the required answer is 416. This is the contract being stricter than RFC 9110,
+#:   which would let a server ignore an unparseable `Range` and answer 200 in full:
+#:   §4's "Support single ... only" and "Multipart/suffix ranges are rejected with
+#:   416" make the refusal mandatory instead, and that strictness applies to the
+#:   answer about the range, not to a 401 or 412 that never reached range handling.
+#: * **Supported syntax, unsatisfiable ordering** (``end < start``). A well-formed
+#:   request that can never be served, so 416 is the natural answer and granting it
+#:   (200/206) is ``RANGE_MULTI_NOT_ALLOWED``: serving bytes a client did not ask for
+#:   is worse than refusing.
+#: * **Supported syntax, correctly ordered** (``bytes=start-end`` or ``bytes=start-``)
+#:   *and the response claims 416*. A refusal of a range that looks serveable is
+#:   honest only when it *proves* the range is past the end of this file:
+#:   ``Content-Range: bytes */<total>`` with ``start >= total``. Without that header,
+#:   or with a start inside the file, the claim is unfounded and is
+#:   ``RANGE_MULTI_NOT_ALLOWED``. This row is keyed on the 416, because it is about a
+#:   device *claiming* a refusal it cannot support.
 
 
 def _rule_range(context: _HeaderContext, name: str, value: str) -> list[Violation]:
     location = f"{context.location}: {name}"
     match = _SINGLE_RANGE.match(value)
     if match is None:
-        if context.status == 416:
-            return []  # unsupported syntax refused the only way the contract allows
-        return [
-            Violation(
-                E.RANGE_MULTI_NOT_ALLOWED,
-                location,
-                f"{value!r} is not a single bytes=start-end or bytes=start- range",
-            )
-        ]
+        # Unsupported syntax: only a response that grants bytes is wrong. A 416 is
+        # the required refusal, and a §4 gate that never reached range processing is
+        # no statement about the specifier at all (see the table above).
+        if context.status in (200, 206):
+            return [
+                Violation(
+                    E.RANGE_MULTI_NOT_ALLOWED,
+                    location,
+                    f"{value!r} is not a single bytes=start-end or bytes=start- range",
+                )
+            ]
+        return []
     start = int(match.group(1))
     end = match.group(2)
     if end and int(end) < start:
-        # Only a response that *grants* bytes is wrong here. A refusal for some
-        # higher-priority reason — 412 `CONTENT_CHANGED` on an `If-Match` mismatch,
-        # 401, 404, 409, 410 — is required by interfaces.md §4 whatever the Range
-        # asked for (RFC 9110 §13.2.2, §14.4), and a 416 is the natural answer to
-        # the ordering itself.
+        # The table's second row: only a response that grants bytes is wrong, since a
+        # 416 is the natural answer to the ordering and a §4 gate never reached it.
         if context.status in (200, 206):
             return [
                 Violation(

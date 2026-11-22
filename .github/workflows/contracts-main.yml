@@ -12,10 +12,12 @@
 #   * checkouts never persist credentials;
 #   * no `pull_request_target`, no privileged `workflow_run`, no artifact promotion.
 #
-# Deliberately NO `paths:` filter, for the same reason firmware-main.yml has none:
-# `contracts-validation` is a required check, and a required check that stays
-# pending because an unrelated commit did not touch the contract tree is a check
-# that blocks the merge it was added to certify. The run costs seconds.
+# Deliberately NO `paths:` filter, for the same documented CI-01 reason the PR twin
+# now gives and the one firmware-main.yml states for itself: `contracts-validation`
+# is a required check, and a required check that stays pending because an unrelated
+# commit did not touch the contract tree is a check that blocks the merge it was
+# added to certify. The run costs seconds and needs no network, no device and no
+# firmware toolchain.
 
 name: Contracts main
 

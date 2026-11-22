@@ -7,12 +7,11 @@ silently drop the least-privilege posture, un-pin an action, or point the job at
 command nobody documented.
 
 The firmware twin, ``tools/firmware/tests/test_workflows.py``, is the model; the one
-deliberate difference is the path filter. Firmware runs must never be filtered
-(CI-T01: every main update publishes), whereas a contract check that fires on a
-firmware-only PR validates a tree neither commit touched. ``contracts-main.yml``
-keeps no filter for the firmware reason instead: it is the required check on main,
-and a required check left pending by an unrelated commit blocks the merge it exists
-to certify.
+deliberate difference is that these two jobs publish nothing at all, so they need no
+credential beyond reading the repository and carry no `publish` job. Neither filters
+paths, for the reason the repo already documents for the firmware workflows (CI-01):
+a required check that a commit can leave permanently "Expected" blocks the merge it
+exists to certify, and this suite is offline and over in seconds.
 """
 
 from __future__ import annotations
@@ -47,14 +46,6 @@ DOCUMENTED_COMMANDS = (
     "python tools/validate_contracts.py",
     "uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock "
     "pytest tools/contracts/tests",
-)
-
-#: A contract check is only meaningful for a change that could change the verdict.
-PR_PATHS = (
-    "contracts/**",
-    "tools/contracts/**",
-    "tools/validate_contracts.py",
-    "docs/specs/**",
 )
 
 _RAW: dict[str, str] = {}
@@ -207,29 +198,24 @@ def test_the_pr_builds_the_immutable_head_commit() -> None:
     assert "ref" not in steps(job("contracts-main"))[0].get("with", {})
 
 
-def test_the_pr_is_path_filtered_and_main_is_not() -> None:
-    """A PR pays for this only when the contract can change; main always reports."""
-    paths = triggers(load("contracts-pr"))["pull_request"]["paths"]
-    assert set(paths) >= set(PR_PATHS), paths
-    assert ".github/workflows/contracts-pr.yml" in paths, "the job must re-run when it changes"
-    assert "paths" not in (triggers(load("contracts-main"))["push"] or {})
+def test_neither_workflow_filters_paths() -> None:
+    """A required check may not be left permanently "Expected" by a path filter.
 
-
-def test_a_firmware_only_change_is_outside_the_path_filter() -> None:
-    """The filter exists to spare firmware PRs; it must not catch their files.
-
-    The patterns are matched by the hosted runner, so this asserts the intent against
-    the paths a firmware change actually touches, which is the local half of the rule.
+    Both twins run the same seconds-long, offline suite, so the cheap failure mode is
+    running it everywhere; the expensive one is a branch-protection rule that waits on
+    a check no commit can trigger. This is the repo's own documented CI-01 reasoning
+    (``firmware-pr.yml``, ``firmware-main.yml``) applied here.
     """
-    from fnmatch import fnmatch
+    for name in sorted(WORKFLOWS):
+        on = triggers(load(name))
+        for event in ("pull_request", "push"):
+            if event in on:
+                assert "paths" not in (on[event] or {}), f"{name}:{event} must not filter paths"
+                assert "paths-ignore" not in (on[event] or {}), f"{name}:{event} must not filter paths"
 
-    paths = triggers(load("contracts-pr"))["pull_request"]["paths"]
-    for changed in (
-        "firmware/src/main.cpp",
-        "firmware/platformio.ini",
-        "tools/firmware/package.py",
-        "tools/release/publish.py",
-        ".github/workflows/firmware-pr.yml",
-        "README.md",
-    ):
-        assert not any(fnmatch(changed, pattern) for pattern in paths), changed
+
+def test_the_pr_triggers_on_the_default_set_of_pr_events() -> None:
+    """No `types:` narrowing either, which would leave the check pending the same way."""
+    pull_request = triggers(load("contracts-pr"))["pull_request"] or {}
+    assert "types" not in pull_request, pull_request
+    assert triggers(load("contracts-main"))["push"]["branches"] == ["main"]

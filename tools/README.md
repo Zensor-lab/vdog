@@ -179,19 +179,20 @@ the stable check name `contracts-validation` and are the only place the contract
 suite runs automatically. Both are read-only (`permissions: contents: read`
 only, no job- or step-level override), reuse the two pinned action commits above,
 build the immutable PR head SHA, and run the two documented `uv run` commands
-verbatim, so a green check means what a green local run means. The PR workflow is
-path-filtered to `contracts/**`, `tools/contracts/**`,
-`tools/validate_contracts.py` and `docs/specs/**` — a firmware-only PR validates
-nothing there — while the push-`main` twin is unfiltered, because a required
-check left pending by an unrelated commit blocks the merge it exists to certify.
-`contracts/tests/test_contracts_workflows.py` asserts these invariants; the
-hosted run has not been performed from this checkout.
+verbatim, so a green check means what a green local run means. Neither is
+filtered by path: `contracts-validation` is a required check, and a required
+check a commit can leave permanently "Expected" blocks the merge it exists to
+certify — the same documented CI-01 reasoning the firmware workflows give for
+being unfiltered, and cheap to honour here because the suite is offline, needs no
+device, and finishes in seconds. `contracts/tests/test_contracts_workflows.py`
+asserts these invariants; the hosted run has not been performed from this
+checkout.
 
 ## Contract validation (Stage 0.6)
 
 `tools/contracts/` is the host-side validator for the published wire contract in
 [`contracts/`](../contracts/README.md): the two OpenAPI 3.1 documents, the three
-media JSON Schemas, and the 352 committed golden fixtures. It shares no code with
+media JSON Schemas, and the 354 committed golden fixtures. It shares no code with
 the release tooling above and needs no firmware toolchain.
 
 | Path | Role |

@@ -256,8 +256,17 @@ DEVICE_OPERATIONS: Final[dict[str, Operation]] = {
             "/clips/{clip_id}/files/{name}",
             response_schemas={200: None, 206: None},
             success_statuses=(200, 206),
+            # interfaces.md §4 assigns every range outcome of this endpoint to 416 —
+            # the forms the contract rejects as well as the ones a given file cannot
+            # satisfy — while §1 keeps generic 400 for request-level defects. A
+            # (400, RANGE_INVALID) pair here would be contract surface the validator
+            # itself refuses to certify: `_rule_range` makes a 200/206 answer to a
+            # rejected range form a violation and a 416 the only range answer, so no
+            # conformant vector could ever demonstrate it. ``backend.get_clip_file``
+            # documents no 400 row at all, so retiring it also removes the device's
+            # asymmetry against its own mirror rather than creating one.
             error_codes={
-                400: ("MALFORMED_REQUEST", "RANGE_INVALID"),
+                400: ("MALFORMED_REQUEST",),
                 401: ("UNAUTHENTICATED",),
                 404: ("NOT_FOUND",),
                 409: ("LEASE_EXPIRED",),

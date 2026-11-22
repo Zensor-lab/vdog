@@ -2,7 +2,7 @@
 
 The published wire contract for the recorder, the backend and the original
 recording format: two OpenAPI 3.1 documents, three JSON Schema 2020-12 documents,
-and 352 committed golden fixtures that say exactly what every accepted and refused
+and 354 committed golden fixtures that say exactly what every accepted and refused
 request and response looks like on the wire. Everything here is machine-checked
 offline by `tools/validate_contracts.py`; nothing in this tree is prose-only.
 
@@ -51,10 +51,10 @@ uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
 | `media-v1/manifest.schema.json` | `manifest.json` of a finalized segment: identity, profile, clock, duration, count, close reason and the per-file hashes |
 | `media-v1/frame-record.schema.json` | one `frames.jsonl` line: `v`, `seq`, `offset`, `size`, `t_us`, `crc32` and nothing else |
 | `media-v1/active-record.schema.json` | `active.json` of an interrupted segment: the same identity without any completion claim |
-| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 352 vectors |
+| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 354 vectors |
 | `fixtures/media/valid/` | 11 finalized and in-progress segments a healthy recorder writes, including the clock, gap, boundary and recovery shapes |
 | `fixtures/media/invalid/` | 62 single-defect segments: every documented corruption class, one defect each |
-| `fixtures/device/`, `fixtures/backend/` | 279 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
+| `fixtures/device/`, `fixtures/backend/` | 281 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
 | `firmware-release-v1.schema.json` | **not part of this package** — the Stage 0.9 release-archive manifest, mirrored by `tools/firmware/contract.py` |
 
 A media fixture is a directory of the real files (`video.mjpg`, `frames.jsonl`,

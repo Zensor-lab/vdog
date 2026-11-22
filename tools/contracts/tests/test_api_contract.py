@@ -128,6 +128,8 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "device/valid/clip-file-response-416-hyphenless": (),
     "device/valid/clip-file-response-416-beyond-eof": (),
     "device/valid/clip-file-response-416-reversed": (),
+    "device/valid/clip-file-response-412-multi-range": (),
+    "device/invalid/clip-file-response-206-multi-range": ("RANGE_MULTI_NOT_ALLOWED",),
     "device/invalid/clip-file-response-206-hyphenless": ("RANGE_MULTI_NOT_ALLOWED",),
     "device/invalid/clip-file-response-206-reversed": ("RANGE_MULTI_NOT_ALLOWED",),
     "device/valid/clip-file-response-409-lease-expired": (),
@@ -563,64 +565,92 @@ def _header_codes(name: str, value: str, status: int, extra: dict[str, str] | No
     return {violation.code for violation in HEADER_RULES[name.lower()](context, name, value)}
 
 
+#: The §4 gates that are evaluated before a range is parsed or served (RFC 9110
+#: §13.2.2, §14.4). Such a response says nothing about the specifier, so every
+#: range form must be silent on every one of them.
+GATE_STATUSES: tuple[int, ...] = (401, 404, 409, 410, 412)
+
+#: Range spellings the contract does not support at all: multipart, suffix, a
+#: missing hyphen, and something that is not a byte-range specifier to begin with.
+UNSUPPORTED_FORMS: tuple[str, ...] = ("bytes=0-99,200-299", "bytes=-500", "bytes=10", "nonsense")
+
+_GRANTING = (200, 206)
+
+
+def _range_table() -> list[tuple[str, int, dict[str, str], set[str], str]]:
+    """``(value, status, extra, codes, id)`` for the whole decision table.
+
+    Built rather than listed so the two rejected-form branches are exercised against
+    every status the contract defines: a branch that is quiet about a §4 gate by
+    accident, and one that is quiet by design, have to look different here.
+    """
+    cases: list[tuple[str, int, dict[str, str], set[str], str]] = []
+    for form in UNSUPPORTED_FORMS:
+        tag = {
+            "bytes=0-99,200-299": "multipart",
+            "bytes=-500": "suffix",
+            "bytes=10": "hyphenless",
+            "nonsense": "junk",
+        }[form]
+        # 416 is the required refusal; 200/206 grant bytes the contract never supports.
+        cases.append((form, 416, {}, set(), f"{tag}-416"))
+        for status in _GRANTING:
+            extra = GRANTED_206 if status == 206 else {"Content-Length": "1000"}
+            cases.append(
+                (form, status, extra, {E.RANGE_MULTI_NOT_ALLOWED}, f"{tag}-{status}-grants")
+            )
+        for status in GATE_STATUSES:
+            cases.append((form, status, {}, set(), f"{tag}-{status}-gate"))
+    # Supported syntax whose endpoints contradict each other.
+    cases.append(("bytes=200-100", 416, {}, set(), "reversed-416"))
+    for status in _GRANTING:
+        extra = GRANTED_206 if status == 206 else {"Content-Length": "1000"}
+        cases.append(
+            ("bytes=200-100", status, extra, {E.RANGE_MULTI_NOT_ALLOWED}, f"reversed-{status}-grants")
+        )
+    for status in GATE_STATUSES:
+        cases.append(("bytes=200-100", status, {}, set(), f"reversed-{status}-gate"))
+    # Supported, correctly ordered: a claimed 416 has to prove itself.
+    cases += [
+        ("bytes=999999999-", 416, {"Content-Range": "bytes */1000"}, set(), "beyond-eof-416"),
+        ("bytes=1000-1999", 416, {"Content-Range": "bytes */1000"}, set(), "start-at-total-416"),
+        (
+            "bytes=999-",
+            416,
+            {"Content-Range": "bytes */1000"},
+            {E.RANGE_MULTI_NOT_ALLOWED},
+            "star-proves-satisfiable-416",
+        ),
+        ("bytes=0-99", 416, {}, {E.RANGE_MULTI_NOT_ALLOWED}, "granted-range-416-no-proof"),
+        (
+            "bytes=0-99",
+            416,
+            {"Content-Range": "bytes 0-99/1000"},
+            {E.RANGE_MULTI_NOT_ALLOWED},
+            "granted-range-416-granted-form",
+        ),
+        ("bytes=0-99", 206, GRANTED_206, set(), "granted-range-206"),
+        ("bytes=999-", 206, GRANTED_206, set(), "open-ended-206"),
+    ]
+    return cases
+
+
+_RANGE_CASES = _range_table()
+
+
 @pytest.mark.parametrize(
     ("value", "status", "extra", "codes"),
-    [
-        # Unsupported syntax: the contract rejects it, so 416 is required, not optional.
-        ("bytes=0-99,200-299", 416, {}, set()),
-        ("bytes=-500", 416, {}, set()),
-        ("bytes=10", 416, {}, set()),
-        ("bytes=0-99,200-299", 206, GRANTED_206, {E.RANGE_MULTI_NOT_ALLOWED}),
-        ("bytes=-500", 200, {"Content-Length": "1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
-        ("bytes=10", 206, GRANTED_206, {E.RANGE_MULTI_NOT_ALLOWED}),
-        ("nonsense", 200, {"Content-Length": "1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
-        # Supported syntax, unsatisfiable endpoint ordering: 416 answers it, and a
-        # refusal for a higher-priority reason is not a range violation at all
-        # (interfaces.md §4 If-Match/§4 lease paths, RFC 9110 §13.2.2, §14.4).
-        ("bytes=200-100", 416, {}, set()),
-        ("bytes=200-100", 206, GRANTED_206, {E.RANGE_MULTI_NOT_ALLOWED}),
-        ("bytes=200-100", 200, {"Content-Length": "1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
-        ("bytes=200-100", 412, {}, set()),
-        ("bytes=200-100", 401, {}, set()),
-        ("bytes=200-100", 409, {}, set()),
-        ("bytes=200-100", 410, {}, set()),
-        # Supported syntax, correctly ordered: a 416 needs proof from Content-Range.
-        ("bytes=999999999-", 416, {"Content-Range": "bytes */1000"}, set()),
-        ("bytes=1000-1999", 416, {"Content-Range": "bytes */1000"}, set()),
-        ("bytes=999-", 416, {"Content-Range": "bytes */1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
-        ("bytes=0-99", 416, {}, {E.RANGE_MULTI_NOT_ALLOWED}),
-        ("bytes=0-99", 416, {"Content-Range": "bytes 0-99/1000"}, {E.RANGE_MULTI_NOT_ALLOWED}),
-        ("bytes=0-99", 206, GRANTED_206, set()),
-        ("bytes=999-", 206, GRANTED_206, set()),
-    ],
-    ids=[
-        "multipart-416",
-        "suffix-416",
-        "hyphenless-416",
-        "multipart-206",
-        "suffix-200",
-        "hyphenless-206",
-        "junk-200",
-        "reversed-416",
-        "reversed-206",
-        "reversed-200",
-        "reversed-412-precondition",
-        "reversed-401-unauthenticated",
-        "reversed-409-lease-expired",
-        "reversed-410-gone",
-        "beyond-eof-416",
-        "start-at-total-416",
-        "star-proves-satisfiable-416",
-        "granted-range-416-no-proof",
-        "granted-range-416-granted-form",
-        "granted-range-206",
-        "open-ended-206",
-    ],
+    [(value, status, extra, codes) for value, status, extra, codes, _ in _RANGE_CASES],
+    ids=[case_id for *_rest, case_id in _RANGE_CASES],
 )
 def test_the_range_rule_follows_the_decision_table(
     value: str, status: int, extra: dict[str, str], codes: set[str]
 ) -> None:
-    """What the contract *rejects* and what is merely *unsatisfiable* differ (AC-06)."""
+    """What the contract *supports* and what is merely *satisfiable* differ (AC-06).
+
+    A response speaks about the range only when it is 200, 206 or 416; a §4 gate that
+    never reached range handling may echo whatever `Range` it was given.
+    """
     assert _header_codes("Range", value, status, extra) == codes, (value, status, extra)
 
 
@@ -630,9 +660,11 @@ def test_the_range_rule_follows_the_decision_table(
         ("bytes */1000", 416, {}, set()),
         ("bytes */1000", 206, GRANTED_206, {E.CONTENT_RANGE_INVALID}),
         ("bytes */1000", 200, {"Content-Length": "1000"}, {E.CONTENT_RANGE_INVALID}),
-        # A refusal for a higher-priority reason may echo the header, as a 416 does.
-        ("bytes */1000", 412, {}, set()),
-        ("bytes */1000", 410, {}, set()),
+        # A §4 gate may echo the header, exactly as a 416 does.
+        *[
+            ("bytes */1000", status, {}, set())
+            for status in GATE_STATUSES
+        ],
         ("bytes */0", 416, {}, {E.CONTENT_RANGE_INVALID}),
         ("bytes 0-99/1000", 416, {}, {E.CONTENT_RANGE_INVALID}),
         ("bytes 0-99/1000", 206, GRANTED_206, set()),
@@ -645,8 +677,7 @@ def test_the_range_rule_follows_the_decision_table(
         "star-416",
         "star-206",
         "star-200",
-        "star-412-precondition",
-        "star-410-gone",
+        *[f"star-{status}-gate" for status in GATE_STATUSES],
         "star-zero-total-416",
         "granted-on-416",
         "granted-206",
