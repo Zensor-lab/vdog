@@ -26,7 +26,7 @@ from tools.contracts.bounds import MAX_CURSOR_CHARS, MAX_PAGE_LIMIT
 from tools.contracts.openapi_check import load_media_schemas
 from tools.contracts.schema_docs import resolve_refs
 
-from conftest import FIXTURES, REPO_ROOT
+from conftest import FIXTURES, REPO_ROOT, baseline_files
 
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -1605,22 +1605,30 @@ def test_every_committed_401_carries_a_bearer_challenge(by_id: dict) -> None:
         if entry["direction"] != "response" or entry.get("status") != 401:
             continue
         if {E.HEADER_MISSING, E.HEADER_INVALID} & set(entry["expected_error_codes"]):
-            continue  # the three vectors that exist to withhold or falsify it
+            continue  # the four vectors that exist to withhold or falsify it
         assert _headers(entry)["WWW-Authenticate"].startswith("Bearer "), entry["id"]
 
 
-def test_the_challenge_has_three_committed_refusals(
+def test_the_challenge_has_committed_refusals_on_both_transports(
     by_id: dict, specs: dict, media_schemas: dict
 ) -> None:
-    """Absent, foreign-scheme, and the terminator left attached: each is named by code."""
-    for name, code in (
-        ("clip-file-response-401-no-challenge", E.HEADER_MISSING),
-        ("clip-file-response-401-wrong-scheme", E.HEADER_INVALID),
-        ("clip-file-response-401-challenge-trailing-newline", E.HEADER_INVALID),
+    """Absent, foreign-scheme, the terminator attached — and the bodyless method (R2).
+
+    The three GET refusals name what a wrong challenge says. The HEAD one names what *no*
+    challenge says on the method that carries no body to explain itself: the case a
+    per-operation table would be free to forget, which is why the table is built by rule.
+    """
+    for vector, code in (
+        ("device/invalid/clip-file-response-401-no-challenge", E.HEADER_MISSING),
+        ("device/invalid/clip-file-response-401-wrong-scheme", E.HEADER_INVALID),
+        ("device/invalid/clip-file-response-401-challenge-trailing-newline", E.HEADER_INVALID),
+        ("backend/invalid/upload-head-response-401-no-challenge", E.HEADER_MISSING),
     ):
-        entry = by_id[f"device/invalid/{name}"]
-        assert entry["expected_error_codes"] == [code], (name, entry["expected_error_codes"])
-        assert _observed(entry, specs, media_schemas) == {code}, name
+        entry = by_id[vector]
+        assert entry["expected_error_codes"] == [code], (vector, entry["expected_error_codes"])
+        assert _observed(entry, specs, media_schemas) == {code}, vector
+    # The HEAD refusal has nothing but the status to withhold: no body, no header map.
+    assert by_id["backend/invalid/upload-head-response-401-no-challenge"]["files"] == []
 
 
 #: ``(Content-Range, other headers, the request it answers, codes, case)``. The grant is
@@ -1855,8 +1863,55 @@ def test_one_manifest_rule_set_serves_both_transports(
     assert route_location.endswith("manifest.clip_id"), route_location
 
 
-def test_the_size_bound_is_applied_to_the_bytes_before_the_document(media_schemas: dict) -> None:
-    """The bound exists to keep an oversized manifest from being read to be measured."""
+def _wire_binding(manifest: dict) -> dict:
+    """A ``POST /uploads`` body that binds exactly this manifest."""
+    import base64
+
+    from tools.contracts.bounds import API_VERSION
+
+    payload = json.dumps(manifest, separators=(",", ":")).encode("utf-8")
+    return {
+        "v": API_VERSION,
+        "manifest_base64url": base64.urlsafe_b64encode(payload).decode("ascii").rstrip("="),
+    }
+
+
+def test_one_wire_defect_is_named_once_by_the_rule_that_actually_runs_it(
+    media_schemas: dict,
+) -> None:
+    """The upload's mirror and the media rules may not both speak about one defect.
+
+    A base64url binding is judged twice: by the ``Manifest`` mirror's keywords and by the
+    field rules the clip directory runs on the card. Where a field rule runs, its keyword
+    has to be silent — and only there. Silence a bound this path never measures and the
+    defect is reported by nobody at all, so the set is narrower than the card's.
+    """
+    from tools.contracts.api_validate import validate_manifest_binding
+    from tools.contracts.bounds import MANIFEST_NAME
+
+    manifest = json.loads(baseline_files()[MANIFEST_NAME])
+    entry = {"id": "unit:binding"}
+
+    def codes(record: dict) -> set[str]:
+        found = validate_manifest_binding(
+            entry, _wire_binding(record), media_schemas["manifest"]
+        )
+        return {violation.code for violation in found}
+
+    not_hex = {**manifest, "clip_id": "z" * 32 + "-" + "z" * 8}
+    assert codes(not_hex) == {E.ID_SYNTAX_INVALID}, codes(not_hex)
+    melted = {**manifest, "close_reason": "melted"}
+    assert codes(melted) == {E.CLOSE_REASON_UNKNOWN}, codes(melted)
+    unknown_source = {**manifest, "clock": {**manifest["clock"], "source": "melted"}}
+    assert codes(unknown_source) == {E.CLOCK_SOURCE_UNKNOWN_VALUE}, codes(unknown_source)
+    # Bounded, not merely narrow: nothing on this path measures a frame count, so the
+    # mirror's own keyword is still the only thing that can name one out of range.
+    too_many = {**manifest, "frame_count": 10_000}
+    assert codes(too_many) == {E.MANIFEST_DECODED_SCHEMA}, codes(too_many)
+
+
+def test_the_size_bound_is_applied_to_the_bytes_before_the_field_rules(media_schemas: dict) -> None:
+    """An oversized manifest is a size defect; its fields are not also put on trial."""
     from tools.contracts.api_validate import validate_manifest_response
 
     oversized = {"v": 1, "pad": "p" * 20_000}

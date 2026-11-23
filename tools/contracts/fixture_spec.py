@@ -2024,16 +2024,17 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         body={
             **media.baseline_manifest,
             # Past both the field's own 4,096-character bound and the 16,384-byte bound
-            # of a manifest: the size gate is what refuses it first, because its purpose
-            # is to keep an oversized document from being read to be measured at all.
+            # of a manifest: the size gate is what names this vector's defect, because a
+            # manifest over its bound is a size problem before it is a field problem.
             "firmware_version": "0.1.0-" + "x" * 16_384,
         },
         expected="invalid",
         codes=(API_SCHEMA, MANIFEST_DECODED_TOO_LARGE),
         invariant=(
             "AC-06 boundary: GET /clips/{clip_id}/manifest refuses a body above the "
-            "16,384-byte manifest bound before anything reads it, which is the bound the "
-            "OpenAPI mirror alone never applied"
+            "16,384-byte manifest bound as the size defect it is, before the media "
+            "contract's field rules add a complaint about a document over that bound — "
+            "the bound the OpenAPI mirror alone never applied"
         ),
     )
 
@@ -3596,6 +3597,22 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "AC-06 boundary: an offset past the declared length describes bytes the "
             "upload never declared, so the HEAD pair has to agree before a client is told "
             "where to resume"
+        ),
+    )
+    out.add(
+        id="upload-head-response-401-no-challenge",
+        contract="backend",
+        category="error",
+        operation="backend.head_upload_file",
+        direction="response",
+        status=401,
+        expected="invalid",
+        codes=(HEADER_MISSING,),
+        invariant=(
+            "AC-04/AC-06 RFC 9110 §15.5.2 binds the bodyless method too: a HEAD 401 "
+            "carries no envelope to explain itself, so the challenge is the whole answer, "
+            "and a refusal that withholds it tells a resuming client nothing about how to "
+            "authenticate — what HEAD forbids is the body, never the header"
         ),
     )
     out.add(

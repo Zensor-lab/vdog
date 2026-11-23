@@ -519,6 +519,26 @@
     },
     {
       "api_error_code": null,
+      "category": "error",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "HEADER_MISSING"
+      ],
+      "files": [],
+      "id": "backend/invalid/upload-head-response-401-no-challenge",
+      "invariant": "AC-04/AC-06 RFC 9110 §15.5.2 binds the bodyless method too: a HEAD 401 carries no envelope to explain itself, so the challenge is the whole answer, and a refusal that withholds it tells a resuming client nothing about how to authenticate — what HEAD forbids is the body, never the header",
+      "kind": "api",
+      "method": "HEAD",
+      "operation": "backend.head_upload_file",
+      "operation_id": "headUploadFile",
+      "path": "/uploads/{id}/files/{name}",
+      "schema": null,
+      "status": 401
+    },
+    {
+      "api_error_code": null,
       "category": "upload",
       "contract": "backend-v1",
       "direction": "response",
@@ -3994,7 +4014,7 @@
         "device/invalid/clip-manifest-response-200-oversize.json"
       ],
       "id": "device/invalid/clip-manifest-response-200-oversize",
-      "invariant": "AC-06 boundary: GET /clips/{clip_id}/manifest refuses a body above the 16,384-byte manifest bound before anything reads it, which is the bound the OpenAPI mirror alone never applied",
+      "invariant": "AC-06 boundary: GET /clips/{clip_id}/manifest refuses a body above the 16,384-byte manifest bound as the size defect it is, before the media contract's field rules add a complaint about a document over that bound — the bound the OpenAPI mirror alone never applied",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_manifest",

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import decimal
 import json
-import math
 import re
 import zlib
 from dataclasses import dataclass, field
@@ -113,6 +112,24 @@ MANIFEST_DEDICATED_RULES: Final[Mapping[tuple[str, str], tuple[str, ...]]] = {
 
 _FRAME_SUPPRESSED: frozenset[tuple[str, str]] = frozenset(FRAME_DEDICATED_RULES)
 _MANIFEST_SUPPRESSED: frozenset[tuple[str, str]] = frozenset(MANIFEST_DEDICATED_RULES)
+
+#: The pairs :func:`validate_manifest_fields` re-reports, and so the only pairs the HTTP
+#: layer may silence while running it. Deliberately narrower than
+#: :data:`_MANIFEST_SUPPRESSED`: a wire body meets those six rules and none of the numeric
+#: bounds, and silencing a keyword whose dedicated check never ran on this path would leave
+#: the defect reported by nobody at all.
+MANIFEST_WIRE_SUPPRESSED: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("v", "const"),
+        ("device_id", "pattern"),
+        ("boot_id", "pattern"),
+        ("clip_id", "pattern"),
+        ("close_reason", "enum"),
+        ("source", "enum"),
+        ("start_utc", "pattern"),
+        ("start_utc", "format"),
+    }
+)
 
 
 @dataclass
@@ -423,20 +440,22 @@ def _walk_index(
         # slice whatever path it came by. A missing offset or size is not this branch's
         # to catch — the `required` report above refuses the record before either field
         # is even read, so there is no absent case to see here.
-        if not all(_is_position(record[name]) for name in ("seq", "offset", "size", "t_us")):
+        if not all(_is_int(record[name]) for name in ("seq", "offset", "size", "t_us")):
             walk.violations.append(
                 Violation(
                     E.FRAME_SCHEMA,
                     location,
                     f"seq {seq!r}, offset {offset!r}, size {size!r} and t_us {t_us!r} must be "
-                    f"finite JSON integers in any notation, per the frame record's `type: integer`",
+                    f"JSON integers in some notation, per the frame record's `type: integer`",
                 )
             )
             walk.stopped = True
             return walk
-        # Every one of the four is now an `int`-safe value: the notation may be
-        # `0e0` or `1.20000001e8`, but the arithmetic, the comparisons and the slice
-        # below all need real `int`s, so the spelling is normalised once here.
+        # Every one of the four is now a value ``int()`` may be handed: :func:`_is_int`
+        # refuses the non-numbers JSON admits no notation for (``Infinity`` and ``NaN``
+        # literals, and their ``Decimal`` spellings), so nothing below can raise where the
+        # contract wants a code, and the notation may be ``0e0`` or ``1.20000001e8`` while
+        # the arithmetic, the comparisons and the slice all need real ``int``s.
         seq, offset, size, t_us = (int(record[name]) for name in ("seq", "offset", "size", "t_us"))
 
         if seq != position:
@@ -1030,16 +1049,21 @@ def _is_int(value: Any) -> bool:
     suppressed pair in :data:`MANIFEST_DEDICATED_RULES` silences it in exchange for a
     check that never ran.
 
-    What is not a number is refused: ``nan`` and ``inf`` have no JSON notation at all
-    (RFC 8259 §6), neither answers ``is_integer()`` with ``True``, and neither is an
-    integral ``Decimal``. A document that carries one is a document whose ``type`` is
-    wrong, which is what :func:`is_json_integer` reports; measuring such a value against
-    a bound would dress a type error up as an out-of-range value.
+    What is not a number is refused, and the index walk depends on that: ``nan`` and
+    ``inf`` have no JSON notation at all (RFC 8259 §6), neither answers ``is_integer()``
+    with ``True``, and neither is an integral ``Decimal`` — so a line holding the
+    ``Infinity`` literal Python's reader does accept stops at the walk's gate instead of
+    reaching the ``int()`` below it, where it would raise. A document that carries one is
+    a document whose ``type`` is wrong, which is what :func:`is_json_integer` reports;
+    measuring such a value against a bound would dress a type error up as an out-of-range
+    value.
 
     The ``Decimal`` branch exists because :func:`_walk_index` parses the index with
     ``parse_float=decimal.Decimal``: an exponent that a float would round into an
     integer (``1e-400``) or into ``inf`` (``1e999``) has to be judged on the digits
-    the writer actually sent, not on the binary approximation of them.
+    the writer actually sent, not on the binary approximation of them. ``1e999`` stays a
+    finite, exact, enormous integer — ``int()`` of it is safe, and the bound refuses it as
+    the out-of-range timestamp it is.
     """
     if isinstance(value, bool):
         return False
@@ -1048,24 +1072,3 @@ def _is_int(value: Any) -> bool:
     if isinstance(value, decimal.Decimal):
         return decimal_is_integral(value)
     return isinstance(value, float) and value.is_integer()
-
-
-def _is_position(value: Any) -> bool:
-    """True for the numbers a byte position or timestamp may be written as.
-
-    The index walk adds, compares and slices with these four members, so what it needs
-    from a record is two things at once: the value is a JSON integer in some notation,
-    and it is a number ``int()`` can be handed. The first half is :func:`_is_int`. The
-    second is restated here rather than trusted from that helper, because the helper's
-    job is to say what an integer *is* and this is the place where a non-number would
-    raise: Python's JSON reader accepts ``Infinity`` and ``NaN`` literals, and
-    ``int(float('inf'))`` is an ``OverflowError`` where the contract wants a code. The
-    spelling that does reach the arithmetic, ``1e999``, is a finite ``Decimal`` with an
-    enormous exponent — ``int()`` of it is exact, and the bound below refuses it as the
-    out-of-range timestamp it is.
-    """
-    if not _is_int(value):
-        return False
-    if isinstance(value, decimal.Decimal):
-        return value.is_finite()
-    return not isinstance(value, float) or math.isfinite(value)

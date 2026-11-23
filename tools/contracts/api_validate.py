@@ -39,7 +39,7 @@ from .bounds import (
     UINT53_MAX,
 )
 from .errors import Violation
-from .media_validate import validate_manifest_fields
+from .media_validate import MANIFEST_WIRE_SUPPRESSED, validate_manifest_fields
 from .schema_docs import resolve_refs, schema_error_report
 
 _UUID = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
@@ -1217,6 +1217,12 @@ def validate_manifest_binding(entry: Mapping[str, Any], body: Mapping[str, Any],
         ]
     found: list[Violation] = []
     for property_name, keyword, message in schema_error_report(media_schema, manifest):
+        if (property_name, keyword) in MANIFEST_WIRE_SUPPRESSED:
+            # The mirror states the shape; the rules below name this defect themselves, and
+            # a second code for one defect would make the vector's declared set a matter of
+            # luck rather than a contract. The set is the narrow one: a bound this path does
+            # not check has to stay reported by the keyword that does.
+            continue
         found.append(
             Violation(
                 E.MANIFEST_DECODED_SCHEMA,
@@ -1246,10 +1252,14 @@ def validate_manifest_response(
 
     The 200 validates against the contract's ``Manifest`` mirror, which states the shape
     and nothing more; the field rules — the boot prefix, the close reason, the null-ness
-    of an unknown clock — live in :mod:`tools.contracts.media_validate`, and a client
-    that trusts this answer trusts exactly those facts. The 16,384-byte bound is applied
-    to the bytes on the wire first, because it exists to keep an oversized document from
-    being read into memory to be measured at all.
+    of an unknown clock — live in :mod:`tools.contracts.media_validate`, and a client that
+    trusts this answer trusts exactly those facts.
+
+    The 16,384-byte bound is measured on the bytes as committed, before those field rules
+    run: a document over the bound is the size defect and nothing else, and reporting a
+    dozen field members of a manifest that should never have been parsed would bury the one
+    finding about it. (The bytes were of course already read to be decoded at all — this
+    gate orders the findings, it does not save the read.)
     """
     location = str(entry["id"])
     if body_bytes is None:

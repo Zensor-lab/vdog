@@ -1176,25 +1176,52 @@ def test_an_overflowing_exponent_is_a_finding_and_never_a_crash(tmp_path, schema
     assert E.FRAME_T_US_TOO_LARGE in observed, observed
 
 
-def test_the_position_gate_refuses_what_the_arithmetic_cannot_hold() -> None:
-    """``inf`` is an integral float to Python and a crash waiting in a slice."""
-    from tools.contracts.media_validate import _is_int, _is_position
+def test_the_gate_the_walk_trusts_refuses_every_spelling_it_cannot_hold() -> None:
+    """One predicate decides what the walk's arithmetic may hold: :func:`_is_int`.
 
-    assert _is_position(decimal.Decimal("0.0")) is True
-    assert _is_position(decimal.Decimal("0e0")) is True
-    assert _is_position(0) is True
-    assert _is_position(decimal.Decimal("1e-400")) is False
-    assert _is_position(True) is False
-    assert _is_position("0") is False
-    # ``inf`` is an integral float to Python and a crash waiting in a slice: the walk's
-    # gate is where that spelling is refused, whatever the integer predicate decides.
-    assert _is_position(float("inf")) is False
-    assert _is_position(decimal.Decimal("Infinity")) is False
-    assert _is_position(float("nan")) is False
-    assert _is_int(float("inf")) is False
+    The walk parses with ``parse_float=Decimal``, so what it has to refuse are the
+    ``Decimal`` spellings a float would have rounded away (``1e-400``) and the two literals
+    JSON admits no notation for — ``int()`` of either raises, where the contract wants a
+    code. The integral spellings the published record admits (``0``, ``0.0``, ``0e0``) are
+    the ones it must accept, or a conforming writer's bytes would be refused.
+    """
+    from tools.contracts.media_validate import _is_int
+
+    assert _is_int(decimal.Decimal("0")) is True
+    assert _is_int(decimal.Decimal("0.0")) is True
+    assert _is_int(decimal.Decimal("0e0")) is True
+    assert _is_int(decimal.Decimal("1.20000001e8")) is True
+    assert _is_int(decimal.Decimal("-120000001.0")) is True
+    assert _is_int(decimal.Decimal("1e-400")) is False
+    assert _is_int(decimal.Decimal("1.5")) is False
     assert _is_int(decimal.Decimal("Infinity")) is False
-    assert _is_int(float("nan")) is False
     assert _is_int(decimal.Decimal("NaN")) is False
+    assert _is_int(float("inf")) is False
+    assert _is_int(float("nan")) is False
+    assert _is_int(True) is False
+    assert _is_int("0") is False
+
+
+def test_an_index_line_written_as_a_non_number_is_refused_not_crashed(tmp_path, schemas) -> None:
+    """The gate above is the walk's only precondition, so it has to hold for both literals.
+
+    Python's JSON reader accepts ``Infinity`` and ``NaN``, and a line holding one would
+    otherwise reach ``int()`` in the byte arithmetic below the gate — an exception escaping
+    the run rather than the ``FRAME_SCHEMA`` finding the record's ``type`` calls for.
+    """
+    for notation in ("Infinity", "NaN"):
+        files = {
+            name: data for name, data in baseline_files().items() if name != CHECKSUMS_NAME
+        }
+        lines = files[INDEX_NAME].split(b"\n")
+        assert b'"t_us":0,' in lines[0], lines[0]
+        lines[0] = lines[0].replace(b'"t_us":0,', b'"t_us":%s,' % notation.encode(), 1)
+        files[INDEX_NAME] = b"\n".join(lines)
+        entry = synthetic_media_entry(tmp_path, f"index-first-t-us-{notation}", files)
+        observed = {
+            violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)
+        }
+        assert E.FRAME_SCHEMA in observed, (notation, observed)
 
 
 @pytest.mark.parametrize(
