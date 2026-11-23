@@ -12,9 +12,9 @@ Start with this record, the [candidate pin map](pin-map.csv),
 
 | Item | Current record | Evidence needed before signoff |
 | --- | --- | --- |
-| Board | Owner selected Seeed Studio XIAO ESP32-S3 Sense, not Plus | Actual base PCB revision, module marking, seller/SKU and matching schematic |
+| Board | Owner confirms Seeed Studio XIAO ESP32-S3 Sense already purchased, not Plus (2026-11-23) | Actual base PCB revision, module marking, seller/SKU and matching schematic |
 | Expansion | Matching Sense camera/microSD assembly intended | Actual expansion PCB revision, connector orientation/retention and matching schematic |
-| Camera | Owner selected OV5640; reference design uses the Sense fixed-focus module | Module/flex marking, lens and orientation; later driver-detected sensor ID; no autofocus assumption |
+| Camera | Owner confirms OV5640 already purchased (2026-11-23); reference design uses the Sense fixed-focus module | Module/flex marking, lens and orientation; later driver-detected sensor ID; no autofocus assumption |
 | Memory | Vendor baseline 8MB flash / 8MB octal PSRAM | Actual flash/PSRAM detection during 1.2, separate from a successful build |
 | Storage | Genuine 32GB SDHC / FAT32 baseline; owner allows any brand | Exact model/source, usable capacity, filesystem/allocation and later SDSPI measurements |
 | Battery | Owner selected lithium-polymer; exact part not purchased/selected | Supplier datasheet, protection, charge/discharge limits, polarity, connector, mass/dimensions |
@@ -22,6 +22,10 @@ Start with this record, the [candidate pin map](pin-map.csv),
 | External charger | No model selected | Explicit compatibility with the selected pack; connector/polarity, voltage/current/termination review |
 | Host | macOS, Windows or Linux acceptable to owner | One actual host/architecture/version/tool record for each executed qualification |
 | Tools | Owner reports card reader, USB-C data cable and soldering tools | Multimeter/current-limited supply/temperature measurement availability not established |
+
+Board and camera selection and procurement are complete by owner confirmation.
+Recording their actual revision markings and later checking sensor/memory are
+verification steps; they do not require another board or camera purchase.
 
 The owner's daytime ground-object goal is **0.5–1 m from the camera**. Exact
 dog/harness geometry and assembly mass remain needed before final fit. Product

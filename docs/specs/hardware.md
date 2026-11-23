@@ -16,9 +16,11 @@ weather-protective version need separate qualification.
 
 ## Prototype preparation update (2026-11-23)
 
-The owner selects **OV5640** on the XIAO ESP32-S3 Sense and **daytime ground
-objects at 0.5–1 m** as the first readability goal. The stock Sense fixed-focus
-module is the reference; exact purchased module/PCB revisions remain unverified.
+The owner confirms the **XIAO ESP32-S3 Sense and OV5640 are already purchased**
+and selects **daytime ground objects at 0.5–1 m** as the first readability goal.
+The stock Sense fixed-focus module is the reference; exact purchased module/PCB
+revisions remain unverified. Procurement is complete for the board and camera;
+revision identification is a later verification step, not another selection.
 A 32GB SDHC/FAT32 card may be chosen by brand later; each actual model still
 requires qualification. The owner selects LiPo chemistry but has not selected
 or purchased an exact battery or charger. Retain the protected nominal 1S 3.7V
