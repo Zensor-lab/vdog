@@ -2,7 +2,7 @@
 
 The published wire contract for the recorder, the backend and the original
 recording format: two OpenAPI 3.1 documents, three JSON Schema 2020-12 documents,
-and 373 committed golden fixtures that say exactly what every accepted and refused
+and 392 committed golden fixtures that say exactly what every accepted and refused
 request and response looks like on the wire. Everything here is machine-checked
 offline by `tools/validate_contracts.py`; nothing in this tree is prose-only.
 
@@ -14,7 +14,7 @@ documents are corrected — and the validator is expected to fail loudly in betw
 
 ## Running the checks
 
-The suite is 162 test functions; `tools/contracts/tests/test_corpus.py` fails if this
+The suite is 191 test functions; `tools/contracts/tests/test_corpus.py` fails if this
 number and the corpus counts quoted below ever drift apart from the tree.
 
 From the repository root, on the qualified interpreter (`uv` fetches CPython 3.12
@@ -51,10 +51,10 @@ uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
 | `media-v1/manifest.schema.json` | `manifest.json` of a finalized segment: identity, profile, clock, duration, count, close reason and the per-file hashes |
 | `media-v1/frame-record.schema.json` | one `frames.jsonl` line: `v`, `seq`, `offset`, `size`, `t_us`, `crc32` and nothing else |
 | `media-v1/active-record.schema.json` | `active.json` of an interrupted segment: the same identity without any completion claim |
-| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 373 vectors |
-| `fixtures/media/valid/` | 11 finalized and in-progress segments a healthy recorder writes, including the clock, gap, boundary and recovery shapes |
-| `fixtures/media/invalid/` | 68 single-defect segments: every documented corruption class, one defect each |
-| `fixtures/device/`, `fixtures/backend/` | 294 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
+| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 392 vectors |
+| `fixtures/media/valid/` | 12 finalized and in-progress segments a healthy recorder writes, including the clock, gap, boundary, notation and recovery shapes |
+| `fixtures/media/invalid/` | 69 single-defect segments: every documented corruption class, one defect each |
+| `fixtures/device/`, `fixtures/backend/` | 311 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
 | `firmware-release-v1.schema.json` | **not part of this package** — the Stage 0.9 release-archive manifest, mirrored by `tools/firmware/contract.py` |
 
 A media fixture is a directory of the real files (`video.mjpg`, `frames.jsonl`,
@@ -69,8 +69,10 @@ harness artifact beside a valid clip, never something the recorder writes.
    parse, declare every route `interfaces.md` assigns, name every operation in the
    executable operation table (`tools/contracts/api_model.py`, 43 operations),
    document only the status codes the specs assign to that operation, and carry
-   bearer security where the specs require it. Each media schema validates against
-   the Draft 2020-12 metaschema.
+   bearer security where the specs require it — including the bearer challenge RFC
+   9110 §15.5.2 demands of a 401, which both documents declare as a header component
+   and the operation table requires on every documented 401. Each media schema
+   validates against the Draft 2020-12 metaschema.
 2. **Nothing drifts between the two notations.** The `Manifest` component of both
    OpenAPI documents is a byte-for-byte mirror of `media-v1/manifest.schema.json`;
    both documents share one error-envelope definition; the header components match
@@ -78,7 +80,9 @@ harness artifact beside a valid clip, never something the recorder writes.
 3. **Every valid vector is accepted.** Schema validation plus the explicit bounds
    and cross-field rules (CRC-32 recomputed over the exact payload slice, JPEG
    markers decoded with a real decoder, offsets walked, timestamps checked, hashes
-   recomputed from bytes).
+   recomputed from bytes, a granted `Content-Range` compared with the `Range` its
+   sidecar commits, an `Upload-Offset` that may not pass the `Upload-Length` beside
+   it, and a derivative `crop` measured against the source clip's own manifest).
 4. **Every invalid vector is refused, by name and only by the expected name.** A
    negative vector that passes, or that fails with a code nobody declared, is itself
    a finding — a detector that quietly stopped detecting cannot pass this gate.

@@ -139,7 +139,14 @@ class BuiltClip:
                 "sha256": sha256_hex(self.index),
             }
         if self.checksums is not None:
-            self.checksums = checksums_document(self.files())
+            # The sidecar covers the clip's files, and it is not one of them: hashing a
+            # document that contains its own hash is undefined, so the refresh measures
+            # the content files exactly as the original build did (which ran before
+            # `checksums` existed and so could not list it either).
+            content = {
+                name: data for name, data in self.files().items() if name != CHECKSUMS_NAME
+            }
+            self.checksums = checksums_document(content)
 
 
 def crc32_hex(data: bytes) -> str:

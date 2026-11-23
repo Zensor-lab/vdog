@@ -8,16 +8,19 @@ that gives ``format: date-time`` a meaning at all.
 
 from __future__ import annotations
 
+import decimal
 import json
 import re
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Final, Mapping
 
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema._types import draft202012_type_checker
 from jsonschema.exceptions import SchemaError, ValidationError
+from jsonschema.validators import create
 
 #: Keys stripped before comparing two documents that must say the same thing.
 _NON_SEMANTIC_KEYS: frozenset[str] = frozenset(
@@ -76,6 +79,52 @@ def is_rfc3339_date_time(value: Any) -> bool:
 #: an annotation it does not define semantics for.
 FORMAT_CHECKER = FormatChecker()
 FORMAT_CHECKER.checks("date-time")(is_rfc3339_date_time)
+
+
+def decimal_is_integral(value: decimal.Decimal) -> bool:
+    """True when the digits a ``Decimal`` carries denote a whole number.
+
+    ``type: integer`` accepts an integral number written in any JSON notation, and the
+    media validator parses the frame index with ``parse_float=decimal.Decimal`` so an
+    exponent cannot be rounded away before the check runs. Judgement is on the digits
+    themselves, not on the binary float nearest them: ``0.0`` and ``0e0`` are the two
+    extra spellings the contract publishes for ``0``, ``1.20000001e8`` is exactly
+    ``120000001``, and ``1e-400`` is a fraction — even though the float it converts to
+    is ``0.0``, which the default checker would have called an integer.
+    """
+    if not value.is_finite():
+        return False
+    _, digits, exponent = value.as_tuple()
+    if exponent >= 0:
+        return True
+    return all(digit == 0 for digit in digits[exponent:])
+
+
+def is_json_integer(checker: object, instance: Any) -> bool:
+    """``type: integer`` for a document parsed with ``parse_float=decimal.Decimal``.
+
+    jsonschema's own checker recognises ``int`` and an integral ``float``; a
+    :class:`~decimal.Decimal` is a third spelling the media walk now hands it, and
+    without this branch every ``0.0``/``0e0`` index line the contract publishes as
+    valid would be refused as ``"0.0" is not of type "integer"``.
+    """
+    if isinstance(instance, bool):
+        return False
+    if isinstance(instance, int):
+        return True
+    if isinstance(instance, decimal.Decimal):
+        return decimal_is_integral(instance)
+    return isinstance(instance, float) and instance.is_integer()
+
+
+#: :class:`~jsonschema.Draft202012Validator` with the integer branch above, which is
+#: what lets :func:`schema_error_report` judge a ``Decimal`` instance at all. Built
+#: without a ``version`` so no global validator registration happens as a side effect.
+DRAFT202012_VALIDATOR: Final = create(
+    meta_schema=Draft202012Validator.META_SCHEMA,
+    validators=Draft202012Validator.VALIDATORS,
+    type_checker=draft202012_type_checker.redefine("integer", is_json_integer),
+)
 
 
 def load_json(path: Path) -> Any:
@@ -158,8 +207,12 @@ def schema_error_report(
     ``property`` is the last key of the failing instance path (or the special value
     ``""`` for errors at the document root), which lets callers suppress the generic
     schema code where a dedicated invariant already reports the same bound.
+
+    Instances may hold :class:`~decimal.Decimal` (the media index is parsed that way);
+    :data:`DRAFT202012_VALIDATOR` is the ordinary 2020-12 validator plus the integer
+    branch that makes such an instance judgeable.
     """
-    validator = Draft202012Validator(schema, format_checker=FORMAT_CHECKER)
+    validator = DRAFT202012_VALIDATOR(schema, format_checker=FORMAT_CHECKER)
     report: list[tuple[str, str, str]] = []
     for error in sorted(validator.iter_errors(instance), key=_error_sort_key):
         property_name = ""

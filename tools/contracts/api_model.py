@@ -17,7 +17,7 @@ contract and this table is the independent checklist that keeps it honest.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Final, Mapping
 
 from .bounds import (
@@ -86,6 +86,11 @@ class Operation:
     method: str
     path: str
     request_schema: str | None = None
+    #: Body schema per documented status. A status of 400 or above normally carries the
+    #: shared ``Error`` envelope and so is absent here, which is exactly what tells
+    #: :mod:`tools.contracts.api_validate` to check it as one; a rejection that binds its
+    #: own schema — ``PUT /settings``' 409, which names the revision the client lost the
+    #: race to — is recorded here and checked against that schema instead.
     response_schemas: Mapping[int, str | None] = field(default_factory=dict)
     success_statuses: tuple[int, ...] = ()
     error_codes: Mapping[int, tuple[str, ...]] = field(default_factory=dict)
@@ -147,8 +152,30 @@ def _op(key: str, contract: str, operation_id: str, method: str, path: str, **kw
     return Operation(key=key, contract=contract, operation_id=operation_id, method=method, path=path, **kwargs)  # type: ignore[arg-type]
 
 
+#: The header every documented 401 of both contracts carries, named once here because
+#: it is one rule of RFC 9110 §15.5.2 rather than per-operation discretion: a 401 that
+#: does not say how to authenticate is not a challenge. The two OpenAPI documents
+#: declare it on the shared `Unauthorized` response (and on the bodyless HEAD refusal
+#: that cannot use that response), and :func:`openapi_check.check_operation` fails the
+#: document if this table ever claims a header the document does not require.
+WWW_AUTHENTICATE_HEADER: Final[str] = "WWW-Authenticate"
+
+
+def _requiring_bearer_challenge(op: Operation) -> Operation:
+    """Add the bearer challenge to the required headers of a documented 401.
+
+    Applied to the whole table rather than spelled per operation, so a new operation
+    that documents a 401 cannot forget the header the way it could forget a line.
+    """
+    if 401 not in op.error_codes:
+        return op
+    headers = dict(op.required_response_headers)
+    headers[401] = tuple(dict.fromkeys((*headers.get(401, ()), WWW_AUTHENTICATE_HEADER)))
+    return replace(op, required_response_headers=headers)
+
+
 DEVICE_OPERATIONS: Final[dict[str, Operation]] = {
-    op.key: op
+    op.key: _requiring_bearer_challenge(op)
     for op in (
         _op(
             "device.pair",
@@ -217,7 +244,10 @@ DEVICE_OPERATIONS: Final[dict[str, Operation]] = {
             "PUT",
             "/settings",
             request_schema="PutSettingsRequest",
-            response_schemas={200: "PutSettingsResponse"},
+            # The 409 is the one rejection of either contract that says more than the
+            # shared envelope: interfaces.md promises the current revision alongside
+            # REVISION_CONFLICT, and the closed Error schema has no member for it.
+            response_schemas={200: "PutSettingsResponse", 409: "SettingsRevisionConflictResponse"},
             success_statuses=(200,),
             error_codes={
                 400: ("MALFORMED_REQUEST",),
@@ -408,7 +438,7 @@ DEVICE_OPERATIONS: Final[dict[str, Operation]] = {
 
 
 BACKEND_OPERATIONS: Final[dict[str, Operation]] = {
-    op.key: op
+    op.key: _requiring_bearer_challenge(op)
     for op in (
         _op(
             "backend.create_token",

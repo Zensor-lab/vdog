@@ -332,8 +332,11 @@ paths:
         '401':
           # A HEAD answer is status and headers alone (RFC 9110 §9.3.2): the shared Error
           # body the other refusals of this contract carry would promise content the
-          # method forbids, so the status is the whole report.
+          # method forbids, so the status plus the challenge is the whole report.
           description: Missing or invalid bearer token, reported by the status alone.
+          headers:
+            WWW-Authenticate:
+              $ref: '#/components/headers/WwwAuthenticate'
         '404':
           description: Resource was never known, reported by the status alone.
         '410':
@@ -879,6 +882,8 @@ components:
       description: '`sha256 <64 lowercase hexadecimal>` over the chunk body.'
       schema:
         type: string
+        minLength: 71
+        maxLength: 71
         pattern: '^sha256 [0-9a-f]{64}$'
     ChunkContentLength:
       name: Content-Length
@@ -909,6 +914,16 @@ components:
       schema:
         type: string
   headers:
+    WwwAuthenticate:
+      description: >-
+        The bearer challenge RFC 9110 §15.5.2 requires on every 401, naming the
+        protection space the token was presented to. A bodyless HEAD refusal carries
+        it as well: what the method forbids is the body, not the header.
+      required: true
+      schema:
+        type: string
+        pattern: '^Bearer( realm="[^"]{1,100}")?$'
+      example: 'Bearer realm="vdog"'
     AcceptRanges:
       description: Byte ranges are supported for immutable stored files.
       schema:
@@ -918,6 +933,8 @@ components:
       description: The quoted SHA-256 of the whole file.
       schema:
         type: string
+        minLength: 66
+        maxLength: 66
         pattern: '^"[0-9a-f]{64}"$'
     ContentLength:
       description: Exact number of body bytes in this response.
@@ -956,6 +973,9 @@ components:
             $ref: '#/components/schemas/Error'
     Unauthorized:
       description: Missing or invalid bearer token.
+      headers:
+        WWW-Authenticate:
+          $ref: '#/components/headers/WwwAuthenticate'
       content:
         application/json:
           schema:
@@ -1040,12 +1060,18 @@ components:
     DeviceId:
       description: 32 lowercase hexadecimal characters provisioned once.
       type: string
+      minLength: 32
+      maxLength: 32
       pattern: '^[0-9a-f]{32}$'
     ClipId:
       description: >-
         `<boot_id>-<sequence>`; the prefix equals boot_id, which the media
         validator checks as a cross-field invariant.
+        The length keywords restate what the pattern implies: a validator whose
+        `pattern` is a substring search must still refuse the 42nd character.
       type: string
+      minLength: 41
+      maxLength: 41
       pattern: '^[0-9a-f]{32}-[0-9a-f]{8}$'
     TokenId:
       description: Opaque backend token identifier.
@@ -1055,10 +1081,14 @@ components:
     TokenSecret:
       description: 32 random bytes base64url without padding, returned once.
       type: string
+      minLength: 43
+      maxLength: 43
       pattern: '^[A-Za-z0-9_-]{43}$'
     Uuid:
       description: Canonical lowercase UUID.
       type: string
+      minLength: 36
+      maxLength: 36
       pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     UploadId:
       description: Opaque upload identifier.
@@ -1079,6 +1109,8 @@ components:
       description: RFC3339 UTC timestamp with millisecond precision and trailing Z.
       type: string
       format: date-time
+      minLength: 24
+      maxLength: 24
       pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
     Sha256:
       description: >-
@@ -1232,6 +1264,8 @@ components:
         start_utc:
           type: ['string', 'null']
           format: date-time
+          minLength: 24
+          maxLength: 24
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
         clock_source:
           enum: [unknown, phone, sntp]
@@ -1252,6 +1286,8 @@ components:
         start_utc:
           type: ['string', 'null']
           format: date-time
+          minLength: 24
+          maxLength: 24
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
         duration_us:
           type: integer
@@ -1399,6 +1435,8 @@ components:
         expires_at:
           type: ['string', 'null']
           format: date-time
+          minLength: 24
+          maxLength: 24
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
     BackendEventRequest:
       type: object
@@ -1779,6 +1817,8 @@ components:
     BootId:
       description: 32 random lowercase hexadecimal characters per boot.
       type: string
+      minLength: 32
+      maxLength: 32
       pattern: '^[0-9a-f]{32}$'
     ManifestFile:
       type: object

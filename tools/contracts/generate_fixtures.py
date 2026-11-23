@@ -291,6 +291,47 @@ def _corrupt_checksum_size(editable: _Editable) -> None:
     entry["bytes"] = entry["bytes"] + 7
 
 
+def _rewrite_first_index_line(index: bytes, replacements: tuple[tuple[bytes, bytes], ...]) -> bytes:
+    """Rewrite the first record's bytes in place, leaving every other line untouched.
+
+    The notation is the vector, so the text is edited rather than the parsed record:
+    ``json.dumps`` would write ``1e-400`` back as ``0.0`` and ``0.0`` back as ``0``,
+    which is precisely the spelling the vector exists to demonstrate.
+    """
+    lines = index.split(b"\n")
+    line = lines[0]
+    for old, new in replacements:
+        line, count = line.replace(old, new, 1), line.count(old)
+        if count != 1:  # pragma: no cover - the record's members are generator-owned
+            raise KeyError(f"{old!r} is not a member of the first index record")
+    lines[0] = line
+    return b"\n".join(lines)
+
+
+def _corrupt_index_first_t_us_fractional(editable: _Editable) -> None:
+    # The float this token converts to is exactly zero, so a validator that parses the
+    # index into binary floats reads a conformant first timestamp; parsed as a decimal it
+    # stays what the writer sent — a fraction — and the frame record's `type: integer`
+    # is what refuses it.
+    editable.built.index = _rewrite_first_index_line(
+        editable.built.index, ((b'"t_us":0', b'"t_us":1e-400'),)
+    )
+
+
+def _corrupt_index_integral_notations(editable: _Editable) -> None:
+    # ``0``, ``0.0`` and ``0e0`` name the same integer, and the published contract says
+    # any JSON integer notation is a legal way to write one. A validator that refused the
+    # exponential or fractional spelling would reject bytes a conforming writer may send.
+    editable.built.index = _rewrite_first_index_line(
+        editable.built.index,
+        (
+            (b'"seq":0', b'"seq":0.0'),
+            (b'"offset":0', b'"offset":0e0'),
+            (b'"t_us":0', b'"t_us":0E+0'),
+        ),
+    )
+
+
 def _corrupt_manifest_sha_trailing_newline(editable: _Editable) -> None:
     assert editable.built.manifest is not None
     entry = editable.built.manifest["files"][CLIP_FILE_NAMES[0]]
@@ -574,6 +615,8 @@ CORRUPTIONS: Final[Mapping[str, Callable[[_Editable], None]]] = {
     "manifest_bytes_non_integer": _corrupt_manifest_bytes_non_integer,
     "checksums_sha_trailing_newline": _corrupt_checksums_sha_trailing_newline,
     "checksums_bytes_non_integer": _corrupt_checksums_bytes_non_integer,
+    "index_first_t_us_fractional": _corrupt_index_first_t_us_fractional,
+    "index_integral_notations": _corrupt_index_integral_notations,
     "frame_count_mismatch": _corrupt_frame_count,
     "frame_version": _corrupt_frame_version,
     "nominal_fps_high": _corrupt_nominal_fps_high,
@@ -738,6 +781,18 @@ def build_media_corpus(media: Sequence[MediaFixture]) -> MediaCorpus:
         allow_nan=False,
     ).encode("utf-8")
     assert len(decoded_oversize) == MAX_MANIFEST_BYTES + 1
+    # Both of these are manifests the media validator refuses and the OpenAPI mirror
+    # accepts, which is the whole point: they are bound for an upload initialization,
+    # where nothing but those media rules can notice them.
+    sequence = baseline.manifest["clip_id"].rsplit("-", 1)[1]
+    boot_prefix_manifest = {
+        **baseline.manifest,
+        "clip_id": f"{boot_id('boot-prefix-rival')}-{sequence}",
+    }
+    unknown_clock_manifest = {
+        **baseline.manifest,
+        "clock": {**baseline.manifest["clock"], "source": "unknown"},
+    }
     return MediaCorpus(
         baseline_clip_id=baseline.manifest["clip_id"],
         baseline_manifest=baseline.manifest,
@@ -760,6 +815,8 @@ def build_media_corpus(media: Sequence[MediaFixture]) -> MediaCorpus:
         padded_manifest_base64url=_b64_standard(b"\xfb\xff" + manifest_bytes),
         non_json_manifest_base64url=_b64url(b"this is not json"),
         invalid_manifest_base64url=_b64url(dump_json({"v": 1})),
+        boot_prefix_manifest_base64url=_b64url(dump_json(boot_prefix_manifest)),
+        unknown_clock_timestamp_manifest_base64url=_b64url(dump_json(unknown_clock_manifest)),
     )
 
 
@@ -852,6 +909,12 @@ def _build_all() -> dict[str, bytes]:
         if fixture.headers is not None:
             out[fixture.headers_file or ""] = dump_json(
                 {key: fixture.headers[key] for key in sorted(fixture.headers)}
+            )
+        if fixture.request_headers is not None:
+            # The request a granted range answers: written as its own sidecar so the
+            # answer's own header map stays a statement about the answer alone.
+            out[fixture.request_headers_file or ""] = dump_json(
+                {key: fixture.request_headers[key] for key in sorted(fixture.request_headers)}
             )
     out["fixtures.json"] = (
         json.dumps(

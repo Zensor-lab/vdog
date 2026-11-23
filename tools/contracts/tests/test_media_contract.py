@@ -6,6 +6,7 @@ fixture that only *looks* right in memory cannot pass.
 
 from __future__ import annotations
 
+import decimal
 import hashlib
 import copy
 import json
@@ -36,6 +37,7 @@ from tools.contracts.media_validate import (
     validate_media_fixture,
 )
 from tools.contracts.openapi_check import load_media_schemas
+from tools.contracts.schema_docs import decimal_is_integral
 
 from conftest import FIXTURES, REPO_ROOT, baseline_files, synthetic_media_entry
 
@@ -78,8 +80,30 @@ def _payload_bytes(entry: dict) -> bytes:
 
 
 def _records(entry: dict) -> list[dict]:
+    """The committed index records, in whatever notation they were written in.
+
+    ``type: integer`` admits ``0``, ``0.0`` and ``0e0`` as the same integer, and the media
+    walk parses the index with ``parse_float=decimal.Decimal`` so an exponent cannot be
+    rounded away before it is judged. These helpers then slice payload bytes by those very
+    numbers, so they read the file the same way and reduce an integral decimal to the
+    ``int`` a slice needs: a test that instead refused the notation would be refusing bytes
+    the published contract calls conformant.
+    """
     lines = _index_bytes(entry).decode("utf-8").split("\n")
-    return [json.loads(line) for line in lines if line]
+    records = []
+    for line in lines:
+        if not line:
+            continue
+        record = json.loads(line, parse_float=decimal.Decimal)
+        records.append(
+            {
+                key: int(value)
+                if isinstance(value, decimal.Decimal) and decimal_is_integral(value)
+                else value
+                for key, value in record.items()
+            }
+        )
+    return records
 
 
 def _entry_id(entry: dict) -> str:
@@ -1076,3 +1100,195 @@ def test_the_committed_uncertainty_vector_carries_the_refused_value(index: list[
     assert entry["expected_error_codes"] == [E.CLOCK_NULLITY_MISMATCH, E.MANIFEST_SCHEMA]
     manifest = json.loads(_read(entry["id"], MANIFEST_NAME))
     assert manifest["clock"]["uncertainty_ms"] == UINT53_MAX + 1
+
+
+# --- Round 5: how an integer may be written, and the field rules on their own ----
+
+#: ``(notation, integral?, case)`` for the digits a JSON number may arrive in.
+_INTEGER_NOTATIONS: tuple[tuple[str, bool, str], ...] = (
+    ("0", True, "plain"),
+    ("0.0", True, "fraction-part"),
+    ("0e0", True, "exponent"),
+    ("0E+0", True, "signed-exponent"),
+    ("120000001", True, "wide-plain"),
+    ("120000001.0", True, "wide-fraction"),
+    ("1.20000001e8", True, "wide-exponent"),
+    ("1e-400", False, "subnormal-that-floats-round-to-zero"),
+    ("0.5", False, "half"),
+    ("1.5e0", False, "half-by-exponent"),
+    ("Infinity", False, "infinity"),
+    ("NaN", False, "not-a-number"),
+)
+
+
+@pytest.mark.parametrize(
+    ("notation", "integral", "case"),
+    _INTEGER_NOTATIONS,
+    ids=[case for *_rest, case in _INTEGER_NOTATIONS],
+)
+def test_a_json_integer_is_judged_on_the_digits_it_carries(
+    notation: str, integral: bool, case: str
+) -> None:
+    """``type: integer`` is about the number, and the number is what was written (AC-06).
+
+    The judge runs on a ``Decimal``, because the binary float a default parse produces
+    has already answered the question wrongly: ``1e-400`` converts to exactly ``0.0``,
+    which every float-based check would call an integer.
+    """
+    assert decimal_is_integral(decimal.Decimal(notation)) is integral, case
+    if notation == "1e-400":
+        assert float("1e-400") == 0.0  # the trap this predicate exists to avoid
+
+
+def test_the_index_is_parsed_so_an_exponent_survives_the_parse(index: list[dict], schemas) -> None:
+    """A fractional ``t_us`` is refused, and the committed bytes really say it (AC-03)."""
+    entry = next(item for item in index if item["id"] == "media/invalid/index-first-t-us-fractional")
+    assert entry["expected"] == "invalid"
+    assert entry["expected_error_codes"] == [E.FRAME_SCHEMA]
+    assert b'"t_us":1e-400' in _index_bytes(entry)
+    observed = {violation.code for violation in validate_media_fixture(FIXTURES, entry, schemas)}
+    assert observed == {E.FRAME_SCHEMA}, observed
+
+
+def test_the_frame_record_admits_every_integral_notation(index: list[dict], schemas) -> None:
+    """What the schema publishes as valid notation must validate (AC-02)."""
+    entry = next(item for item in index if item["id"] == "media/valid/index-integral-notations")
+    raw = _index_bytes(entry)
+    assert b'"seq":0.0' in raw and b'"offset":0e0' in raw and b'"t_us":0E+0' in raw
+    assert entry["expected"] == "valid"
+    assert validate_media_fixture(FIXTURES, entry, schemas) == []
+
+
+def test_an_overflowing_exponent_is_a_finding_and_never_a_crash(tmp_path, schemas) -> None:
+    """``1e999`` is an integral spelling of a number no byte position can be.
+
+    A float parse would have produced ``inf``, which Python calls an integer, and the
+    walk's ``int()`` would then have raised: the crash this gate exists to turn into a
+    named bound violation.
+    """
+    files = baseline_files()
+    lines = files[INDEX_NAME].split(b"\n")
+    assert b'"t_us":66667' in lines[1]
+    lines[1] = lines[1].replace(b'"t_us":66667', b'"t_us":1e999')
+    files[INDEX_NAME] = b"\n".join(lines)
+    entry = synthetic_media_entry(tmp_path, "index-t-us-overflow", files)
+    observed = {violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)}
+    assert E.FRAME_T_US_TOO_LARGE in observed, observed
+
+
+def test_the_position_gate_refuses_what_the_arithmetic_cannot_hold() -> None:
+    """``inf`` is an integral float to Python and a crash waiting in a slice."""
+    from tools.contracts.media_validate import _is_int, _is_position
+
+    assert _is_position(decimal.Decimal("0.0")) is True
+    assert _is_position(decimal.Decimal("0e0")) is True
+    assert _is_position(0) is True
+    assert _is_position(decimal.Decimal("1e-400")) is False
+    assert _is_position(True) is False
+    assert _is_position("0") is False
+    # ``inf`` is an integral float to Python and a crash waiting in a slice: the walk's
+    # gate is where that spelling is refused, whatever the integer predicate decides.
+    assert _is_position(float("inf")) is False
+    assert _is_position(decimal.Decimal("Infinity")) is False
+    assert _is_position(float("nan")) is False
+    assert _is_int(float("inf")) is False
+    assert _is_int(decimal.Decimal("Infinity")) is False
+    assert _is_int(float("nan")) is False
+    assert _is_int(decimal.Decimal("NaN")) is False
+
+
+@pytest.mark.parametrize(
+    ("member", "notation"),
+    [
+        ("nominal_fps", "Infinity"),
+        ("nominal_fps", "NaN"),
+        ("width", "Infinity"),
+        ("frame_count", "Infinity"),
+        ("duration_us", "Infinity"),
+    ],
+    ids=["fps-inf", "fps-nan", "width-inf", "count-inf", "duration-inf"],
+)
+def test_a_manifest_member_written_as_a_non_number_is_refused_not_measured(
+    tmp_path, schemas, member: str, notation: str
+) -> None:
+    """``Infinity`` has no JSON notation, so its *type* is the defect (AC-06).
+
+    A bound would be the wrong report: comparing a ceiling with something that is not a
+    number dresses a type error up as an out-of-range value. The schema's ``type`` check
+    is what refuses it, and the walk's own gate is what keeps the same spelling in an
+    index line out of ``int()``.
+    """
+    files = {
+        name: data for name, data in baseline_files().items() if name != CHECKSUMS_NAME
+    }
+    original = files[MANIFEST_NAME]
+    rewritten, count = re.subn(
+        rb'"%b":\s*-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?' % member.encode(),
+        b'"%b":%b' % (member.encode(), notation.encode()),
+        original,
+        count=1,
+    )
+    assert count == 1, member
+    files[MANIFEST_NAME] = rewritten
+    entry = synthetic_media_entry(tmp_path, f"manifest-{member}-{notation}", files)
+    observed = {violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)}
+    assert E.MANIFEST_SCHEMA in observed, (member, notation, observed)
+
+
+def _baseline_manifest() -> dict:
+    return json.loads(baseline_files()[MANIFEST_NAME])
+
+
+def test_the_field_rules_judge_what_is_there_and_leave_absence_to_the_schema() -> None:
+    """Required-ness is a ``required`` keyword; these are the rules about present members."""
+    from tools.contracts.media_validate import validate_manifest_fields
+
+    assert validate_manifest_fields({"v": MEDIA_VERSION}) == []
+    assert validate_manifest_fields(_baseline_manifest()) == []
+
+    melted = validate_manifest_fields(
+        {**_baseline_manifest(), "close_reason": "melted"}, location_prefix="manifest_base64url"
+    )
+    assert [violation.code for violation in melted] == [E.CLOSE_REASON_UNKNOWN]
+    assert melted[0].location == "manifest_base64url.close_reason"
+
+
+def test_the_field_rules_name_the_transport_that_carried_the_manifest() -> None:
+    """The same defect over either wire differs only in where it was found."""
+    from tools.contracts.media_validate import validate_manifest_fields
+
+    baseline = _baseline_manifest()
+    on_card = validate_manifest_fields({**baseline, "boot_id": "0" * 32})
+    on_wire = validate_manifest_fields(
+        {**baseline, "boot_id": "0" * 32}, location_prefix="manifest_base64url"
+    )
+    assert [v.location for v in on_card] != [v.location for v in on_wire]
+    assert [v.code for v in on_card] == [v.code for v in on_wire]
+    assert on_wire[0].location.startswith("manifest_base64url.")
+
+
+def test_a_terminator_attached_to_an_identifier_makes_it_a_different_identifier() -> None:
+    """32 hex is 32 hex, and a newline is a thirty-third character (AC-06)."""
+    from tools.contracts.media_validate import validate_manifest_fields
+
+    baseline = _baseline_manifest()
+    for field, expected in (
+        ("device_id", [E.ID_SYNTAX_INVALID]),
+        ("clip_id", [E.ID_SYNTAX_INVALID]),
+        ("boot_id", [E.ID_SYNTAX_INVALID, E.CLIP_BOOT_PREFIX_MISMATCH]),
+    ):
+        found = validate_manifest_fields({**baseline, field: baseline[field] + "\n"})
+        assert [violation.code for violation in found] == expected, (field, found)
+
+
+def test_a_timestamp_with_the_terminator_still_attached_is_not_a_timestamp() -> None:
+    """The clock's calendar check reads the whole value, not up to the first newline."""
+    from tools.contracts.media_validate import validate_manifest_fields
+
+    baseline = _baseline_manifest()
+    assert baseline["clock"]["source"] == "sntp"
+    stamped = baseline["clock"]["start_utc"]
+    found = validate_manifest_fields(
+        {**baseline, "clock": {**baseline["clock"], "start_utc": stamped + "\n"}}
+    )
+    assert [violation.code for violation in found] == [E.CLOCK_TIMESTAMP_INVALID], found

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from functools import lru_cache
 
 import pytest
 
@@ -71,16 +72,47 @@ def _body(entry: dict) -> dict:
 
 
 def _headers(entry: dict) -> dict:
+    """The headers this vector itself puts on the wire.
+
+    The request sidecar a response vector may also carry is excluded by name: it is the
+    question being answered, not part of the answer, and reading it as one would let a
+    vector's own headers go unexamined.
+    """
     for name in entry["files"]:
-        if name.endswith(".headers.json"):
+        if name.endswith(".headers.json") and not name.endswith(".request.headers.json"):
             return json.loads((FIXTURES / name).read_bytes().decode("utf-8"))
     raise AssertionError(f"{entry['id']} has no header sidecar")
+
+
+def _request_headers(entry: dict) -> dict:
+    """The request a response vector claims to answer, or ``{}`` when it names none."""
+    for name in entry["files"]:
+        if name.endswith(".request.headers.json"):
+            return json.loads((FIXTURES / name).read_bytes().decode("utf-8"))
+    return {}
+
+
+@lru_cache(maxsize=1)
+def _clip_dimensions() -> dict[str, tuple[int, int]]:
+    """The committed clip sizes a derivative crop is measured against.
+
+    The published validator builds this map from the corpus before walking it, and a
+    unit call has to hand it over explicitly: without it a crop that overruns its source
+    is a vector with nothing to compare against, which would silently pass here while the
+    CLI refuses it.
+    """
+    from tools.contracts.validate import clip_dimensions
+
+    document = json.loads((FIXTURES / "fixtures.json").read_bytes().decode("utf-8"))
+    return clip_dimensions(FIXTURES, document["fixtures"])
 
 
 def _observed(entry: dict, specs: dict, media_schemas: dict) -> set[str]:
     return {
         violation.code
-        for violation in validate_api_fixture(FIXTURES, entry, specs, media_schemas)
+        for violation in validate_api_fixture(
+            FIXTURES, entry, specs, media_schemas, _clip_dimensions()
+        )
     }
 
 
@@ -414,7 +446,17 @@ def test_coverage_refusals_use_the_shared_envelope(index: list[dict]) -> None:
         operation = ALL_OPERATIONS[entry["operation"]]
         if operation.is_head:
             status_only += 1
-            assert not entry["files"], f"{entry['id']} gives a HEAD a body"
+            # What a HEAD forbids is the body, not the headers. The contract still
+            # demands its headers — a 401's bearer challenge among them — so the vector
+            # may carry a header map and nothing that can be read as content.
+            assert not [
+                name for name in entry["files"] if not name.endswith(".headers.json")
+            ], f"{entry['id']} gives a HEAD a body"
+            demanded = set(operation.required_response_headers.get(entry["status"], ()))
+            if demanded:
+                assert set(_headers(entry)) == demanded, entry["id"]
+            else:
+                assert not entry["files"], entry["id"]
             assert entry["api_error_code"] is None, entry["id"]
             assert entry["status"] in operation.error_codes, entry["id"]
             continue
@@ -537,9 +579,22 @@ def test_manifest_quoting_vectors_cover_each_failure_mode(by_id: dict) -> None:
 
 
 def test_header_only_vectors_keep_their_sidecar(by_id: dict) -> None:
+    """A vector with no body carries exactly one header map, and at most one request map.
+
+    The two kinds are named apart on purpose: `<id>.headers.json` is what the vector puts
+    on the wire, and `<id>.request.headers.json` is only the question an answer claims to
+    answer. The second one alone would be a request with no reply beside it, which is a
+    vector of nothing.
+    """
     for entry in by_id.values():
-        if entry["files"] and all(name.endswith(".headers.json") for name in entry["files"]):
-            assert len(entry["files"]) == 1, entry["id"]
+        files = entry["files"]
+        if not files or not all(name.endswith(".headers.json") for name in files):
+            continue
+        own = [name for name in files if not name.endswith(".request.headers.json")]
+        asked = [name for name in files if name.endswith(".request.headers.json")]
+        assert len(own) == 1, entry["id"]
+        assert len(asked) <= 1, entry["id"]
+        assert entry["direction"] == "response" or not asked, entry["id"]
 
 
 def test_api_bodies_carry_the_version_field(by_id: dict) -> None:
@@ -590,18 +645,26 @@ def _header_codes(
     status: int | None,
     extra: dict[str, str] | None = None,
     direction: str = "response",
+    request: dict[str, str] | None = None,
+    operation: str = "device.get_clip_file",
 ) -> set[str]:
-    """One header rule's verdict on one value, away from any committed vector."""
+    """One header rule's verdict on one value, away from any committed vector.
+
+    ``request`` is the request side of a response vector, spelled the way the corpus
+    spells it: a grant means nothing without the specifier it answers, so a rule that
+    compares the two needs a context in which the request exists at all.
+    """
     from tools.contracts.api_validate import HEADER_RULES, _HeaderContext
 
     headers = {name: value}
     headers.update(extra or {})
     context = _HeaderContext(
         location="unit:range",
-        operation=ALL_OPERATIONS["device.get_clip_file"],
+        operation=ALL_OPERATIONS[operation],
         direction=direction,
         status=status,
         headers=headers,
+        request_headers=dict(request or {}),
     )
     return {violation.code for violation in HEADER_RULES[name.lower()](context, name, value)}
 
@@ -1468,3 +1531,399 @@ def test_the_index_line_writer_refuses_a_non_finite_number() -> None:
         editable.set_line(0, {"seq": 0, "offset": float("nan")})
     editable.set_line(0, {"seq": 0, "offset": 0})
     assert editable.built.index == b'{"seq":0,"offset":0}\n'
+
+
+# --- Round 5: the bearer challenge, the answered range, the HEAD pair, the crop --
+
+#: Spellings of ``WWW-Authenticate`` and what the rule owes each. RFC 9110 §15.5.2 admits
+#: exactly two forms; the trailing-terminator rows are the point of anchoring the pattern
+#: at both ends, because a ``$`` stops before a newline and would call them conformant.
+_CHALLENGE_FORMS: tuple[tuple[str, set[str], str], ...] = (
+    ("Bearer", set(), "scheme-alone"),
+    ('Bearer realm="vdog"', set(), "scheme-with-realm"),
+    ('Bearer realm="a"', set(), "realm-of-one"),
+    ('Bearer realm="' + "x" * 100 + '"', set(), "realm-at-the-bound"),
+    ("bearer", {E.HEADER_INVALID}, "lowercase-scheme"),
+    ('Basic realm="vdog"', {E.HEADER_INVALID}, "another-scheme"),
+    ("Bearer realm=vdog", {E.HEADER_INVALID}, "unquoted-realm"),
+    ('Bearer realm=""', {E.HEADER_INVALID}, "empty-realm"),
+    ('Bearer realm="' + "x" * 101 + '"', {E.HEADER_INVALID}, "realm-over-the-bound"),
+    ('Bearer  realm="vdog"', {E.HEADER_INVALID}, "double-space"),
+    ("Bearer ", {E.HEADER_INVALID}, "trailing-space"),
+    ("Bearer\n", {E.HEADER_INVALID}, "trailing-newline"),
+    ('Bearer realm="vdog"\n', {E.HEADER_INVALID}, "realm-then-newline"),
+    ('Bearer realm="a" extra', {E.HEADER_INVALID}, "trailing-parameter"),
+    ("", {E.HEADER_INVALID}, "empty-value"),
+)
+
+
+@pytest.mark.parametrize(
+    ("value", "codes", "case"), _CHALLENGE_FORMS, ids=[case for *_r, case in _CHALLENGE_FORMS]
+)
+def test_the_challenge_rule_admits_only_the_documented_forms(
+    value: str, codes: set[str], case: str
+) -> None:
+    """A 401 either names the bearer protection space or is not a challenge (AC-06)."""
+    assert _header_codes("WWW-Authenticate", value, 401) == codes, case
+
+
+def test_every_documented_401_owes_the_challenge() -> None:
+    """One rule of RFC 9110, applied to the table rather than spelled per operation.
+
+    An operation that documents a 401 and forgets the header would otherwise be a hole
+    nobody notices: the client is told it is unauthenticated and never told how to fix it.
+    """
+    from tools.contracts.api_model import WWW_AUTHENTICATE_HEADER
+
+    documented = [key for key, op in ALL_OPERATIONS.items() if 401 in op.error_codes]
+    assert documented, "no operation documents a 401 at all"
+    for key in documented:
+        assert WWW_AUTHENTICATE_HEADER in ALL_OPERATIONS[key].required_response_headers[401], key
+    # The other half of the rule: nothing gained the header on a status it does not answer.
+    for key, operation in ALL_OPERATIONS.items():
+        if 401 not in operation.error_codes:
+            assert WWW_AUTHENTICATE_HEADER not in operation.required_response_headers.get(401, ())
+
+
+def test_both_contracts_document_the_challenge_component(specs: dict) -> None:
+    """The table may only demand a header the document actually requires of that response."""
+    for contract in ("device", "backend"):
+        document = specs[contract]
+        component = document["components"]["headers"]["WwwAuthenticate"]
+        assert component["required"] is True, contract
+        assert component["schema"]["pattern"] == '^Bearer( realm="[^"]{1,100}")?$', contract
+        for path, item in document.get("paths", {}).items():
+            for method, operation in item.items():
+                if not isinstance(operation, dict) or "401" not in operation.get("responses", {}):
+                    continue
+                response = resolve_refs(operation["responses"]["401"], root=document)
+                assert "WWW-Authenticate" in response.get("headers", {}), f"{contract} {method} {path}"
+
+
+def test_every_committed_401_carries_a_bearer_challenge(by_id: dict) -> None:
+    for entry in by_id.values():
+        if entry["direction"] != "response" or entry.get("status") != 401:
+            continue
+        if {E.HEADER_MISSING, E.HEADER_INVALID} & set(entry["expected_error_codes"]):
+            continue  # the three vectors that exist to withhold or falsify it
+        assert _headers(entry)["WWW-Authenticate"].startswith("Bearer "), entry["id"]
+
+
+def test_the_challenge_has_three_committed_refusals(
+    by_id: dict, specs: dict, media_schemas: dict
+) -> None:
+    """Absent, foreign-scheme, and the terminator left attached: each is named by code."""
+    for name, code in (
+        ("clip-file-response-401-no-challenge", E.HEADER_MISSING),
+        ("clip-file-response-401-wrong-scheme", E.HEADER_INVALID),
+        ("clip-file-response-401-challenge-trailing-newline", E.HEADER_INVALID),
+    ):
+        entry = by_id[f"device/invalid/{name}"]
+        assert entry["expected_error_codes"] == [code], (name, entry["expected_error_codes"])
+        assert _observed(entry, specs, media_schemas) == {code}, name
+
+
+#: ``(Content-Range, other headers, the request it answers, codes, case)``. The grant is
+#: judged against the specifier it claims to serve; a specifier the contract refuses is
+#: left to :func:`_rule_range`, which owns it, and the absence of a request is silence.
+_ANSWERED_RANGE_CASES: tuple[tuple[str, dict[str, str], dict[str, str], set[str], str], ...] = (
+    ("bytes 0-99/1000", {"Content-Length": "100"}, {"Range": "bytes=0-99"}, set(), "exact"),
+    (
+        "bytes 200-999/1000",
+        {"Content-Length": "800"},
+        {"Range": "bytes=200-"},
+        set(),
+        "open-ended-granted",
+    ),
+    (
+        "bytes 900-999/1000",
+        {"Content-Length": "100"},
+        {"Range": "bytes=900-1999"},
+        set(),
+        "clamped-at-the-end",
+    ),
+    (
+        "bytes 0-99/1000",
+        {"Content-Length": "100"},
+        {"Range": "bytes=999-"},
+        {E.CONTENT_RANGE_INVALID},
+        "wrong-window-open-ended",
+    ),
+    (
+        "bytes 0-99/1000",
+        {"Content-Length": "100"},
+        {"Range": "bytes=500-599"},
+        {E.CONTENT_RANGE_INVALID},
+        "wrong-window-explicit",
+    ),
+    (
+        "bytes 0-99/1000",
+        {"Content-Length": "100"},
+        {"Range": "bytes=0-98"},
+        {E.CONTENT_RANGE_INVALID},
+        "one-byte-short",
+    ),
+    (
+        "bytes 0-99/1000",
+        {"Content-Length": "100"},
+        {"Range": "bytes=1000-"},
+        {E.CONTENT_RANGE_INVALID},
+        "start-past-the-end",
+    ),
+    (
+        "bytes 0-99/1000",
+        {"Content-Length": "100"},
+        {"Range": "bytes=200-100"},
+        set(),
+        "reversed-belongs-to-the-range-rule",
+    ),
+    (
+        "bytes 0-99/1000",
+        {"Content-Length": "100"},
+        {"Range": "bytes=-500"},
+        set(),
+        "suffix-belongs-to-the-range-rule",
+    ),
+    ("bytes 0-99/1000", {"Content-Length": "100"}, {}, set(), "no-request-is-silence"),
+    (
+        "bytes 0-99/1000",
+        {"Content-Length": "100"},
+        {"Range": "bytes=500-599"},
+        set(),
+        "a-gate-never-served-the-range",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("value", "extra", "asked", "codes", "case"),
+    _ANSWERED_RANGE_CASES,
+    ids=[case for *_r, case in _ANSWERED_RANGE_CASES],
+)
+def test_a_grant_is_judged_against_the_request_it_answers(
+    value: str, extra: dict[str, str], asked: dict[str, str], codes: set[str], case: str
+) -> None:
+    """Internally consistent bytes of the wrong hundred are still the wrong hundred (AC-06)."""
+    status = 412 if case == "a-gate-never-served-the-range" else 206
+    assert _header_codes("Content-Range", value, status, extra, request=asked) == codes, case
+
+
+def test_the_answered_range_comes_from_the_committed_sidecar(
+    by_id: dict, specs: dict, media_schemas: dict
+) -> None:
+    """The pairing is committed, reviewable, and it is what fires — not an invented request."""
+    entry = by_id["device/invalid/clip-file-response-206-wrong-offset"]
+    total = int(_headers(entry)["Content-Range"].rsplit("/", 1)[1])
+    assert _request_headers(entry) == {"Range": f"bytes={total - 1}-"}
+    assert _observed(entry, specs, media_schemas) == {E.CONTENT_RANGE_INVALID}
+    stripped = {
+        **entry,
+        "files": [name for name in entry["files"] if not name.endswith(".request.headers.json")],
+    }
+    # Withhold the request and the answer is merely well-formed: the run has no way to
+    # know what was asked, and a missing request is silence, never a pass.
+    assert (
+        _code_set(validate_api_fixture(FIXTURES, stripped, specs, media_schemas, _clip_dimensions()))
+        == set()
+    )
+    resume = by_id["device/valid/clip-file-response-206-resume"]
+    assert _request_headers(resume) == {"Range": "bytes=200-"}
+    assert _observed(resume, specs, media_schemas) == set()
+
+
+def _code_set(violations: list) -> set[str]:
+    return {violation.code for violation in violations}
+
+
+def _violations(entry: dict, specs: dict, media_schemas: dict) -> list:
+    return validate_api_fixture(FIXTURES, entry, specs, media_schemas, _clip_dimensions())
+
+
+def test_the_head_offset_and_length_pair_has_to_agree() -> None:
+    """A HEAD answers with both headers, and bytes committed past the total describe no file."""
+    from tools.contracts.api_validate import HEADER_RULES, _HeaderContext
+
+    def codes(offset: str, length: str | None = None) -> set[str]:
+        headers = {"Upload-Offset": offset}
+        if length is not None:
+            headers["Upload-Length"] = length
+        context = _HeaderContext(
+            location="unit:offset",
+            operation=ALL_OPERATIONS["backend.head_upload_file"],
+            direction="response",
+            status=200,
+            headers=headers,
+            request_headers={},
+        )
+        return {v.code for v in HEADER_RULES["upload-offset"](context, "Upload-Offset", offset)}
+
+    assert codes("4096", "4096") == set()  # the completed upload is the last legal offset
+    assert codes("4095", "4096") == set()
+    assert codes("4097", "4096") == {E.UPLOAD_OFFSET_INVALID}
+    assert codes("4097") == set()  # no declared length to contradict, so nothing to compare
+    assert codes("4097", "unmeasurable") == set()  # the length's own rule owns that value
+    assert codes("-1", "4096") == {E.UPLOAD_OFFSET_INVALID}
+
+
+def test_a_refusal_with_a_body_of_its_own_reports_its_own_schema(by_id: dict, specs: dict) -> None:
+    """The 409 override is a documented response body, judged and coded as one."""
+    from dataclasses import replace
+
+    from tools.contracts.api_validate import _validate_error_vector
+
+    operation = ALL_OPERATIONS["device.put_settings"]
+    entry = {"id": "unit:settings-409"}
+    stale = {
+        "v": 1,
+        "error": {
+            "code": "REVISION_CONFLICT",
+            "message": "Settings revision is stale",
+            "retryable": False,
+            "request_id": "req-1",
+        },
+    }
+    found = _validate_error_vector(operation, entry, specs["device"], stale, 409)
+    assert found and {v.code for v in found} == {E.API_SCHEMA}, [v.render() for v in found]
+    assert any("current_revision" in v.detail for v in found), [v.render() for v in found]
+
+    accepted = {**stale, "current_revision": 7}
+    assert _validate_error_vector(operation, entry, specs["device"], accepted, 409) == []
+
+    # Without the override the same body is judged as the shared envelope, which it is.
+    plain = replace(operation, response_schemas={200: "PutSettingsResponse"})
+    assert _validate_error_vector(plain, entry, specs["device"], stale, 409) == []
+
+    # An override naming a component the document never defines is a finding about the
+    # document, never a silent pass on the body.
+    ghost = replace(operation, response_schemas={200: "PutSettingsResponse", 409: "NoSuch"})
+    assert [v.code for v in _validate_error_vector(ghost, entry, specs["device"], stale, 409)] == [
+        E.SPEC_STRUCTURE_MISSING
+    ]
+
+
+def test_the_revision_conflict_names_the_revision_it_demands(specs: dict) -> None:
+    """interfaces.md promises the current revision on a stale write, in the schema too."""
+    schema = specs["device"]["components"]["schemas"]["SettingsRevisionConflictResponse"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {"v", "error", "current_revision"}
+    assert schema["properties"]["current_revision"]["$ref"] == "#/components/schemas/UInt53"
+    assert schema["properties"]["error"]["$ref"] == "#/components/schemas/ErrorBody"
+    assert ALL_OPERATIONS["device.put_settings"].response_schemas[409] == (
+        "SettingsRevisionConflictResponse"
+    )
+
+
+def test_the_conflict_vectors_are_judged_against_that_schema(
+    by_id: dict, specs: dict, media_schemas: dict
+) -> None:
+    assert _observed(by_id["device/valid/settings-put-response-409-revision-conflict"], specs, media_schemas) == set()
+    for name in (
+        "settings-put-response-409-missing-revision",
+        "settings-put-response-409-revision-non-integer",
+    ):
+        entry = by_id[f"device/invalid/{name}"]
+        assert _observed(entry, specs, media_schemas) == {E.API_SCHEMA}, name
+        assert E.ERROR_ENVELOPE_INVALID not in _observed(entry, specs, media_schemas), name
+
+
+def test_one_manifest_rule_set_serves_both_transports(
+    by_id: dict, specs: dict, media_schemas: dict
+) -> None:
+    """A manifest that breaks the media rules is refused on the way in and on the way out."""
+    for binding, route, code in (
+        (
+            "backend/invalid/upload-create-request-manifest-boot-prefix",
+            "device/invalid/clip-manifest-response-200-boot-prefix",
+            E.CLIP_BOOT_PREFIX_MISMATCH,
+        ),
+        (
+            "backend/invalid/upload-create-request-manifest-clock-unknown-timestamp",
+            "device/invalid/clip-manifest-response-200-clock-unknown-timestamp",
+            E.CLOCK_NULLITY_MISMATCH,
+        ),
+    ):
+        assert _observed(by_id[binding], specs, media_schemas) == {code}, binding
+        assert _observed(by_id[route], specs, media_schemas) == {code}, route
+    # And each transport names the record where it found it.
+    binding_location = _violations(by_id[
+        "backend/invalid/upload-create-request-manifest-boot-prefix"
+    ], specs, media_schemas)[0].location
+    route_location = _violations(by_id[
+        "device/invalid/clip-manifest-response-200-boot-prefix"
+    ], specs, media_schemas)[0].location
+    assert binding_location.endswith("manifest_base64url.clip_id"), binding_location
+    assert route_location.endswith("manifest.clip_id"), route_location
+
+
+def test_the_size_bound_is_applied_to_the_bytes_before_the_document(media_schemas: dict) -> None:
+    """The bound exists to keep an oversized manifest from being read to be measured."""
+    from tools.contracts.api_validate import validate_manifest_response
+
+    oversized = {"v": 1, "pad": "p" * 20_000}
+    found = validate_manifest_response(
+        {"id": "unit:manifest"}, oversized, b"{" + b" " * 20_000 + b"}", media_schemas
+    )
+    assert [v.code for v in found] == [E.MANIFEST_DECODED_TOO_LARGE], [v.render() for v in found]
+    missing = validate_manifest_response({"id": "unit:manifest"}, oversized, None, media_schemas)
+    assert [v.code for v in missing] == [E.FIXTURE_FILE_MISSING], [v.render() for v in missing]
+    # A run with no usable media schema ran no rules: that is a finding, not a pass.
+    blind = validate_manifest_response({"id": "unit:manifest"}, {"v": 1}, b"{}", {})
+    assert [v.code for v in blind] == [E.SCHEMA_DOCUMENT_INVALID], [v.render() for v in blind]
+
+
+def test_a_crop_is_measured_in_the_source_it_cites(
+    by_id: dict, specs: dict, media_schemas: dict
+) -> None:
+    assert _observed(by_id["backend/valid/derivative-response-200"], specs, media_schemas) == set()
+    entry = by_id["backend/invalid/derivative-response-200-crop-out-of-bounds"]
+    assert _observed(entry, specs, media_schemas) == {E.API_SCHEMA}
+    assert _violations(entry, specs, media_schemas)[0].location.endswith("derivative.crop.y")
+
+
+def test_a_crop_of_a_clip_the_corpus_does_not_ship_is_silence() -> None:
+    """No committed manifest, no invented source size."""
+    from tools.contracts.api_validate import validate_derivative_crop
+
+    body = {
+        "clip_id": "0" * 32 + "-00000000",
+        "crop": {"x": 0, "y": 60, "width": 64, "height": 36},
+    }
+    assert validate_derivative_crop({"id": "unit"}, body, {}) == []
+    found = validate_derivative_crop({"id": "unit"}, body, {body["clip_id"]: (64, 64)})
+    assert [v.code for v in found] == [E.API_SCHEMA], [v.render() for v in found]
+    # Both axes are measured, and a rectangle the schema cannot read is the schema's to report.
+    both = validate_derivative_crop(
+        {"id": "unit"},
+        {**body, "crop": {"x": 8, "y": 60, "width": 64, "height": 36}},
+        {body["clip_id"]: (64, 64)},
+    )
+    assert [v.location.rsplit(".", 1)[-1] for v in both] == ["x", "y"]
+    assert validate_derivative_crop({"id": "unit"}, {**body, "crop": {"x": "0"}}, {body["clip_id"]: (64, 64)}) == []
+    assert validate_derivative_crop({"id": "unit"}, {"crop": {"x": 0, "y": 60}}, {body["clip_id"]: (64, 64)}) == []
+
+
+def test_an_identifier_refuses_the_terminator_still_attached(
+    by_id: dict, specs: dict, media_schemas: dict
+) -> None:
+    """32 characters and nothing else: JSON Schema's ``$`` stops before a newline (AC-06).
+
+    The pattern alone would have let this through, which is why the length keywords are
+    pinned beside it: they are what closes the hole in this dialect.
+    """
+    entry = by_id["backend/invalid/devices-request-id-trailing-newline"]
+    assert _body(entry)["device_id"].endswith("\n")
+    assert _observed(entry, specs, media_schemas) == {E.API_SCHEMA}
+    device_id = specs["backend"]["components"]["schemas"]["DeviceId"]
+    assert (device_id["minLength"], device_id["maxLength"]) == (32, 32)
+
+
+def test_a_trailing_newline_refuses_a_pinned_header_value() -> None:
+    """Every value rule is anchored at both ends, so a terminator is part of the value."""
+    checksum = "sha256 " + "a" * 64
+    assert _header_codes("Upload-Checksum", checksum, 204, {}, "request") == set()
+    assert _header_codes("Upload-Checksum", checksum + "\n", 204, {}, "request") == {
+        E.UPLOAD_CHECKSUM_SYNTAX
+    }
+    key = "6f1a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b"
+    assert _header_codes("Idempotency-Key", key, 200, {}, "request") == set()
+    assert _header_codes("Idempotency-Key", key + "\n", 200, {}, "request") == {E.HEADER_INVALID}

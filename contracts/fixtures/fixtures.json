@@ -90,6 +90,28 @@
     },
     {
       "api_error_code": null,
+      "category": "boundary",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "backend/invalid/derivative-response-200-crop-out-of-bounds.json"
+      ],
+      "id": "backend/invalid/derivative-response-200-crop-out-of-bounds",
+      "invariant": "AC-06 boundary: a crop is measured in the source's pixels, and this record binds the committed 64x64 baseline, so y=60 with height=36 reaches pixel 96 of a file that stops at 64 — no such encode can have produced this derivative",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_derivative",
+      "operation_id": "getDerivative",
+      "path": "/derivatives/{id}",
+      "schema": "DerivativeRecord",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
       "category": "id",
       "contract": "backend-v1",
       "direction": "request",
@@ -102,6 +124,28 @@
       ],
       "id": "backend/invalid/device-register-request-bad-device-id",
       "invariant": "AC-06 id: device_id is 32 lowercase hex, so uppercase is refused",
+      "kind": "api",
+      "method": "POST",
+      "operation": "backend.register_device",
+      "operation_id": "registerDevice",
+      "path": "/devices",
+      "schema": "RegisterDeviceRequest",
+      "status": null
+    },
+    {
+      "api_error_code": null,
+      "category": "id",
+      "contract": "backend-v1",
+      "direction": "request",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "backend/invalid/devices-request-id-trailing-newline.json"
+      ],
+      "id": "backend/invalid/devices-request-id-trailing-newline",
+      "invariant": "AC-06 an identifier is 32 characters and nothing else: a device_id with the terminator still glued to it is a different identifier, and the length keywords are what refuse it in a dialect whose $ matches before a newline",
       "kind": "api",
       "method": "POST",
       "operation": "backend.register_device",
@@ -343,6 +387,52 @@
       "direction": "request",
       "expected": "invalid",
       "expected_error_codes": [
+        "CLIP_BOOT_PREFIX_MISMATCH"
+      ],
+      "files": [
+        "backend/invalid/upload-create-request-manifest-boot-prefix.headers.json",
+        "backend/invalid/upload-create-request-manifest-boot-prefix.json"
+      ],
+      "id": "backend/invalid/upload-create-request-manifest-boot-prefix",
+      "invariant": "AC-05/AC-06 an upload cannot bind a manifest whose clip_id boot prefix disagrees with its own boot_id: the media contract's cross-field rule is the upload's rule too, because this body is the clip's identity",
+      "kind": "api",
+      "method": "POST",
+      "operation": "backend.create_upload",
+      "operation_id": "createUpload",
+      "path": "/uploads",
+      "schema": "CreateUploadRequest",
+      "status": null
+    },
+    {
+      "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
+      "direction": "request",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CLOCK_NULLITY_MISMATCH"
+      ],
+      "files": [
+        "backend/invalid/upload-create-request-manifest-clock-unknown-timestamp.headers.json",
+        "backend/invalid/upload-create-request-manifest-clock-unknown-timestamp.json"
+      ],
+      "id": "backend/invalid/upload-create-request-manifest-clock-unknown-timestamp",
+      "invariant": "AC-05/AC-06 a manifest claiming an unknown clock while carrying a timestamp cannot be ingested either: unknown UTC and a reading of it are mutually exclusive, on the card and on the wire",
+      "kind": "api",
+      "method": "POST",
+      "operation": "backend.create_upload",
+      "operation_id": "createUpload",
+      "path": "/uploads",
+      "schema": "CreateUploadRequest",
+      "status": null
+    },
+    {
+      "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
+      "direction": "request",
+      "expected": "invalid",
+      "expected_error_codes": [
         "API_SCHEMA_MISSING_FIELD"
       ],
       "files": [
@@ -404,6 +494,28 @@
       "path": "/uploads",
       "schema": "CreateUploadRequest",
       "status": null
+    },
+    {
+      "api_error_code": null,
+      "category": "boundary",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "UPLOAD_OFFSET_INVALID"
+      ],
+      "files": [
+        "backend/invalid/upload-head-response-200-offset-beyond-end.headers.json"
+      ],
+      "id": "backend/invalid/upload-head-response-200-offset-beyond-end",
+      "invariant": "AC-06 boundary: an offset past the declared length describes bytes the upload never declared, so the HEAD pair has to agree before a client is told where to resume",
+      "kind": "api",
+      "method": "HEAD",
+      "operation": "backend.head_upload_file",
+      "operation_id": "headUploadFile",
+      "path": "/uploads/{id}/files/{name}",
+      "schema": null,
+      "status": 200
     },
     {
       "api_error_code": null,
@@ -749,6 +861,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/commit_upload-response-401-unauthenticated.headers.json",
         "backend/valid/commit_upload-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/commit_upload-response-401-unauthenticated",
@@ -849,6 +962,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/create_event-response-401-unauthenticated.headers.json",
         "backend/valid/create_event-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/create_event-response-401-unauthenticated",
@@ -949,6 +1063,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/create_job-response-401-unauthenticated.headers.json",
         "backend/valid/create_job-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/create_job-response-401-unauthenticated",
@@ -1049,6 +1164,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/create_token-response-401-unauthenticated.headers.json",
         "backend/valid/create_token-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/create_token-response-401-unauthenticated",
@@ -1089,6 +1205,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/create_upload-response-401-unauthenticated.headers.json",
         "backend/valid/create_upload-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/create_upload-response-401-unauthenticated",
@@ -1129,6 +1246,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/delete_clip-response-401-unauthenticated.headers.json",
         "backend/valid/delete_clip-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/delete_clip-response-401-unauthenticated",
@@ -1209,6 +1327,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/delete_derivative-response-401-unauthenticated.headers.json",
         "backend/valid/delete_derivative-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/delete_derivative-response-401-unauthenticated",
@@ -1269,6 +1388,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/delete_event-response-401-unauthenticated.headers.json",
         "backend/valid/delete_event-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/delete_event-response-401-unauthenticated",
@@ -1329,6 +1449,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/delete_job-response-401-unauthenticated.headers.json",
         "backend/valid/delete_job-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/delete_job-response-401-unauthenticated",
@@ -1389,6 +1510,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/delete_token-response-401-unauthenticated.headers.json",
         "backend/valid/delete_token-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/delete_token-response-401-unauthenticated",
@@ -1449,6 +1571,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/delete_upload-response-401-unauthenticated.headers.json",
         "backend/valid/delete_upload-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/delete_upload-response-401-unauthenticated",
@@ -1747,6 +1870,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/get_clip-response-401-unauthenticated.headers.json",
         "backend/valid/get_clip-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/get_clip-response-401-unauthenticated",
@@ -1807,6 +1931,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/get_clip_file-response-401-unauthenticated.headers.json",
         "backend/valid/get_clip_file-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/get_clip_file-response-401-unauthenticated",
@@ -1927,6 +2052,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/get_derivative-response-401-unauthenticated.headers.json",
         "backend/valid/get_derivative-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/get_derivative-response-401-unauthenticated",
@@ -1987,6 +2113,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/get_derivative_file-response-401-unauthenticated.headers.json",
         "backend/valid/get_derivative_file-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/get_derivative_file-response-401-unauthenticated",
@@ -2087,6 +2214,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/get_job-response-401-unauthenticated.headers.json",
         "backend/valid/get_job-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/get_job-response-401-unauthenticated",
@@ -2147,6 +2275,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/get_upload-response-401-unauthenticated.headers.json",
         "backend/valid/get_upload-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/get_upload-response-401-unauthenticated",
@@ -2206,9 +2335,11 @@
       "direction": "response",
       "expected": "valid",
       "expected_error_codes": [],
-      "files": [],
+      "files": [
+        "backend/valid/head_upload_file-response-401-unauthenticated.headers.json"
+      ],
       "id": "backend/valid/head_upload_file-response-401-unauthenticated",
-      "invariant": "AC-05 backend.head_upload_file documents 401; a HEAD carries the refusal in the status alone (RFC 9110 §9.3.2), so this vector ships no body and no envelope to read it from",
+      "invariant": "AC-05 backend.head_upload_file documents 401; a HEAD carries the refusal in the status alone (RFC 9110 §9.3.2), so this vector ships no body and no envelope to read it from — and a 401 still names the challenge, because what the method forbids is the body, not the header",
       "kind": "api",
       "method": "HEAD",
       "operation": "backend.head_upload_file",
@@ -2226,7 +2357,7 @@
       "expected_error_codes": [],
       "files": [],
       "id": "backend/valid/head_upload_file-response-404-not_found",
-      "invariant": "AC-05 backend.head_upload_file documents 404; a HEAD carries the refusal in the status alone (RFC 9110 §9.3.2), so this vector ships no body and no envelope to read it from",
+      "invariant": "AC-05 backend.head_upload_file documents 404; a HEAD carries the refusal in the status alone (RFC 9110 §9.3.2), so this vector ships no body and no envelope to read it from — and a 401 still names the challenge, because what the method forbids is the body, not the header",
       "kind": "api",
       "method": "HEAD",
       "operation": "backend.head_upload_file",
@@ -2523,6 +2654,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/list_clips-response-401-unauthenticated.headers.json",
         "backend/valid/list_clips-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/list_clips-response-401-unauthenticated",
@@ -2583,6 +2715,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/list_devices-response-401-unauthenticated.headers.json",
         "backend/valid/list_devices-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/list_devices-response-401-unauthenticated",
@@ -2643,6 +2776,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/list_events-response-401-unauthenticated.headers.json",
         "backend/valid/list_events-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/list_events-response-401-unauthenticated",
@@ -2723,6 +2857,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/patch_upload_file-response-401-unauthenticated.headers.json",
         "backend/valid/patch_upload_file-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/patch_upload_file-response-401-unauthenticated",
@@ -2823,6 +2958,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/register_device-response-401-unauthenticated.headers.json",
         "backend/valid/register_device-response-401-unauthenticated.json"
       ],
       "id": "backend/valid/register_device-response-401-unauthenticated",
@@ -3236,6 +3372,26 @@
       "api_error_code": null,
       "category": "upload",
       "contract": "backend-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "backend/valid/upload-head-response-200-offset-equal.headers.json"
+      ],
+      "id": "backend/valid/upload-head-response-200-offset-equal",
+      "invariant": "AC-05/AC-06 boundary: an upload whose committed offset equals its declared length is complete, which is the last offset a HEAD may report",
+      "kind": "api",
+      "method": "HEAD",
+      "operation": "backend.head_upload_file",
+      "operation_id": "headUploadFile",
+      "path": "/uploads/{id}/files/{name}",
+      "schema": null,
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
       "direction": "request",
       "expected": "valid",
       "expected_error_codes": [],
@@ -3576,6 +3732,97 @@
       "status": 206
     },
     {
+      "api_error_code": null,
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CONTENT_RANGE_INVALID"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-206-wrong-offset.headers.json",
+        "device/invalid/clip-file-response-206-wrong-offset.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-206-wrong-offset",
+      "invariant": "AC-06 range: a well-formed, in-bounds Content-Range that answers a different specifier than it was given hands over bytes nobody asked for, so the granted interval is checked against the request it claims to serve",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
+      "api_error_code": "UNAUTHENTICATED",
+      "category": "boundary",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "HEADER_INVALID"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-401-challenge-trailing-newline.headers.json",
+        "device/invalid/clip-file-response-401-challenge-trailing-newline.json"
+      ],
+      "id": "device/invalid/clip-file-response-401-challenge-trailing-newline",
+      "invariant": "AC-06 boundary: the terminator is not part of a header value, and a challenge with one still attached is a different string than the grammar admits — the rule is anchored at both ends precisely because a $ would stop before it",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 401
+    },
+    {
+      "api_error_code": "UNAUTHENTICATED",
+      "category": "error",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "HEADER_MISSING"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-401-no-challenge.json"
+      ],
+      "id": "device/invalid/clip-file-response-401-no-challenge",
+      "invariant": "AC-04/AC-06 RFC 9110 §15.5.2: a 401 that never says how to authenticate is not a challenge, so the one header that makes the status actionable is required besides the envelope that explains it",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 401
+    },
+    {
+      "api_error_code": "UNAUTHENTICATED",
+      "category": "error",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "HEADER_INVALID"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-401-wrong-scheme.headers.json",
+        "device/invalid/clip-file-response-401-wrong-scheme.json"
+      ],
+      "id": "device/invalid/clip-file-response-401-wrong-scheme",
+      "invariant": "AC-04/AC-06 the only authentication scheme these contracts document is bearer tokens: a challenge that names another one sends a client to Authorization headers the device will never accept",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 401
+    },
+    {
       "api_error_code": "CLIP_EXPIRED",
       "category": "error-envelope",
       "contract": "device-v1",
@@ -3651,13 +3898,14 @@
       "direction": "response",
       "expected": "invalid",
       "expected_error_codes": [
-        "API_SCHEMA"
+        "API_SCHEMA",
+        "CLOCK_TIMESTAMP_INVALID"
       ],
       "files": [
         "device/invalid/clip-manifest-response-200-bad-clock-date.json"
       ],
       "id": "device/invalid/clip-manifest-response-200-bad-clock-date",
-      "invariant": "AC-04/AC-06 manifest clock: an impossible calendar date in start_utc is not a timestamp, even though its shape matches the documented RFC3339 pattern",
+      "invariant": "AC-04/AC-06 manifest clock: an impossible calendar date in start_utc is not a timestamp, even though its shape matches the documented RFC3339 pattern — the media contract's own calendar rule fires beside the OpenAPI mirror's shape rule",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_manifest",
@@ -3680,6 +3928,73 @@
       ],
       "id": "device/invalid/clip-manifest-response-200-bad-frame-count",
       "invariant": "AC-04 a manifest claiming zero frames cannot describe this clip",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_manifest",
+      "operation_id": "getClipManifest",
+      "path": "/clips/{clip_id}/manifest",
+      "schema": "Manifest",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "manifest",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CLIP_BOOT_PREFIX_MISMATCH"
+      ],
+      "files": [
+        "device/invalid/clip-manifest-response-200-boot-prefix.json"
+      ],
+      "id": "device/invalid/clip-manifest-response-200-boot-prefix",
+      "invariant": "AC-04/AC-06 a downloaded manifest whose boot prefix contradicts its own boot_id is not this clip's manifest, whatever its shape says",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_manifest",
+      "operation_id": "getClipManifest",
+      "path": "/clips/{clip_id}/manifest",
+      "schema": "Manifest",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "manifest",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CLOCK_NULLITY_MISMATCH"
+      ],
+      "files": [
+        "device/invalid/clip-manifest-response-200-clock-unknown-timestamp.json"
+      ],
+      "id": "device/invalid/clip-manifest-response-200-clock-unknown-timestamp",
+      "invariant": "AC-04/AC-06 the null-ness pairing of the media contract binds the manifest route as much as the card: unknown UTC with a timestamp attached is a fabrication wherever it is read",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_manifest",
+      "operation_id": "getClipManifest",
+      "path": "/clips/{clip_id}/manifest",
+      "schema": "Manifest",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "boundary",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA",
+        "MANIFEST_DECODED_TOO_LARGE"
+      ],
+      "files": [
+        "device/invalid/clip-manifest-response-200-oversize.json"
+      ],
+      "id": "device/invalid/clip-manifest-response-200-oversize",
+      "invariant": "AC-06 boundary: GET /clips/{clip_id}/manifest refuses a body above the 16,384-byte manifest bound before anything reads it, which is the bound the OpenAPI mirror alone never applied",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_manifest",
@@ -4108,6 +4423,50 @@
       "status": null
     },
     {
+      "api_error_code": "REVISION_CONFLICT",
+      "category": "settings",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "device/invalid/settings-put-response-409-missing-revision.json"
+      ],
+      "id": "device/invalid/settings-put-response-409-missing-revision",
+      "invariant": "AC-04/AC-06 a 409 that refuses to name the current revision leaves a client that lost the 200 with nothing to rebase its edit against",
+      "kind": "api",
+      "method": "PUT",
+      "operation": "device.put_settings",
+      "operation_id": "putSettings",
+      "path": "/settings",
+      "schema": "SettingsRevisionConflictResponse",
+      "status": 409
+    },
+    {
+      "api_error_code": "REVISION_CONFLICT",
+      "category": "boundary",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "device/invalid/settings-put-response-409-revision-non-integer.json"
+      ],
+      "id": "device/invalid/settings-put-response-409-revision-non-integer",
+      "invariant": "AC-06 boundary: current_revision is the same UInt53 the accepted answer reports, so a revision that arrived as text is not a revision",
+      "kind": "api",
+      "method": "PUT",
+      "operation": "device.put_settings",
+      "operation_id": "putSettings",
+      "path": "/settings",
+      "schema": "SettingsRevisionConflictResponse",
+      "status": 409
+    },
+    {
       "api_error_code": null,
       "category": "id",
       "contract": "device-v1",
@@ -4311,6 +4670,27 @@
       ],
       "id": "device/valid/clip-file-response-206",
       "invariant": "AC-04 single-range response: Content-Range names the granted slice of the real committed file, ETag unchanged, Content-Length equals the slice",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
+      "api_error_code": null,
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-file-response-206-resume.headers.json",
+        "device/valid/clip-file-response-206-resume.request.headers.json"
+      ],
+      "id": "device/valid/clip-file-response-206-resume",
+      "invariant": "AC-04/AC-06 a resumed download: the open-ended specifier bytes=200- is answered by exactly the interval it names, from byte 200 to the end of the committed payload, with Content-Length to match",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_file",
@@ -4595,6 +4975,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/create_event-response-401-unauthenticated.headers.json",
         "device/valid/create_event-response-401-unauthenticated.json"
       ],
       "id": "device/valid/create_event-response-401-unauthenticated",
@@ -4615,6 +4996,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/create_lease-response-401-unauthenticated.headers.json",
         "device/valid/create_lease-response-401-unauthenticated.json"
       ],
       "id": "device/valid/create_lease-response-401-unauthenticated",
@@ -4675,6 +5057,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/delete_event-response-401-unauthenticated.headers.json",
         "device/valid/delete_event-response-401-unauthenticated.json"
       ],
       "id": "device/valid/delete_event-response-401-unauthenticated",
@@ -4715,6 +5098,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/delete_lease-response-401-unauthenticated.headers.json",
         "device/valid/delete_lease-response-401-unauthenticated.json"
       ],
       "id": "device/valid/delete_lease-response-401-unauthenticated",
@@ -4874,6 +5258,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/get_capabilities-response-401-unauthenticated.headers.json",
         "device/valid/get_capabilities-response-401-unauthenticated.json"
       ],
       "id": "device/valid/get_capabilities-response-401-unauthenticated",
@@ -4914,6 +5299,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/get_clip_file-response-401-unauthenticated.headers.json",
         "device/valid/get_clip_file-response-401-unauthenticated.json"
       ],
       "id": "device/valid/get_clip_file-response-401-unauthenticated",
@@ -4954,6 +5340,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/get_clip_manifest-response-401-unauthenticated.headers.json",
         "device/valid/get_clip_manifest-response-401-unauthenticated.json"
       ],
       "id": "device/valid/get_clip_manifest-response-401-unauthenticated",
@@ -4994,6 +5381,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/get_preview-response-401-unauthenticated.headers.json",
         "device/valid/get_preview-response-401-unauthenticated.json"
       ],
       "id": "device/valid/get_preview-response-401-unauthenticated",
@@ -5014,6 +5402,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/get_settings-response-401-unauthenticated.headers.json",
         "device/valid/get_settings-response-401-unauthenticated.json"
       ],
       "id": "device/valid/get_settings-response-401-unauthenticated",
@@ -5034,6 +5423,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/get_status-response-401-unauthenticated.headers.json",
         "device/valid/get_status-response-401-unauthenticated.json"
       ],
       "id": "device/valid/get_status-response-401-unauthenticated",
@@ -5045,6 +5435,26 @@
       "path": "/status",
       "schema": null,
       "status": 401
+    },
+    {
+      "api_error_code": "UNAVAILABLE",
+      "category": "error",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/get_status-response-503-unavailable.json"
+      ],
+      "id": "device/valid/get_status-response-503-unavailable",
+      "invariant": "AC-04 device.get_status documents 503; the refusal arrives in the shared envelope with the code the contract allows for it",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_status",
+      "operation_id": "getStatus",
+      "path": "/status",
+      "schema": null,
+      "status": 503
     },
     {
       "api_error_code": null,
@@ -5192,6 +5602,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/list_clips-response-401-unauthenticated.headers.json",
         "device/valid/list_clips-response-401-unauthenticated.json"
       ],
       "id": "device/valid/list_clips-response-401-unauthenticated",
@@ -5212,6 +5623,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/list_events-response-401-unauthenticated.headers.json",
         "device/valid/list_events-response-401-unauthenticated.json"
       ],
       "id": "device/valid/list_events-response-401-unauthenticated",
@@ -5412,6 +5824,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/post_ota-response-401-unauthenticated.headers.json",
         "device/valid/post_ota-response-401-unauthenticated.json"
       ],
       "id": "device/valid/post_ota-response-401-unauthenticated",
@@ -5492,6 +5905,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/post_time-response-401-unauthenticated.headers.json",
         "device/valid/post_time-response-401-unauthenticated.json"
       ],
       "id": "device/valid/post_time-response-401-unauthenticated",
@@ -5573,6 +5987,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/put_settings-response-401-unauthenticated.headers.json",
         "device/valid/put_settings-response-401-unauthenticated.json"
       ],
       "id": "device/valid/put_settings-response-401-unauthenticated",
@@ -5593,6 +6008,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/renew_lease-response-401-unauthenticated.headers.json",
         "device/valid/renew_lease-response-401-unauthenticated.json"
       ],
       "id": "device/valid/renew_lease-response-401-unauthenticated",
@@ -5633,6 +6049,7 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "device/valid/revoke_token-response-401-unauthenticated.headers.json",
         "device/valid/revoke_token-response-401-unauthenticated.json"
       ],
       "id": "device/valid/revoke_token-response-401-unauthenticated",
@@ -5736,13 +6153,13 @@
         "device/valid/settings-put-response-409-revision-conflict.json"
       ],
       "id": "device/valid/settings-put-response-409-revision-conflict",
-      "invariant": "AC-04 stale write returns 409 REVISION_CONFLICT together with the current revision",
+      "invariant": "AC-04 stale write returns 409 REVISION_CONFLICT together with the current revision: expected_revision 4 was refused and current_revision 7 is named",
       "kind": "api",
       "method": "PUT",
       "operation": "device.put_settings",
       "operation_id": "putSettings",
       "path": "/settings",
-      "schema": null,
+      "schema": "SettingsRevisionConflictResponse",
       "status": 409
     },
     {
@@ -6647,6 +7064,23 @@
       "kind": "clip"
     },
     {
+      "category": "frame",
+      "contract": "media-v1",
+      "corruption": "index_first_t_us_fractional",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "FRAME_SCHEMA"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/index-first-t-us-fractional",
+      "invariant": "AC-03 frame record: t_us written as 1e-400 converts to exactly 0.0 in binary floats, so a validator that parses the index the usual way reads a legal first timestamp; parsed as a decimal it stays the fraction the record's `type: integer` refuses, which is the notation this vector commits",
+      "kind": "clip"
+    },
+    {
       "category": "boundary",
       "contract": "media-v1",
       "corruption": "index_line_too_long",
@@ -7351,6 +7785,22 @@
       ],
       "id": "media/valid/gap-long-jump",
       "invariant": "AC-02 capture gap: a 44.75 s jump is expressed by timestamps only, with no invented filler records, and duration still exceeds the final t_us",
+      "kind": "clip"
+    },
+    {
+      "category": "frame",
+      "contract": "media-v1",
+      "corruption": "index_integral_notations",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "checksums.json",
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/valid/index-integral-notations",
+      "invariant": "AC-02/AC-06 frame record notation: seq 0.0, offset 0e0 and t_us 0E+0 are the same three integers as 0, 0 and 0 — `type: integer` in the published schema admits any JSON integer notation, so a conforming writer's bytes validate and the byte arithmetic reads the positions they name",
       "kind": "clip"
     },
     {

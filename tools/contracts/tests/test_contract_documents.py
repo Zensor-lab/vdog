@@ -159,6 +159,29 @@ def test_dropping_bearer_security_is_detected(device: dict) -> None:
     assert E.SPEC_SECURITY_MISSING in codes
 
 
+def test_a_response_that_points_at_nothing_is_a_finding_not_a_crash(backend: dict) -> None:
+    """Every 401 is a `$ref` to the shared component, so deleting it must be reported.
+
+    Following a pointer into a member the document does not define raises, and an internal
+    error escaping the CLI would leave the absence itself unreported — the one thing this
+    check exists to say.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    del weakened["components"]["responses"]["Unauthorized"]
+    found = check_openapi("backend", weakened)
+    assert E.SPEC_COMPONENT_DRIFT in {violation.code for violation in found}
+    named = [violation for violation in found if E.SPEC_COMPONENT_DRIFT == violation.code]
+    assert any("responses/401" in violation.location for violation in named), named
+
+
+def test_a_response_that_is_not_an_object_is_a_finding_not_a_crash(device: dict) -> None:
+    weakened = copy.deepcopy(device)
+    weakened["paths"]["/status"]["get"]["responses"]["200"] = "not a response"
+    found = check_openapi("device", weakened)
+    assert E.SPEC_COMPONENT_DRIFT in {violation.code for violation in found}
+
+
 def test_the_error_envelope_is_one_reusable_schema(device: dict, backend: dict) -> None:
     assert not check_shared_error_envelope({"device": device, "backend": backend})
     weakened = copy.deepcopy(backend)

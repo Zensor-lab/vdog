@@ -1,1 +1,1 @@
-{"v":1,"error":{"code":"REVISION_CONFLICT","message":"Settings revision is stale","retryable":false,"request_id":"req-8c1"}}
+{"v":1,"error":{"code":"REVISION_CONFLICT","message":"Settings revision is stale","retryable":false,"request_id":"req-8c1"},"current_revision":7}

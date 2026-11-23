@@ -12,7 +12,9 @@ makes the negative fixtures meaningful test vectors.
 
 from __future__ import annotations
 
+import decimal
 import json
+import math
 import re
 import zlib
 from dataclasses import dataclass, field
@@ -50,7 +52,7 @@ from .bounds import (
 from .errors import Violation
 from .jpeg import JpegStructureError, decode_size, sof_dimensions
 from .media_model import sha256_hex, split_index_lines
-from .schema_docs import schema_error_report
+from .schema_docs import decimal_is_integral, schema_error_report
 
 # Anchored with \A/\Z, not ^/$: a trailing newline is not a contract identifier, and
 # a C writer that leaves the terminator in the buffer must be refused.
@@ -365,7 +367,15 @@ def _walk_index(
             walk.stopped = True
             return walk
         try:
-            record = json.loads(body.decode("utf-8"))
+            # ``parse_float=Decimal`` keeps the notation a record has to survive on.
+            # The default float conversion turns ``1e-400`` into exactly ``0.0``, and a
+            # timestamp written that way would then read as a legal zero through every
+            # check below; as a ``Decimal`` it stays the fraction the frame record's
+            # ``type: integer`` refuses. ``1e999`` becomes ``inf`` under that same
+            # default — an integral float to Python, and an ``OverflowError`` in the
+            # ``int()`` further down — and stays an exact, enormous integer as a
+            # ``Decimal``, which the bounds below refuse as the out-of-range value it is.
+            record = json.loads(body.decode("utf-8"), parse_float=decimal.Decimal)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             walk.violations.append(
                 Violation(E.FRAME_LINE_MALFORMED, location, str(error).replace("\n", " "))
@@ -413,18 +423,21 @@ def _walk_index(
         # slice whatever path it came by. A missing offset or size is not this branch's
         # to catch — the `required` report above refuses the record before either field
         # is even read, so there is no absent case to see here.
-        if not all(_is_int(record[name]) for name in ("offset", "size")):
+        if not all(_is_position(record[name]) for name in ("seq", "offset", "size", "t_us")):
             walk.violations.append(
                 Violation(
                     E.FRAME_SCHEMA,
                     location,
-                    f"offset {offset!r} and size {size!r} must be JSON integers in any "
-                    f"notation, per the frame record's `type: integer`",
+                    f"seq {seq!r}, offset {offset!r}, size {size!r} and t_us {t_us!r} must be "
+                    f"finite JSON integers in any notation, per the frame record's `type: integer`",
                 )
             )
             walk.stopped = True
             return walk
-        offset, size = int(offset), int(size)
+        # Every one of the four is now an `int`-safe value: the notation may be
+        # `0e0` or `1.20000001e8`, but the arithmetic, the comparisons and the slice
+        # below all need real `int`s, so the spelling is normalised once here.
+        seq, offset, size, t_us = (int(record[name]) for name in ("seq", "offset", "size", "t_us"))
 
         if seq != position:
             walk.violations.append(
@@ -590,6 +603,92 @@ def _jpeg_violations(
     return found
 
 
+def validate_manifest_fields(
+    record: Mapping[str, Any],
+    *,
+    location_prefix: str = "manifest",
+) -> list[Violation]:
+    """Manifest identity, close-reason and clock rules, callable without a clip.
+
+    These six checks need nothing but the manifest record itself: no payload, no
+    index, no schema document.  That makes them the rules the HTTP layer can run
+    over a decoded ``manifest_base64url`` — a POST /uploads body or a
+    ``GET /clips/{clip_id}/manifest`` response — before it trusts that manifest to
+    name a clip at all.  The clip-directory validator calls the same function from
+    :func:`_validate_manifest`, so a manifest is refused for the same reason over
+    either transport, and the reported location is the caller's own naming of the
+    place the record came from (``manifest`` for a clip directory,
+    ``manifest_base64url`` for a wire body).
+    """
+    found: list[Violation] = []
+    # Absence is the schema's to report — required-ness is a `required` keyword, and a
+    # wire body that omitted these members is already refused as a schema violation —
+    # so each rule below judges a member that is actually there. Without that gate a
+    # body of `{"v": 1}` would be reported six times over for the shape it never
+    # claimed, and the one finding that describes it would be buried.
+    if record.get("v") != MEDIA_VERSION:
+        found.append(
+            Violation(E.VERSION_UNSUPPORTED, location_prefix, f"v {record.get('v')!r}")
+        )
+    for field_name in ("device_id", "boot_id"):
+        if field_name not in record:
+            continue
+        value = record.get(field_name)
+        if not isinstance(value, str) or _LOWER_HEX_32.match(value) is None:
+            found.append(
+                Violation(
+                    E.ID_SYNTAX_INVALID,
+                    f"{location_prefix}.{field_name}",
+                    "must be 32 lowercase hexadecimal characters",
+                )
+            )
+    clip_id = record.get("clip_id")
+    boot_id = record.get("boot_id")
+    if "clip_id" in record and (not isinstance(clip_id, str) or _CLIP_ID.match(clip_id) is None):
+        found.append(
+            Violation(
+                E.ID_SYNTAX_INVALID,
+                f"{location_prefix}.clip_id",
+                "must be <32 hex>-<8 hex>",
+            )
+        )
+    elif (
+        isinstance(clip_id, str)
+        and isinstance(boot_id, str)
+        and clip_id.split("-", 1)[0] != boot_id
+    ):
+        found.append(
+            Violation(
+                E.CLIP_BOOT_PREFIX_MISMATCH,
+                f"{location_prefix}.clip_id",
+                "the boot_id prefix of clip_id must equal boot_id",
+            )
+        )
+
+    close_reason = record.get("close_reason")
+    if "close_reason" in record and close_reason not in CLOSE_REASONS:
+        found.append(
+            Violation(
+                E.CLOSE_REASON_UNKNOWN,
+                f"{location_prefix}.close_reason",
+                f"{close_reason!r} is not one of {', '.join(CLOSE_REASONS)}",
+            )
+        )
+    recovered = record.get("recovered")
+    if isinstance(recovered, bool) and recovered != (close_reason == "recovery"):
+        found.append(
+            Violation(
+                E.RECOVERED_CLOSE_REASON_DISAGREE,
+                f"{location_prefix}.recovered",
+                f"recovered {recovered!r} with close_reason {close_reason!r}",
+            )
+        )
+
+    if "clock" in record:
+        found.extend(_clock_violations(record["clock"], f"{location_prefix}.clock"))
+    return found
+
+
 def _validate_manifest(
     record: Mapping[str, Any],
     schema: Mapping[str, Any],
@@ -599,58 +698,7 @@ def _validate_manifest(
     records: Sequence[dict[str, Any]],
 ) -> list[Violation]:
     """Manifest cross-field rules from media-format.md §2 and §4."""
-    found: list[Violation] = []
-    if record.get("v") != MEDIA_VERSION:
-        found.append(Violation(E.VERSION_UNSUPPORTED, "manifest", f"v {record.get('v')!r}"))
-    for field_name in ("device_id", "boot_id"):
-        value = record.get(field_name)
-        if not isinstance(value, str) or _LOWER_HEX_32.match(value) is None:
-            found.append(
-                Violation(
-                    E.ID_SYNTAX_INVALID,
-                    f"manifest.{field_name}",
-                    "must be 32 lowercase hexadecimal characters",
-                )
-            )
-    clip_id = record.get("clip_id")
-    boot_id = record.get("boot_id")
-    if not isinstance(clip_id, str) or _CLIP_ID.match(clip_id) is None:
-        found.append(
-            Violation(
-                E.ID_SYNTAX_INVALID,
-                "manifest.clip_id",
-                "must be <32 hex>-<8 hex>",
-            )
-        )
-    elif isinstance(boot_id, str) and clip_id.split("-", 1)[0] != boot_id:
-        found.append(
-            Violation(
-                E.CLIP_BOOT_PREFIX_MISMATCH,
-                "manifest.clip_id",
-                "the boot_id prefix of clip_id must equal boot_id",
-            )
-        )
-
-    close_reason = record.get("close_reason")
-    if close_reason not in CLOSE_REASONS:
-        found.append(
-            Violation(
-                E.CLOSE_REASON_UNKNOWN,
-                "manifest.close_reason",
-                f"{close_reason!r} is not one of {', '.join(CLOSE_REASONS)}",
-            )
-        )
-    recovered = record.get("recovered")
-    if isinstance(recovered, bool) and recovered != (close_reason == "recovery"):
-        found.append(
-            Violation(
-                E.RECOVERED_CLOSE_REASON_DISAGREE,
-                "manifest.recovered",
-                f"recovered {recovered!r} with close_reason {close_reason!r}",
-            )
-        )
-
-    found.extend(_clock_violations(record.get("clock"), "manifest.clock"))
+    found: list[Violation] = validate_manifest_fields(record)
 
     frame_count = record.get("frame_count")
     if _is_int(frame_count) and not 1 <= frame_count <= MAX_FRAMES_PER_CLIP:
@@ -980,11 +1028,44 @@ def _is_int(value: Any) -> bool:
     and every dedicated bound has to apply to all three spellings: a bound skipped for
     one of them is a bound the schema keyword no longer reports either, because the
     suppressed pair in :data:`MANIFEST_DEDICATED_RULES` silences it in exchange for a
-    check that never ran. A non-integral float is not an integer, and ``nan``/``inf``
-    are refused too (they have no JSON notation at all, so they cannot be a wire value).
+    check that never ran.
+
+    What is not a number is refused: ``nan`` and ``inf`` have no JSON notation at all
+    (RFC 8259 §6), neither answers ``is_integer()`` with ``True``, and neither is an
+    integral ``Decimal``. A document that carries one is a document whose ``type`` is
+    wrong, which is what :func:`is_json_integer` reports; measuring such a value against
+    a bound would dress a type error up as an out-of-range value.
+
+    The ``Decimal`` branch exists because :func:`_walk_index` parses the index with
+    ``parse_float=decimal.Decimal``: an exponent that a float would round into an
+    integer (``1e-400``) or into ``inf`` (``1e999``) has to be judged on the digits
+    the writer actually sent, not on the binary approximation of them.
     """
     if isinstance(value, bool):
         return False
     if isinstance(value, int):
         return True
+    if isinstance(value, decimal.Decimal):
+        return decimal_is_integral(value)
     return isinstance(value, float) and value.is_integer()
+
+
+def _is_position(value: Any) -> bool:
+    """True for the numbers a byte position or timestamp may be written as.
+
+    The index walk adds, compares and slices with these four members, so what it needs
+    from a record is two things at once: the value is a JSON integer in some notation,
+    and it is a number ``int()`` can be handed. The first half is :func:`_is_int`. The
+    second is restated here rather than trusted from that helper, because the helper's
+    job is to say what an integer *is* and this is the place where a non-number would
+    raise: Python's JSON reader accepts ``Infinity`` and ``NaN`` literals, and
+    ``int(float('inf'))`` is an ``OverflowError`` where the contract wants a code. The
+    spelling that does reach the arithmetic, ``1e999``, is a finite ``Decimal`` with an
+    enormous exponent — ``int()`` of it is exact, and the bound below refuses it as the
+    out-of-range timestamp it is.
+    """
+    if not _is_int(value):
+        return False
+    if isinstance(value, decimal.Decimal):
+        return value.is_finite()
+    return not isinstance(value, float) or math.isfinite(value)

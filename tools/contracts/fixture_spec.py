@@ -243,6 +243,11 @@ class ApiFixture:
     #: writes them verbatim.
     raw_body: bytes | None = None
     headers: dict[str, str] | None = None
+    #: The request a response vector answers, when the pairing is part of what the vector
+    #: demonstrates. A 206 only means something relative to the `Range` it grants, so the
+    #: request travels beside the answer as its own sidecar rather than being smuggled
+    #: into the answer's header map.
+    request_headers: dict[str, str] | None = None
     api_error_code: str | None = None
 
     @property
@@ -258,8 +263,18 @@ class ApiFixture:
         return f"{self.id}.headers.json"
 
     @property
+    def request_headers_file(self) -> str | None:
+        if self.request_headers is None:
+            return None
+        return f"{self.id}.request.headers.json"
+
+    @property
     def files(self) -> tuple[str, ...]:
-        return tuple(path for path in (self.body_file, self.headers_file) if path is not None)
+        return tuple(
+            path
+            for path in (self.body_file, self.headers_file, self.request_headers_file)
+            if path is not None
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +311,19 @@ def _valid_media() -> tuple[MediaFixture, ...]:
             invariant=(
                 "AC-02 capture gap: a 44.75 s jump is expressed by timestamps only, with no "
                 "invented filler records, and duration still exceeds the final t_us"
+            ),
+        ),
+        MediaFixture(
+            id="media/valid/index-integral-notations",
+            kind="clip",
+            category="frame",
+            plan=_plan("index-integral-notations", SHORT_TIMES, capture_order=53),
+            corruption="index_integral_notations",
+            invariant=(
+                "AC-02/AC-06 frame record notation: seq 0.0, offset 0e0 and t_us 0E+0 are the "
+                "same three integers as 0, 0 and 0 — `type: integer` in the published schema "
+                "admits any JSON integer notation, so a conforming writer's bytes validate and "
+                "the byte arithmetic reads the positions they name"
             ),
         ),
         MediaFixture(
@@ -491,6 +519,18 @@ _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
         corruption="t_us_first_nonzero",
         codes=(FRAME_T_US_FIRST_NOT_ZERO,),
         invariant="AC-03 first t_us must be zero: the segment-relative baseline is broken",
+    ),
+    _Negative(
+        id="media/invalid/index-first-t-us-fractional",
+        category="frame",
+        corruption="index_first_t_us_fractional",
+        codes=(FRAME_SCHEMA,),
+        invariant=(
+            "AC-03 frame record: t_us written as 1e-400 converts to exactly 0.0 in binary "
+            "floats, so a validator that parses the index the usual way reads a legal first "
+            "timestamp; parsed as a decimal it stays the fraction the record's `type: integer` "
+            "refuses, which is the notation this vector commits"
+        ),
     ),
     _Negative(
         id="media/invalid/duration-le-final-t-us",
@@ -1060,6 +1100,7 @@ class _ApiList:
         body: dict[str, Any] | None = None,
         raw_body: bytes | None = None,
         headers: dict[str, str] | None = None,
+        request_headers: dict[str, str] | None = None,
         api_error_code: str | None = None,
     ) -> None:
         if operation not in ALL_OPERATIONS:
@@ -1083,6 +1124,7 @@ class _ApiList:
                 body=body,
                 raw_body=raw_body,
                 headers=headers,
+                request_headers=request_headers,
                 api_error_code=api_error_code,
             )
         )
@@ -1538,11 +1580,68 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         operation="device.put_settings",
         direction="response",
         status=409,
+        schema="SettingsRevisionConflictResponse",
+        api_error_code="REVISION_CONFLICT",
+        body={
+            **_error_body(
+                "REVISION_CONFLICT",
+                "Settings revision is stale",
+                retryable=False,
+                request_id="req-8c1",
+            ),
+            # The request offered expected_revision 4; the device says what it holds
+            # instead, which is the member interfaces.md promises and the only reason
+            # this refusal has a body schema of its own.
+            "current_revision": 7,
+        },
+        invariant=(
+            "AC-04 stale write returns 409 REVISION_CONFLICT together with the current "
+            "revision: expected_revision 4 was refused and current_revision 7 is named"
+        ),
+    )
+    out.add(
+        id="settings-put-response-409-missing-revision",
+        contract="device",
+        category="settings",
+        operation="device.put_settings",
+        direction="response",
+        status=409,
+        schema="SettingsRevisionConflictResponse",
         api_error_code="REVISION_CONFLICT",
         body=_error_body(
-            "REVISION_CONFLICT", "Settings revision is stale", retryable=False, request_id="req-8c1"
+            "REVISION_CONFLICT", "Settings revision is stale", retryable=False, request_id="req-8c3"
         ),
-        invariant="AC-04 stale write returns 409 REVISION_CONFLICT together with the current revision",
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-04/AC-06 a 409 that refuses to name the current revision leaves a client "
+            "that lost the 200 with nothing to rebase its edit against"
+        ),
+    )
+    out.add(
+        id="settings-put-response-409-revision-non-integer",
+        contract="device",
+        category="boundary",
+        operation="device.put_settings",
+        direction="response",
+        status=409,
+        schema="SettingsRevisionConflictResponse",
+        api_error_code="REVISION_CONFLICT",
+        body={
+            **_error_body(
+                "REVISION_CONFLICT",
+                "Settings revision is stale",
+                retryable=False,
+                request_id="req-8c4",
+            ),
+            "current_revision": "7",
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-06 boundary: current_revision is the same UInt53 the accepted answer "
+            "reports, so a revision that arrived as text is not a revision"
+        ),
     )
     out.add(
         id="settings-put-response-400-unsupported-profile",
@@ -1867,10 +1966,74 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             },
         },
         expected="invalid",
-        codes=(API_SCHEMA,),
+        codes=(API_SCHEMA, CLOCK_TIMESTAMP_INVALID),
         invariant=(
             "AC-04/AC-06 manifest clock: an impossible calendar date in start_utc is not a "
-            "timestamp, even though its shape matches the documented RFC3339 pattern"
+            "timestamp, even though its shape matches the documented RFC3339 pattern — the "
+            "media contract's own calendar rule fires beside the OpenAPI mirror's shape rule"
+        ),
+    )
+
+    out.add(
+        id="clip-manifest-response-200-boot-prefix",
+        contract="device",
+        category="manifest",
+        operation="device.get_clip_manifest",
+        direction="response",
+        status=200,
+        schema="Manifest",
+        body={
+            **media.baseline_manifest,
+            "clip_id": f"{'0' * 32}-{media.baseline_manifest['clip_id'].rsplit('-', 1)[1]}",
+        },
+        expected="invalid",
+        codes=(CLIP_BOOT_PREFIX_MISMATCH,),
+        invariant=(
+            "AC-04/AC-06 a downloaded manifest whose boot prefix contradicts its own "
+            "boot_id is not this clip's manifest, whatever its shape says"
+        ),
+    )
+    out.add(
+        id="clip-manifest-response-200-clock-unknown-timestamp",
+        contract="device",
+        category="manifest",
+        operation="device.get_clip_manifest",
+        direction="response",
+        status=200,
+        schema="Manifest",
+        body={
+            **media.baseline_manifest,
+            "clock": {**media.baseline_manifest["clock"], "source": "unknown"},
+        },
+        expected="invalid",
+        codes=(CLOCK_NULLITY_MISMATCH,),
+        invariant=(
+            "AC-04/AC-06 the null-ness pairing of the media contract binds the manifest "
+            "route as much as the card: unknown UTC with a timestamp attached is a "
+            "fabrication wherever it is read"
+        ),
+    )
+    out.add(
+        id="clip-manifest-response-200-oversize",
+        contract="device",
+        category="boundary",
+        operation="device.get_clip_manifest",
+        direction="response",
+        status=200,
+        schema="Manifest",
+        body={
+            **media.baseline_manifest,
+            # Past both the field's own 4,096-character bound and the 16,384-byte bound
+            # of a manifest: the size gate is what refuses it first, because its purpose
+            # is to keep an oversized document from being read to be measured at all.
+            "firmware_version": "0.1.0-" + "x" * 16_384,
+        },
+        expected="invalid",
+        codes=(API_SCHEMA, MANIFEST_DECODED_TOO_LARGE),
+        invariant=(
+            "AC-06 boundary: GET /clips/{clip_id}/manifest refuses a body above the "
+            "16,384-byte manifest bound before anything reads it, which is the bound the "
+            "OpenAPI mirror alone never applied"
         ),
     )
 
@@ -2107,6 +2270,109 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "AC-06 range: only a single bytes=start-end or bytes=start- range is "
             "supported, so granting bytes for a multipart specifier is contract misuse "
             "however well-formed the granted range itself looks"
+        ),
+    )
+    out.add(
+        id="clip-file-response-206-resume",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": (
+                f"bytes 200-{media.baseline_payload_bytes - 1}/{media.baseline_payload_bytes}"
+            ),
+            "ETag": payload_etag,
+            "Content-Length": str(media.baseline_payload_bytes - 200),
+        },
+        request_headers={"Range": "bytes=200-"},
+        invariant=(
+            "AC-04/AC-06 a resumed download: the open-ended specifier bytes=200- is "
+            "answered by exactly the interval it names, from byte 200 to the end of the "
+            "committed payload, with Content-Length to match"
+        ),
+    )
+    out.add(
+        id="clip-file-response-206-wrong-offset",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes 0-99/{media.baseline_payload_bytes}",
+            "ETag": payload_etag,
+            "Content-Length": "100",
+        },
+        request_headers={"Range": f"bytes={media.baseline_payload_bytes - 1}-"},
+        expected="invalid",
+        codes=(CONTENT_RANGE_INVALID,),
+        invariant=(
+            "AC-06 range: a well-formed, in-bounds Content-Range that answers a different "
+            "specifier than it was given hands over bytes nobody asked for, so the "
+            "granted interval is checked against the request it claims to serve"
+        ),
+    )
+    out.add(
+        id="clip-file-response-401-no-challenge",
+        contract="device",
+        category="error",
+        operation="device.get_clip_file",
+        direction="response",
+        status=401,
+        api_error_code="UNAUTHENTICATED",
+        body=_error_body(
+            "UNAUTHENTICATED", "Missing bearer token", retryable=False, request_id="req-auth-1"
+        ),
+        expected="invalid",
+        codes=(HEADER_MISSING,),
+        invariant=(
+            "AC-04/AC-06 RFC 9110 §15.5.2: a 401 that never says how to authenticate is not "
+            "a challenge, so the one header that makes the status actionable is required "
+            "besides the envelope that explains it"
+        ),
+    )
+    out.add(
+        id="clip-file-response-401-wrong-scheme",
+        contract="device",
+        category="error",
+        operation="device.get_clip_file",
+        direction="response",
+        status=401,
+        api_error_code="UNAUTHENTICATED",
+        headers={"WWW-Authenticate": 'Basic realm="vdog"'},
+        body=_error_body(
+            "UNAUTHENTICATED", "Missing bearer token", retryable=False, request_id="req-auth-2"
+        ),
+        expected="invalid",
+        codes=(HEADER_INVALID,),
+        invariant=(
+            "AC-04/AC-06 the only authentication scheme these contracts document is bearer "
+            "tokens: a challenge that names another one sends a client to Authorization "
+            "headers the device will never accept"
+        ),
+    )
+    out.add(
+        id="clip-file-response-401-challenge-trailing-newline",
+        contract="device",
+        category="boundary",
+        operation="device.get_clip_file",
+        direction="response",
+        status=401,
+        api_error_code="UNAUTHENTICATED",
+        headers={"WWW-Authenticate": 'Bearer realm="vdog"\n'},
+        body=_error_body(
+            "UNAUTHENTICATED", "Missing bearer token", retryable=False, request_id="req-auth-3"
+        ),
+        expected="invalid",
+        codes=(HEADER_INVALID,),
+        invariant=(
+            "AC-06 boundary: the terminator is not part of a header value, and a challenge "
+            "with one still attached is a different string than the grammar admits — the "
+            "rule is anchored at both ends precisely because a $ would stop before it"
         ),
     )
     out.add(
@@ -2672,6 +2938,22 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         invariant="AC-05 registration record",
     )
     out.add(
+        id="devices-request-id-trailing-newline",
+        contract="backend",
+        category="id",
+        operation="backend.register_device",
+        direction="request",
+        schema="RegisterDeviceRequest",
+        body={"v": API_VERSION, "device_id": DEVICE_ID + "\n", "label": "Chest camera"},
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-06 an identifier is 32 characters and nothing else: a device_id with the "
+            "terminator still glued to it is a different identifier, and the length "
+            "keywords are what refuse it in a dialect whose $ matches before a newline"
+        ),
+    )
+    out.add(
         id="device-register-request-bad-device-id",
         contract="backend",
         category="id",
@@ -3075,6 +3357,44 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         invariant="AC-05 JSON that is not a valid media manifest is rejected before allocation",
     )
     out.add(
+        id="upload-create-request-manifest-boot-prefix",
+        contract="backend",
+        category="upload",
+        operation="backend.create_upload",
+        direction="request",
+        schema="CreateUploadRequest",
+        headers={"Idempotency-Key": _uuid("idempotency-bootprefix")},
+        body={"v": API_VERSION, "manifest_base64url": media.boot_prefix_manifest_base64url},
+        expected="invalid",
+        codes=(CLIP_BOOT_PREFIX_MISMATCH,),
+        invariant=(
+            "AC-05/AC-06 an upload cannot bind a manifest whose clip_id boot prefix "
+            "disagrees with its own boot_id: the media contract's cross-field rule is the "
+            "upload's rule too, because this body is the clip's identity"
+        ),
+    )
+    out.add(
+        id="upload-create-request-manifest-clock-unknown-timestamp",
+        contract="backend",
+        category="upload",
+        operation="backend.create_upload",
+        direction="request",
+        schema="CreateUploadRequest",
+        headers={"Idempotency-Key": _uuid("idempotency-clocknull")},
+        body={
+            "v": API_VERSION,
+            "manifest_base64url": media.unknown_clock_timestamp_manifest_base64url,
+        },
+        expected="invalid",
+        codes=(CLOCK_NULLITY_MISMATCH,),
+        invariant=(
+            "AC-05/AC-06 a manifest claiming an unknown clock while carrying a timestamp "
+            "cannot be ingested either: unknown UTC and a reading of it are mutually "
+            "exclusive, on the card and on the wire"
+        ),
+    )
+
+    out.add(
         id="upload-create-request-missing-field",
         contract="backend",
         category="upload",
@@ -3248,6 +3568,35 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         expected="invalid",
         codes=(UPLOAD_OFFSET_INVALID,),
         invariant="AC-05/AC-06 boundary: a negative Upload-Offset is refused outright",
+    )
+    out.add(
+        id="upload-head-response-200-offset-equal",
+        contract="backend",
+        category="upload",
+        operation="backend.head_upload_file",
+        direction="response",
+        status=200,
+        headers={"Upload-Offset": "4096", "Upload-Length": "4096"},
+        invariant=(
+            "AC-05/AC-06 boundary: an upload whose committed offset equals its declared "
+            "length is complete, which is the last offset a HEAD may report"
+        ),
+    )
+    out.add(
+        id="upload-head-response-200-offset-beyond-end",
+        contract="backend",
+        category="boundary",
+        operation="backend.head_upload_file",
+        direction="response",
+        status=200,
+        headers={"Upload-Offset": "4097", "Upload-Length": "4096"},
+        expected="invalid",
+        codes=(UPLOAD_OFFSET_INVALID,),
+        invariant=(
+            "AC-06 boundary: an offset past the declared length describes bytes the "
+            "upload never declared, so the HEAD pair has to agree before a client is told "
+            "where to resume"
+        ),
     )
     out.add(
         id="upload-head-response-200",
@@ -3682,7 +4031,9 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "filter_version": "vdog-eis-1",
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
             "output": {"width": 1280, "height": 720},
-            "crop": {"x": 0, "y": 120, "width": 64, "height": 36},
+            # Measured in the source's pixels: this record cites the committed baseline,
+            # whose video is 64x64, so the window has to fit inside 64 rows.
+            "crop": {"x": 0, "y": 14, "width": 64, "height": 36},
             "original_hashes": {
                 "video.mjpg": media.baseline_payload_sha256,
                 "frames.jsonl": media.baseline_index_sha256,
@@ -3734,6 +4085,41 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         schema="DeletingResponse",
         body={"v": API_VERSION, "state": "deleting"},
         invariant="AC-05 owner derivative deletion with idempotent cleanup and no original effect",
+    )
+    out.add(
+        id="derivative-response-200-crop-out-of-bounds",
+        contract="backend",
+        category="boundary",
+        operation="backend.get_derivative",
+        direction="response",
+        status=200,
+        schema="DerivativeRecord",
+        body={
+            "v": API_VERSION,
+            "derivative_id": "drv-3",
+            "device_id": DEVICE_ID,
+            "clip_id": media.baseline_clip_id,
+            "job_id": "job-0003",
+            "type": "transcode",
+            "preset": "h264-vbr-720p",
+            "encoder_version": "libx264-0.165",
+            "filter_version": "vdog-eis-1",
+            "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
+            "output": {"width": 1280, "height": 720},
+            "crop": {"x": 0, "y": 60, "width": 64, "height": 36},
+            "original_hashes": {
+                "video.mjpg": media.baseline_payload_sha256,
+                "frames.jsonl": media.baseline_index_sha256,
+            },
+            "sha256": _sha("derivative-crop"),
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-06 boundary: a crop is measured in the source's pixels, and this record "
+            "binds the committed 64x64 baseline, so y=60 with height=36 reaches pixel 96 "
+            "of a file that stops at 64 — no such encode can have produced this derivative"
+        ),
     )
     out.add(
         id="derivative-response-200-bad-hash",
@@ -3837,6 +4223,11 @@ class MediaCorpus:
     padded_manifest_base64url: str
     non_json_manifest_base64url: str
     invalid_manifest_base64url: str
+    #: A well-formed manifest whose clip_id boot prefix is not its boot_id, and whose
+    #: clock is unknown and timestamped at once: the two facts the media validator knows
+    #: and the OpenAPI mirror cannot state, bound for an upload initialization.
+    boot_prefix_manifest_base64url: str
+    unknown_clock_timestamp_manifest_base64url: str
 
 
 #: A conformant value for each response header a documented refusal has to carry. The
@@ -3848,6 +4239,10 @@ _COMPLETION_HEADER_VALUE: Final[Mapping[str, str]] = {
     "Content-Range": "bytes 0-433/434",
     "ETag": '"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"',
     "Content-Length": "434",
+    # RFC 9110 §15.5.2: a 401 names the protection space it refused the token against.
+    # Every documented 401 of both contracts carries it, including the bodyless HEAD
+    # refusal, which owes the header precisely because it owes nothing else.
+    "WWW-Authenticate": 'Bearer realm="vdog"',
 }
 
 
@@ -3878,7 +4273,15 @@ def _complete_status_coverage(
     honest refusal in the shared envelope. Each vector is a *valid* vector precisely
     because the refusal itself is conformant.
     """
-    covered = {(item.operation, item.status) for item in items if item.direction == "response"}
+    # Only a *conformant* response counts as exercising a status. A vector that exists to
+    # be refused — a 401 that withholds the challenge, say — demonstrates the refusal rule,
+    # not the refusal, and it must not delete the one committed example of what that status
+    # is supposed to look like.
+    covered = {
+        (item.operation, item.status)
+        for item in items
+        if item.direction == "response" and item.expected == "valid"
+    }
     taken = {item.id for item in items}
     out = _ApiList()
     for key, operation in ALL_OPERATIONS.items():
@@ -3913,10 +4316,12 @@ def _complete_status_coverage(
                     operation=key,
                     direction="response",
                     status=status,
+                    headers=_completion_headers(operation, status),
                     invariant=(
                         f"{ac} {key} documents {status}; a HEAD carries the refusal in the "
                         "status alone (RFC 9110 §9.3.2), so this vector ships no body and no "
-                        "envelope to read it from"
+                        "envelope to read it from — and a 401 still names the challenge, "
+                        "because what the method forbids is the body, not the header"
                     ),
                 )
                 continue

@@ -43,8 +43,20 @@ _SHARED_DEFS: tuple[str, ...] = ("device_id", "boot_id", "clip_id", "profile", "
 
 _EXPECTED_HEADER_SCHEMAS: Mapping[str, Mapping[str, Any]] = {
     "AcceptRanges": {"type": "string", "const": "bytes"},
-    "ETagSha256": {"type": "string", "pattern": '^[0-9a-f]{64}$', "_quoted": True},
+    "ETagSha256": {
+        "type": "string",
+        "pattern": '^[0-9a-f]{64}$',
+        "_quoted": True,
+        # The quoted digest is exactly 66 characters, and the length pair is what a
+        # validator whose `pattern` is a substring search still has to obey.
+        "minLength": 66,
+        "maxLength": 66,
+    },
     "ContentRange": {"type": "string", "pattern": "^bytes ([0-9]+-[0-9]+|\\*)/[0-9]+$"},
+    "WwwAuthenticate": {
+        "type": "string",
+        "pattern": '^Bearer( realm="[^"]{1,100}")?$'
+    },
 }
 
 OTA_DEFERRAL_PACKAGE: str = "2.10"
@@ -365,7 +377,12 @@ def _check_operation(
             )
 
     for status, schema_name in operation.response_schemas.items():
-        response = _resolve(responses.get(str(status), {}), document)
+        response, unreadable = _resolved_response(responses, status, document)
+        if unreadable is not None:
+            found.append(
+                Violation(E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status}", unreadable)
+            )
+            continue
         if schema_name is None:
             if not response.get("content"):
                 found.append(Violation(E.SPEC_STRUCTURE_MISSING, f"{where} responses/{status}", "no content"))
@@ -380,7 +397,12 @@ def _check_operation(
                 )
             )
     for status, names in operation.required_response_headers.items():
-        response = _resolve(responses.get(str(status), {}), document)
+        response, unreadable = _resolved_response(responses, status, document)
+        if unreadable is not None:
+            found.append(
+                Violation(E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status}", unreadable)
+            )
+            continue
         header_names = {str(key).lower() for key in response.get("headers", {})}
         for name in names:
             if name.lower() not in header_names:
@@ -392,7 +414,12 @@ def _check_operation(
                     )
                 )
     for status, names in operation.documented_response_headers.items():
-        response = _resolve(responses.get(str(status), {}), document)
+        response, unreadable = _resolved_response(responses, status, document)
+        if unreadable is not None:
+            found.append(
+                Violation(E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status}", unreadable)
+            )
+            continue
         header_names = {str(key).lower() for key in response.get("headers", {})}
         for name in names:
             if name.lower() not in header_names:
@@ -488,6 +515,27 @@ def _resolve(node: Any, document: Mapping[str, Any]) -> Any:
     if isinstance(node, Mapping) and "$ref" in node:
         return resolve_refs(node, root=document)
     return node
+
+
+def _resolved_response(
+    responses: Mapping[str, Any], status: int, document: Mapping[str, Any]
+) -> tuple[Mapping[str, Any], str | None]:
+    """The response object for a status, or the reason it could not be read.
+
+    A response is often a `$ref` to a shared component — the two contracts answer a 401
+    with one documented `Unauthorized` — and a document whose component is missing is a
+    document with a defect, not a validator crash: following the pointer raises
+    `KeyError`, which would reach the CLI as an internal error and leave the very
+    absence it came to report unreported. The caller names what it found instead.
+    """
+    node = responses.get(str(status), {})
+    try:
+        resolved = _resolve(node, document)
+    except KeyError as error:
+        return {}, f"$ref names {error}, a component member the document does not define"
+    if not isinstance(resolved, Mapping):
+        return {}, f"is {type(resolved).__name__}, not a response object"
+    return resolved, None
 
 
 def _json_schema_ref(container: Mapping[str, Any], document: Mapping[str, Any]) -> str | None:

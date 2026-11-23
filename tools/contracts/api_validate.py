@@ -20,7 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -39,6 +39,7 @@ from .bounds import (
     UINT53_MAX,
 )
 from .errors import Violation
+from .media_validate import validate_manifest_fields
 from .schema_docs import resolve_refs, schema_error_report
 
 _UUID = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
@@ -53,6 +54,9 @@ _STAR_CONTENT_RANGE = re.compile(r"\Abytes \*/([0-9]+)\Z")
 _UPLOAD_CHECKSUM = re.compile(r"\Asha256 [0-9a-f]{64}\Z")
 _ERROR_CODE = re.compile(r"\A[A-Z][A-Z0-9_]{0,63}\Z")
 _BASE64URL = re.compile(r"\A[A-Za-z0-9_-]+\Z")
+# The bearer challenge RFC 9110 §15.5.2 requires on a 401, anchored with \A/\Z rather
+# than ^/$: a scheme name with the terminator left in the buffer is not a challenge.
+_WWW_AUTHENTICATE = re.compile(r'\ABearer( realm="[^"]{1,100}")?\Z')
 
 
 @dataclass(frozen=True)
@@ -64,10 +68,23 @@ class _HeaderContext:
     direction: str
     status: int | None
     headers: Mapping[str, str]
+    #: The request that produced a response vector, when the vector ships one. A granted
+    #: range means nothing without the specifier it answers, so ``_rule_content_range``
+    #: reads the request's ``Range`` here; a vector without the sidecar keeps every
+    #: existing behaviour, because an absent request is silence, not a pass.
+    request_headers: Mapping[str, str] = field(default_factory=dict)
 
 
 #: Operations whose JSON body carries a base64url binding that JSON Schema cannot bound.
 _MANIFEST_BOUND_OPERATIONS: frozenset[str] = frozenset({"backend.create_upload"})
+
+#: Operations whose 200 body *is* a completion manifest, so the media contract's own
+#: field rules apply to it and not only the OpenAPI mirror it validates against.
+_MANIFEST_RESPONSE_OPERATIONS: frozenset[str] = frozenset({"device.get_clip_manifest"})
+
+#: Operations whose 200 body records a crop taken out of a clip this corpus also ships,
+#: so the rectangle can be measured against the source it claims to come from.
+_CROP_BOUND_OPERATIONS: frozenset[str] = frozenset({"backend.get_derivative"})
 
 
 def validate_api_fixture(
@@ -75,8 +92,15 @@ def validate_api_fixture(
     entry: Mapping[str, Any],
     specs: Mapping[str, Mapping[str, Any]],
     media_schemas: Mapping[str, Mapping[str, Any]],
+    clip_dimensions: Mapping[str, tuple[int, int]] | None = None,
 ) -> list[Violation]:
-    """Validate one committed API vector; ``specs`` holds the two parsed documents."""
+    """Validate one committed API vector; ``specs`` holds the two parsed documents.
+
+    ``clip_dimensions`` maps a committed clip's id to the source size its own manifest
+    records, which is the only way a derivative vector's ``crop`` can be measured against
+    the file it claims to have been cut from. Its absence is silence, never a pass: a
+    clip this corpus does not ship has no size this validator may invent.
+    """
     operation = ALL_OPERATIONS.get(str(entry.get("operation")))
     if operation is None:
         return [
@@ -150,6 +174,8 @@ def validate_api_fixture(
     violations.extend(file_violations)
     headers, header_violations = _load_headers(root, entry)
     violations.extend(header_violations)
+    request_headers, request_header_violations = _load_request_headers(root, entry)
+    violations.extend(request_header_violations)
     if file_violations or header_violations:
         # The index names a wire file that is absent or unreadable, so its bytes cannot
         # be decoded — but that is no licence to skip the wire rules that do not need
@@ -258,7 +284,23 @@ def validate_api_fixture(
                     for violation in violations
                     if "manifest_base64url" not in violation.location
                 ]
-            violations.extend(binding)
+                violations.extend(binding)
+
+    if (
+        body is not None
+        and direction == "response"
+        and status == 200
+        and operation.key in _MANIFEST_RESPONSE_OPERATIONS
+    ):
+        violations.extend(validate_manifest_response(entry, body, body_bytes, media_schemas))
+
+    if (
+        body is not None
+        and direction == "response"
+        and status == 200
+        and operation.key in _CROP_BOUND_OPERATIONS
+    ):
+        violations.extend(validate_derivative_crop(entry, body, clip_dimensions or {}))
 
     context = _HeaderContext(
         location=str(entry["id"]),
@@ -269,6 +311,7 @@ def validate_api_fixture(
         # required for this operation and status: absence is a finding, not a pass, so
         # the required-name walk runs against an empty map rather than being skipped.
         headers=headers or {},
+        request_headers=request_headers or {},
     )
     for name in _required_headers(operation, direction, status):
         if _lookup_header(context.headers, name) is None:
@@ -423,10 +466,31 @@ def _load_body(root: Path, entry: Mapping[str, Any]) -> tuple[bytes | None, list
 
 
 def _load_headers(root: Path, entry: Mapping[str, Any]) -> tuple[dict[str, str] | None, list[Violation]]:
-    """Read the fixture's header map, if it has one."""
+    """Read the fixture's own header map — the one this vector itself puts on the wire."""
+    return _load_header_map(root, entry, ".headers.json", exclude=".request.headers.json")
+
+
+def _load_request_headers(
+    root: Path, entry: Mapping[str, Any]
+) -> tuple[dict[str, str] | None, list[Violation]]:
+    """Read the request sidecar of a response vector, when it declares one.
+
+    A 206 is only checkable against the ``Range`` it answers, and a committed response
+    fixture has to carry that request for the pairing to be reviewable at all.
+    """
+    return _load_header_map(root, entry, ".request.headers.json")
+
+
+def _load_header_map(
+    root: Path,
+    entry: Mapping[str, Any],
+    suffix: str,
+    exclude: str | None = None,
+) -> tuple[dict[str, str] | None, list[Violation]]:
+    """Read one JSON object of header name/value out of the fixture's file set."""
     for name in entry.get("files", []):
         text = str(name)
-        if not text.endswith(".headers.json"):
+        if not text.endswith(suffix) or (exclude is not None and text.endswith(exclude)):
             continue
         path = root / text
         if not path.is_file():
@@ -494,22 +558,32 @@ def _validate_error_vector(
     body: Mapping[str, Any],
     status: int,
 ) -> list[Violation]:
-    """An error response must be the shared envelope with a code the spec assigns."""
+    """An error response must be the shared envelope with a code the spec assigns.
+
+    One rejection says more than the envelope: the operation table binds a schema to a
+    status of 400 or above when the contract gives that refusal its own body, and the
+    body is then checked against that schema. The reported code follows the schema the
+    finding came from, so a missing member of a documented response body is
+    ``API_SCHEMA`` — the code every other documented response reports — rather than a
+    complaint about an envelope this status no longer uses.
+    """
     components = document.get("components", {}).get("schemas", {})
-    if "Error" not in components:
+    schema_name = operation.response_schemas.get(status) or "Error"
+    if schema_name not in components:
         return [
             Violation(
                 E.SPEC_STRUCTURE_MISSING,
-                "components/schemas/Error",
-                "the contract has no reusable error envelope",
+                f"components/schemas/{schema_name}",
+                f"the contract has no {schema_name} schema for {operation.key} {status}",
             )
         ]
-    schema = resolve_refs(components["Error"], root=document)
+    schema_code = E.ERROR_ENVELOPE_INVALID if schema_name == "Error" else E.API_SCHEMA
+    schema = resolve_refs(components[schema_name], root=document)
     found: list[Violation] = []
     for property_name, keyword, message in schema_error_report(schema, body):
         found.append(
             Violation(
-                E.ERROR_ENVELOPE_INVALID,
+                schema_code,
                 f"{entry['id']}{f' at {property_name}' if property_name else ''}",
                 f"{keyword}: {message}",
             )
@@ -677,7 +751,60 @@ def _rule_content_range(context: _HeaderContext, name: str, value: str) -> list[
                     f"Content-Length {declared} does not match the granted range of {last - first + 1} bytes",
                 )
             ]
+    mismatch = _requested_span_mismatch(context, first, last, total)
+    if mismatch is not None:
+        return [Violation(E.CONTENT_RANGE_INVALID, location, f"{value!r}: {mismatch}")]
     return []
+
+
+def _requested_span_mismatch(
+    context: _HeaderContext, first: int, last: int, total: int
+) -> str | None:
+    """Why this granted interval is not the one the request asked for, or ``None``.
+
+    Syntax, bounds and ``Content-Length`` agreement say that a ``Content-Range`` is a
+    well-formed statement about a file; none of them says it is a statement about the
+    range the client asked for. A 206 of ``bytes 0-99/1000`` for ``Range: bytes=999-``
+    is internally consistent and hands over the wrong hundred bytes, which is the
+    failure this returns.
+
+    Silence is deliberate wherever the answer cannot be judged: a status that is not a
+    grant (a 401, 404, 412 or 416 never reached range serving, and may echo the
+    specifier it was given), no request context at all, and a specifier this contract
+    never supports (its own row in the table above already owns that defect).
+
+    The request is read from the sidecar first and then from the vector's own header
+    map, because a committed response vector has always been able to name the `Range` it
+    answers beside the answer itself: the sidecar is the precise form and the echo is the
+    historical one, and both are the request this answer claims to be serving.
+    """
+    if context.direction != "response" or context.status not in (200, 206):
+        return None
+    specifier = _lookup_header(context.request_headers, "Range") or _lookup_header(
+        context.headers, "Range"
+    )
+    if specifier is None:
+        return None
+    requested = _SINGLE_RANGE.match(specifier)
+    if requested is None:
+        return None
+    start = int(requested.group(1))
+    end = _as_int(requested.group(2)) if requested.group(2) else None
+    if end is not None and end < start:
+        # Bytes past their own end: `_rule_range` owns that specifier, including the
+        # 206-instead-of-416 misuse, and comparing a grant against a request that asks
+        # for an impossible interval would report the same act twice under two codes.
+        # A start at or beyond the end is deliberately *not* silenced here — a 206 for
+        # it is a grant of something nobody asked for, and nothing else reports it.
+        return None
+    expected_last = total - 1 if end is None else min(end, total - 1)
+    if first == start and last == expected_last:
+        return None
+    wanted = f"bytes={start}-" if end is None else f"bytes={start}-{end}"
+    return (
+        f"the request asked for {wanted!r}, which grants bytes {start}-{expected_last}/{total}, "
+        f"not {first}-{last}/{total}"
+    )
 
 
 #: The Range decision table, in the words the validator applies (interfaces.md §4 for
@@ -809,6 +936,20 @@ def _rule_upload_offset(context: _HeaderContext, name: str, value: str) -> list[
                 f"{value!r} is not a nonnegative committed offset",
             )
         ]
+    # A HEAD answers with both headers and the pair has to agree: bytes committed past
+    # the declared total describe a file the upload never declared, which is exactly the
+    # state a client must not be able to resume from. Equality is a completed upload.
+    declared = _lookup_header(context.headers, "Upload-Length")
+    if declared is not None:
+        length = _as_int(declared)
+        if length is not None and number > length:
+            return [
+                Violation(
+                    E.UPLOAD_OFFSET_INVALID,
+                    f"{context.location}: {name}",
+                    f"offset {number} is past the declared length {length}",
+                )
+            ]
     return []
 
 
@@ -832,6 +973,18 @@ def _rule_upload_checksum(context: _HeaderContext, name: str, value: str) -> lis
                 E.UPLOAD_CHECKSUM_SYNTAX,
                 f"{context.location}: {name}",
                 f"{value!r} is not `sha256 <64 lowercase hex>`",
+            )
+        ]
+    return []
+
+
+def _rule_www_authenticate(context: _HeaderContext, name: str, value: str) -> list[Violation]:
+    if _WWW_AUTHENTICATE.match(value) is None:
+        return [
+            Violation(
+                E.HEADER_INVALID,
+                f"{context.location}: {name}",
+                f"{value!r} is not `Bearer` or `Bearer realm=\"<realm>\"` (RFC 9110 §15.5.2)",
             )
         ]
     return []
@@ -988,6 +1141,7 @@ HEADER_RULES: Mapping[str, Rule] = {
     "upload-offset": _rule_upload_offset,
     "upload-length": _rule_upload_length,
     "upload-checksum": _rule_upload_checksum,
+    "www-authenticate": _rule_www_authenticate,
     "x-clip-lease": _rule_lease,
     "idempotency-key": _rule_idempotency_key,
     "cursor": _rule_cursor,
@@ -1070,4 +1224,102 @@ def validate_manifest_binding(entry: Mapping[str, Any], body: Mapping[str, Any],
                 f"{keyword}: {message}",
             )
         )
+    # The mirror says what a manifest looks like; these are the rules a manifest has to
+    # obey, and a manifest that breaks them over the wire is the same defect as one that
+    # breaks them on the card. Without this call an upload could bind a manifest naming
+    # a clip whose boot prefix contradicts its own boot_id, or a clock that is both
+    # unknown and timestamped, and the media validator would never be told.
+    if isinstance(manifest, dict):
+        found.extend(
+            validate_manifest_fields(manifest, location_prefix=f"{location}: manifest_base64url")
+        )
     return found
+
+
+def validate_manifest_response(
+    entry: Mapping[str, Any],
+    body: Mapping[str, Any],
+    body_bytes: bytes | None,
+    media_schemas: Mapping[str, Mapping[str, Any]],
+) -> list[Violation]:
+    """Check a ``GET /clips/{clip_id}/manifest`` answer with the media contract's own rules.
+
+    The 200 validates against the contract's ``Manifest`` mirror, which states the shape
+    and nothing more; the field rules — the boot prefix, the close reason, the null-ness
+    of an unknown clock — live in :mod:`tools.contracts.media_validate`, and a client
+    that trusts this answer trusts exactly those facts. The 16,384-byte bound is applied
+    to the bytes on the wire first, because it exists to keep an oversized document from
+    being read into memory to be measured at all.
+    """
+    location = str(entry["id"])
+    if body_bytes is None:
+        return [
+            Violation(
+                E.FIXTURE_FILE_MISSING,
+                location,
+                "a manifest response has no committed bytes to measure against the bound",
+            )
+        ]
+    if len(body_bytes) > MAX_MANIFEST_BYTES:
+        return [
+            Violation(
+                E.MANIFEST_DECODED_TOO_LARGE,
+                location,
+                f"{len(body_bytes)} bytes exceeds the {MAX_MANIFEST_BYTES}-byte manifest bound",
+            )
+        ]
+    if "manifest" not in media_schemas:
+        # No usable media schema means rules nobody was able to run, which is a finding
+        # about the run rather than a pass for the vector.
+        return [
+            Violation(
+                E.SCHEMA_DOCUMENT_INVALID,
+                location,
+                "no usable media manifest schema was loaded, so the manifest is unchecked",
+            )
+        ]
+    return validate_manifest_fields(body, location_prefix=f"{location}: manifest")
+
+
+def validate_derivative_crop(
+    entry: Mapping[str, Any],
+    body: Mapping[str, Any],
+    clip_dimensions: Mapping[str, tuple[int, int]],
+) -> list[Violation]:
+    """A recorded crop has to lie inside the source the record names.
+
+    ``CropRegion`` states a rectangle and the two bounds JSON Schema can state for it;
+    that a crop is measured *in the source's pixels* is a statement about a pair of
+    documents, since the encoder's window onto a 64×64 baseline cannot start at y=120. The
+    source size comes from the committed manifest of the very clip this record cites, so
+    the check is a fact about the corpus rather than an invented bound. A clip id nobody
+    shipped is silence: this validator has no size for it and must not conjure one.
+    """
+    clip_id = body.get("clip_id")
+    crop = body.get("crop")
+    if not isinstance(clip_id, str) or not isinstance(crop, Mapping):
+        return []  # the bound schema reports a record without an id or without a crop
+    size = clip_dimensions.get(clip_id)
+    if size is None:
+        return []
+    width, height = size
+    found: list[Violation] = []
+    for axis, extent_key, limit in (("x", "width", width), ("y", "height", height)):
+        offset, extent = crop.get(axis), crop.get(extent_key)
+        if not _is_count(offset) or not _is_count(extent):
+            continue  # a rectangle the schema cannot read is the schema's to report
+        if offset + extent > limit:
+            found.append(
+                Violation(
+                    E.API_SCHEMA,
+                    f"{entry['id']}: derivative.crop.{axis}",
+                    f"crop {axis}={offset} with {extent_key}={extent} reaches "
+                    f"{offset + extent}, past the {limit}-pixel edge of source {clip_id}",
+                )
+            )
+    return found
+
+
+def _is_count(value: Any) -> bool:
+    """A nonnegative integer a schema-valid rectangle member has to be."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0

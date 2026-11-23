@@ -16,6 +16,7 @@ from typing import Any, Mapping
 
 from . import errors as E
 from .api_validate import validate_api_fixture
+from .bounds import MANIFEST_NAME
 from .errors import Violation
 from .generate_fixtures import build_all
 from .media_validate import validate_media_fixture
@@ -156,11 +157,13 @@ def validate_contracts(repository_root: Path) -> Report:
     report.contract_violations.extend(index_violations)
     report.fixture_total = len(entries)
 
+    dimensions = clip_dimensions(fixtures, entries)
+
     for entry in entries:
         fixture_id = str(entry["id"])
         kind = str(entry["kind"])
         if kind == "api" and documents:
-            violations = validate_api_fixture(fixtures, entry, documents, schemas)
+            violations = validate_api_fixture(fixtures, entry, documents, schemas, dimensions)
         elif kind in {"clip", "active"} and {"frame", "manifest", "active"} <= set(schemas):
             violations = validate_media_fixture(fixtures, entry, schemas)
         elif kind == "api":
@@ -307,6 +310,46 @@ def _load_index(fixtures: Path) -> tuple[list[dict[str, Any]], list[Violation]]:
             found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, f"unknown kind {item.get('kind')!r}"))
         entries.append(item)
     return entries, found
+
+
+def clip_dimensions(
+    fixtures: Path, entries: list[dict[str, Any]]
+) -> dict[str, tuple[int, int]]:
+    """``clip_id -> (width, height)`` for every finalized clip the corpus ships.
+
+    A derivative record states a crop and cites the clip it was cut from, and the only
+    honest source for the source's size is that clip's own committed manifest: the
+    profile that recorded the capture is the one the encoder's window has to fit inside.
+    Only a vector the index expects to be valid contributes, so a manifest this run is
+    already set out to refuse cannot redefine what its clip's pixels measure, and a clip
+    absent from the map is a clip no cross-document check here may claim anything about.
+    """
+    dimensions: dict[str, tuple[int, int]] = {}
+    for entry in entries:
+        # An interrupted segment ships ``active.json``, never ``manifest.json``: the record
+        # that claims a completed capture is the one whose profile states the pixels.
+        if entry.get("kind") != "clip" or str(entry.get("expected")) != "valid":
+            continue
+        if MANIFEST_NAME not in {str(name) for name in entry.get("files", [])}:
+            continue
+        path = fixtures / str(entry["id"]) / MANIFEST_NAME
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # the media walk reads and reports these bytes; this map only borrows them
+        profile = manifest.get("profile") if isinstance(manifest, dict) else None
+        clip_id = manifest.get("clip_id") if isinstance(manifest, dict) else None
+        if not isinstance(clip_id, str) or not isinstance(profile, dict):
+            continue
+        width, height = profile.get("width"), profile.get("height")
+        if (
+            isinstance(width, int)
+            and not isinstance(width, bool)
+            and isinstance(height, int)
+            and not isinstance(height, bool)
+        ):
+            dimensions.setdefault(clip_id, (width, height))
+    return dimensions
 
 
 def _check_unreferenced_files(fixtures: Path, entries: list[dict[str, Any]]) -> list[Violation]:
