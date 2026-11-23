@@ -1292,3 +1292,148 @@ def test_the_two_new_refusals_are_documented_and_demonstrated(
     assert expired["expected"] == "valid"
     assert expired["api_error_code"] == "EXPIRED"
     assert _observed(expired, specs, media_schemas) == set()
+
+
+def test_an_unreadable_sidecar_never_borrows_the_missing_body_finding(
+    tmp_path, specs, media_schemas
+) -> None:
+    """Presence is an index fact, so a broken sibling file cannot invent a missing body.
+
+    Both directions of the confusion are refused here. A vector that names a body which
+    exists has to report the absent sidecar and nothing else: reporting the body missing
+    as well would send a reader to delete a file the contract requires. And a HEAD that
+    names a body has to be refused for naming it even when a broken sidecar means no bytes
+    were ever read, because the defect is the index entry, not the bytes.
+    """
+    body_present = _vector(
+        tmp_path,
+        operation="device.pair",
+        direction="request",
+        schema="PairRequest",
+        body={"v": 1, "setup_secret": "A" * 86, "client_name": "recorder"},
+    )
+    _, entry = body_present
+    missing_sidecar = f"{entry['id']}.headers.json"
+    entry["files"] = sorted([*entry["files"], missing_sidecar])
+    assert not (tmp_path / missing_sidecar).exists()
+    assert _codes(*body_present, specs, media_schemas) == {E.FIXTURE_FILE_MISSING}
+
+    head_with_body = _vector(
+        tmp_path,
+        operation="backend.head_upload_file",
+        direction="response",
+        status=410,
+        body={
+            "v": 1,
+            "error": {
+                "code": "EXPIRED",
+                "message": "gone",
+                "retryable": False,
+                "request_id": "req-1",
+            },
+        },
+    )
+    _, head_entry = head_with_body
+    head_entry["files"] = sorted([*head_entry["files"], f"{head_entry['id']}.headers.json"])
+    assert _codes(*head_with_body, specs, media_schemas) == {
+        E.FIXTURE_INDEX_INVALID,
+        E.FIXTURE_FILE_MISSING,
+    }
+
+
+def test_the_document_may_not_promise_a_default_body_a_head_forbids(
+    specs: dict, media_schemas
+) -> None:
+    """The published validator, not only the suite, refuses content on a HEAD default.
+
+    ``default`` is the one response key that is not a status, and on a HEAD operation it
+    still describes a HEAD answer. A reviewer running the CLI alone has to see the same
+    refusal a full test run gives, so the rule covers it; a 204 operation's ``default``
+    covers statuses other than the 204 and keeps its body, which the last case pins.
+    """
+    import copy
+
+    from tools.contracts.openapi_check import check_openapi
+
+    head = ALL_OPERATIONS["backend.head_upload_file"]
+    document = copy.deepcopy(specs["backend"])
+    responses = document["paths"][head.path]["head"]["responses"]
+    responses["default"] = {
+        "description": "Anything else.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}},
+    }
+    codes = {
+        (violation.code, violation.location)
+        for violation in check_openapi("backend", document)
+        if violation.location.endswith("responses/default content")
+    }
+    expected_location = f"backend-v1 {head.method} {head.path} responses/default content"
+    assert codes == {(E.SPEC_STRUCTURE_MISSING, expected_location)}, codes
+
+    unchanged = check_openapi("backend", specs["backend"])
+    assert not [
+        violation
+        for violation in unchanged
+        if "responses/default" in violation.location
+    ], [violation.render() for violation in unchanged]
+
+    # A 204 operation's default is not a 204 answer, so a body there stays legitimate.
+    patch = ALL_OPERATIONS["backend.patch_upload_file"]
+    document = copy.deepcopy(specs["backend"])
+    document["paths"][patch.path]["patch"]["responses"]["default"] = {
+        "description": "Anything else.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}},
+    }
+    assert not [
+        violation
+        for violation in check_openapi("backend", document)
+        if violation.location.endswith("responses/default content")
+    ]
+
+
+def test_no_corpus_writer_can_emit_a_non_json_literal() -> None:
+    """Every ``json.dumps`` that reaches a committed byte refuses ``NaN`` and ``Infinity``.
+
+    One writer refusing is what the NaN vector proves; this is the statement that no
+    fourth writer was added beside it. The pin is on the call sites themselves, because a
+    corpus that never contains a non-finite number cannot show the flag being removed.
+    """
+    import ast
+
+    for name in ("tools/contracts/generate_fixtures.py", "tools/contracts/media_model.py"):
+        tree = ast.parse((REPO_ROOT / name).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            if not (
+                isinstance(function, ast.Attribute)
+                and function.attr == "dumps"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "json"
+            ):
+                continue
+            keywords = {keyword.arg for keyword in node.keywords}
+            assert "allow_nan" in keywords, f"{name}:{node.lineno} writes a wire file without allow_nan"
+            keyword = next(item for item in node.keywords if item.arg == "allow_nan")
+            value = keyword.value
+            assert isinstance(value, ast.Constant) and value.value is False, (
+                f"{name}:{node.lineno} allow_nan must be the literal False"
+            )
+
+
+def test_the_index_line_writer_refuses_a_non_finite_number() -> None:
+    """A frame record carrying ``NaN`` is a generator bug, and the writer says so.
+
+    No committed index contains one and none can be produced from the spec, so the only
+    way this branch matters is a future corruption helper; it has to raise rather than
+    emit a line no JSON reader accepts.
+    """
+    from tools.contracts.generate_fixtures import _Editable
+    from tools.contracts.media_model import BuiltClip
+
+    editable = _Editable(BuiltClip(payload=b"", index=b'{"seq":0,"offset":0}\n'))
+    with pytest.raises(ValueError):
+        editable.set_line(0, {"seq": 0, "offset": float("nan")})
+    editable.set_line(0, {"seq": 0, "offset": 0})
+    assert editable.built.index == b'{"seq":0,"offset":0}\n'

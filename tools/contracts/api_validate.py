@@ -158,14 +158,13 @@ def validate_api_fixture(
         body_bytes = None
     body: dict[str, Any] | None = None
 
-    if not file_violations:
-        presence = _body_presence(operation, entry, direction, status, body_bytes)
-        if presence:
-            # A body that is not supposed to exist is not decoded, and a body that is
-            # supposed to exist is not substituted by an empty walk: either way the
-            # contents rules have nothing legitimate to judge.
-            violations.extend(presence)
-            body_bytes = None
+    presence = _body_presence(operation, entry, direction, status)
+    if presence:
+        # A body that is not supposed to exist is not decoded, and a body that is
+        # supposed to exist is not substituted by an empty walk: either way the
+        # contents rules have nothing legitimate to judge.
+        violations.extend(presence)
+        body_bytes = None
     if body_bytes is not None:
         if direction == "request":
             # Only a request meets a published body ceiling here: the request is what
@@ -327,7 +326,6 @@ def _body_presence(
     entry: Mapping[str, Any],
     direction: str,
     status: Any,
-    body_bytes: bytes | None,
 ) -> list[Violation]:
     """Whether this vector may carry a body at all, judged before its contents.
 
@@ -337,13 +335,18 @@ def _body_presence(
     away from a HEAD answer and from a 204, so those two are exempt both ways round.
     Checking presence before contents is what stops a vector that ships nothing from
     printing a clean PASS on the strength of the checks it never reached.
+
+    Presence is a fact about the index, not about what could be read: it asks which
+    files :file:`fixtures.json` names. Reading is a separate question with its own code
+    (``FIXTURE_FILE_MISSING``), and conflating the two would let an unreadable header
+    sidecar report a body that is sitting there as missing.
     """
+    named = [
+        str(name) for name in entry.get("files", []) if not str(name).endswith(".headers.json")
+    ]
     if direction == "response" and (operation.is_head or status == 204):
-        if body_bytes is None:
+        if not named:
             return []
-        named = [str(name) for name in entry.get("files", []) if not str(name).endswith(
-            ".headers.json"
-        )]
         reason = (
             f"a {status} answer carries no body (RFC 9110 §15.3.3)"
             if status == 204
@@ -356,7 +359,7 @@ def _body_presence(
                 f"{operation.key} {reason}, but the index ships {', '.join(named)}",
             )
         ]
-    if body_bytes is not None:
+    if named:
         return []
     required = _required_body_reason(operation, direction, status)
     if required is None:

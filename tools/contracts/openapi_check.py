@@ -438,9 +438,15 @@ def _check_operation(
         # one of those teaches a generator to build a client that reads bytes no
         # conforming server ever sends.
         try:
-            status = int(status_key)
+            status: int | str = int(status_key)
         except ValueError:
-            continue
+            # ``default`` is the only non-numeric key either document uses, and on a HEAD
+            # operation it still describes a HEAD answer, so it may not promise content
+            # either. A 204 operation's ``default`` covers statuses other than the 204,
+            # where a body is legitimate, so only the HEAD half is refused here.
+            if status_key != "default" or not operation.is_head:
+                continue
+            status = status_key
         if not (operation.is_head or status == 204):
             continue
         resolved = _resolve(response, document)

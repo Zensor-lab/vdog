@@ -735,6 +735,7 @@ def build_media_corpus(media: Sequence[MediaFixture]) -> MediaCorpus:
     decoded_oversize = json.dumps(
         {"v": 1, "pad": "p" * (16_385 - len('{"v":1,"pad":""}'))},
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     assert len(decoded_oversize) == MAX_MANIFEST_BYTES + 1
     return MediaCorpus(
