@@ -1299,11 +1299,14 @@ def test_an_unreadable_sidecar_never_borrows_the_missing_body_finding(
 ) -> None:
     """Presence is an index fact, so a broken sibling file cannot invent a missing body.
 
-    Both directions of the confusion are refused here. A vector that names a body which
-    exists has to report the absent sidecar and nothing else: reporting the body missing
-    as well would send a reader to delete a file the contract requires. And a HEAD that
-    names a body has to be refused for naming it even when a broken sidecar means no bytes
-    were ever read, because the defect is the index entry, not the bytes.
+    Both directions of the confusion are refused here, and the third case keeps the old
+    short-circuit from coming back. A vector that names a body which exists has to report
+    the absent sidecar and nothing else: reporting the body missing as well would send a
+    reader to delete a file the contract requires. A HEAD that names a body has to be
+    refused for naming it even when a broken sidecar means no bytes were ever read,
+    because the defect is the index entry, not the bytes — and it has to be refused for
+    the same reason when the named body itself is missing, which is the corner where a
+    gate that skipped everything after a file failure would go quiet.
     """
     body_present = _vector(
         tmp_path,
@@ -1338,6 +1341,34 @@ def test_an_unreadable_sidecar_never_borrows_the_missing_body_finding(
     assert _codes(*head_with_body, specs, media_schemas) == {
         E.FIXTURE_INDEX_INVALID,
         E.FIXTURE_FILE_MISSING,
+    }
+
+    # The index still names the body after the file disappears, and naming it is the
+    # defect: a gate that gave up once a file failed to load would report only the
+    # missing file and let a HEAD with content walk away.
+    head_body_gone = _vector(
+        tmp_path,
+        operation="backend.head_upload_file",
+        direction="response",
+        status=404,
+        body={
+            "v": 1,
+            "error": {
+                "code": "NOT_FOUND",
+                "message": "no such session",
+                "retryable": False,
+                "request_id": "req-2",
+            },
+        },
+    )
+    _, gone_entry = head_body_gone
+    body_file = next(
+        name for name in gone_entry["files"] if not name.endswith(".headers.json")
+    )
+    (tmp_path / body_file).unlink()
+    assert _codes(*head_body_gone, specs, media_schemas) == {
+        E.FIXTURE_FILE_MISSING,
+        E.FIXTURE_INDEX_INVALID,
     }
 
 
