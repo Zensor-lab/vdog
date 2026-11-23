@@ -99,8 +99,10 @@ these conditions in prose but assign no identifiers, so this package named them;
 the name is chosen so the condition is recognizable from the code alone
 (`OFFSET_NOT_CONTIGUOUS`, `MANIFEST_SIZE_MISMATCH`, `ETAG_INVALID`). Two of them
 are rules no single documented sentence states and the validator therefore adds:
-`CLOCK_NULLITY_MISMATCH` (a `clock.source` of `unknown` must not carry a
-`start_utc`) and `RECOVERED_CLOSE_REASON_DISAGREE`, which enforces the biconditional
+`CLOCK_NULLITY_MISMATCH` (three conditions on `clock`: a `clock.source` of `unknown`
+must carry neither `start_utc` nor `uncertainty_ms`; a known source must carry both; and
+an `uncertainty_ms` that is present must be a nonnegative JSON integer no larger than the
+shared 2^53−1 ceiling) and `RECOVERED_CLOSE_REASON_DISAGREE`, which enforces the biconditional
 `recovered == (close_reason == "recovery")`: a segment that closed `duration`, `size`,
 `settings`, `clock_change`, `shutdown`, `storage_fault` or `ota` cannot claim
 `recovered: true`, and `recovered: true` may not arrive with any other close reason.
