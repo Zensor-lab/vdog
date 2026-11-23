@@ -1,0 +1,42 @@
+function,net,pad_or_header_reference,soc_gpio,direction_from_esp32,voltage_domain,pulls_and_reset_state,owner,status,source,notes
+camera,Y2,INTERNAL_CAMERA_CONTACT_PENDING,15,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,D0; preserve data ordering
+camera,Y3,INTERNAL_CAMERA_CONTACT_PENDING,17,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,D1; preserve data ordering
+camera,Y4,INTERNAL_CAMERA_CONTACT_PENDING,18,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,D2; preserve data ordering
+camera,Y5,INTERNAL_CAMERA_CONTACT_PENDING,16,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,D3; preserve data ordering
+camera,Y6,INTERNAL_CAMERA_CONTACT_PENDING,14,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,D4; preserve data ordering
+camera,Y7,INTERNAL_CAMERA_CONTACT_PENDING,12,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,D5; preserve data ordering
+camera,Y8,INTERNAL_CAMERA_CONTACT_PENDING,11,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,D6; preserve data ordering
+camera,Y9,INTERNAL_CAMERA_CONTACT_PENDING,48,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,D7; preserve data ordering
+camera,XCLK,INTERNAL_CAMERA_CONTACT_PENDING,10,output,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,Do not use for external expansion; reconcile SCCB pulls
+camera,PCLK,INTERNAL_CAMERA_CONTACT_PENDING,13,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,Do not use for external expansion; reconcile SCCB pulls
+camera,VSYNC,INTERNAL_CAMERA_CONTACT_PENDING,38,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,Do not use for external expansion; reconcile SCCB pulls
+camera,HREF,INTERNAL_CAMERA_CONTACT_PENDING,47,input,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,Do not use for external expansion; reconcile SCCB pulls
+camera,SCCB_SDA,INTERNAL_CAMERA_CONTACT_PENDING,40,bidirectional,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,Do not use for external expansion; reconcile SCCB pulls
+camera,SCCB_SCL,INTERNAL_CAMERA_CONTACT_PENDING,39,output,MODULE_IO_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S2;S4,Do not use for external expansion; reconcile SCCB pulls
+camera,PWDN,INTERNAL_CAMERA_CONTACT_PENDING,NONE_IN_REFERENCE,not_gpio,MODULE_POWER_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S4,Reference value -1; verify actual module power/reset circuit
+camera,RESET,INTERNAL_CAMERA_CONTACT_PENDING,NONE_IN_REFERENCE,not_gpio,MODULE_POWER_PENDING,PENDING_REVISION_MATCH,camera,CANDIDATE_NOT_APPROVED,S4,Reference value -1; verify actual module power/reset circuit
+sd,SPI_SCK,D8,7,output,SD_IO_PENDING,PENDING_REVISION_MATCH,storage,CANDIDATE_NOT_APPROVED,S2,SDSPI only; verify pulls and CS deselection at reset; CS21 shared with LED
+sd,SPI_MISO,D9,8,input,SD_IO_PENDING,PENDING_REVISION_MATCH,storage,CANDIDATE_NOT_APPROVED,S2,SDSPI only; verify pulls and CS deselection at reset; CS21 shared with LED
+sd,SPI_MOSI,D10,9,output,SD_IO_PENDING,PENDING_REVISION_MATCH,storage,CANDIDATE_NOT_APPROVED,S2,SDSPI only; verify pulls and CS deselection at reset; CS21 shared with LED
+sd,SPI_CS,INTERNAL_SD_CONTACT_PENDING,21,output,SD_IO_PENDING,PENDING_REVISION_MATCH,storage,CANDIDATE_NOT_APPROVED,S2,SDSPI only; verify pulls and CS deselection at reset; CS21 shared with LED
+indicator,USER_LED,ONBOARD_LED_NET_PENDING,21,output,LED_CIRCUIT_PENDING,PENDING_REVISION_MATCH,storage_shared_no_independent_led,CANDIDATE_NOT_APPROVED,S2,Intentional CS21 alias; no heartbeat or PWM while SD mounted
+indicator,CHARGE_LED,ONBOARD_CHARGER_NET_PENDING,NO_GPIO_ASSIGNED,not_gpio,CHARGER_CIRCUIT_PENDING,PENDING_REVISION_MATCH,charger,CANDIDATE_NOT_APPROVED,S1;S2,Not a recording-success indicator
+microphone,MIC_DATA,INTERNAL_MIC_CONTACT_PENDING,41,input,MIC_IO_PENDING,PENDING_REVISION_MATCH,disabled,CANDIDATE_NOT_APPROVED,S2,Do not initialize microphone or drive its clock
+microphone,MIC_CLK,INTERNAL_MIC_CONTACT_PENDING,42,output,MIC_IO_PENDING,PENDING_REVISION_MATCH,disabled,CANDIDATE_NOT_APPROVED,S2,Do not initialize microphone or drive its clock
+usb,USB_D_MINUS,USB_C_CONTACT_PENDING,19,bidirectional,USB_PHY_PENDING,PENDING_REVISION_MATCH,usb_service,CANDIDATE_NOT_APPROVED,docs/specs/hardware.md,Preserve native USB; actual schematic contact pending
+usb,USB_D_PLUS,USB_C_CONTACT_PENDING,20,bidirectional,USB_PHY_PENDING,PENDING_REVISION_MATCH,usb_service,CANDIDATE_NOT_APPROVED,docs/specs/hardware.md,Preserve native USB; actual schematic contact pending
+control,BOOT,ONBOARD_BOOT_BUTTON,0,input,STRAP_IO_PENDING,PENDING_REVISION_MATCH,boot_recovery,CANDIDATE_NOT_APPROVED,S2,Strap pulls/reset review required; no approved application gesture
+control,CHIP_PU,ONBOARD_RESET_BUTTON,NOT_GPIO,input,RESET_CIRCUIT_PENDING,PENDING_REVISION_MATCH,reset_recovery,CANDIDATE_NOT_APPROVED,S2,Reset restarts firmware; not separate readable application button
+power,BAT_POS,BAT_PAD_POS_PENDING,NOT_GPIO,power_input,PACK_RANGE_PENDING,PENDING_REVISION_MATCH,power_review,CANDIDATE_NOT_APPROVED,S1;S2,No connection authority; verify actual pad polarity and isolation diagram
+power,BAT_NEG,BAT_PAD_NEG_PENDING,NOT_GPIO,power_return,GROUND_PENDING,PENDING_REVISION_MATCH,power_review,CANDIDATE_NOT_APPROVED,S1;S2,No connection authority; verify actual pad polarity and isolation diagram
+power,VBUS,5V;USB_C_PENDING,NOT_GPIO,power,USB_5V_REFERENCE_PENDING,PENDING_REVISION_MATCH,power_review,CANDIDATE_NOT_APPROVED,S1;S2,No connection authority; verify actual pad polarity and isolation diagram
+power,3V3_OUT,3V3,NOT_GPIO,power_output,REGULATED_3V3_REFERENCE_PENDING,PENDING_REVISION_MATCH,power_review,CANDIDATE_NOT_APPROVED,S1;S2,No connection authority; verify actual pad polarity and isolation diagram
+power,GND,GND,NOT_GPIO,power_return,GROUND_PENDING,PENDING_REVISION_MATCH,power_review,CANDIDATE_NOT_APPROVED,S1;S2,No connection authority; verify actual pad polarity and isolation diagram
+expansion,UNASSIGNED_D0,D0,1,unassigned,GPIO_IO_PENDING,PENDING_REVISION_MATCH,unassigned,CANDIDATE_NOT_APPROVED,S2,No button ADC or indicator assignment; audit straps/debug before use
+expansion,UNASSIGNED_D1,D1,2,unassigned,GPIO_IO_PENDING,PENDING_REVISION_MATCH,unassigned,CANDIDATE_NOT_APPROVED,S2,No button ADC or indicator assignment; audit straps/debug before use
+expansion,UNASSIGNED_D2,D2,3,unassigned,GPIO_IO_PENDING,PENDING_REVISION_MATCH,unassigned,CANDIDATE_NOT_APPROVED,S2,No button ADC or indicator assignment; audit straps/debug before use
+expansion,UNASSIGNED_D3,D3,4,unassigned,GPIO_IO_PENDING,PENDING_REVISION_MATCH,unassigned,CANDIDATE_NOT_APPROVED,S2,No button ADC or indicator assignment; audit straps/debug before use
+expansion,UNASSIGNED_D4,D4,5,unassigned,GPIO_IO_PENDING,PENDING_REVISION_MATCH,unassigned,CANDIDATE_NOT_APPROVED,S2,No button ADC or indicator assignment; audit straps/debug before use
+expansion,UNASSIGNED_D5,D5,6,unassigned,GPIO_IO_PENDING,PENDING_REVISION_MATCH,unassigned,CANDIDATE_NOT_APPROVED,S2,No button ADC or indicator assignment; audit straps/debug before use
+expansion,UNASSIGNED_D6,D6,43,unassigned,GPIO_IO_PENDING,PENDING_REVISION_MATCH,unassigned,CANDIDATE_NOT_APPROVED,S2,No button ADC or indicator assignment; audit straps/debug before use
+expansion,UNASSIGNED_D7,D7,44,unassigned,GPIO_IO_PENDING,PENDING_REVISION_MATCH,unassigned,CANDIDATE_NOT_APPROVED,S2,No button ADC or indicator assignment; audit straps/debug before use

@@ -14,6 +14,30 @@ precede CAD fit. This is not a universal 0–8kg suitability claim. A basic
 protective housing and pack restraint precede any wear; larger-dog fit and a
 weather-protective version need separate qualification.
 
+## Prototype preparation update (2026-11-23)
+
+The owner selects **OV5640** on the XIAO ESP32-S3 Sense and **daytime ground
+objects at 0.5–1 m** as the first readability goal. The stock Sense fixed-focus
+module is the reference; exact purchased module/PCB revisions remain unverified.
+A 32GB SDHC/FAT32 card may be chosen by brand later; each actual model still
+requires qualification. The owner selects LiPo chemistry but has not selected
+or purchased an exact battery or charger. Retain the protected nominal 1S 3.7V
+1000mAh removable-pack baseline and require a matched external charger; an
+arbitrary charger is not approved by this choice.
+
+[Prototype A preparation](../../hardware/prototype-a/README.md) contains the
+candidate pin map, power/service diagram and electrical closure record.
+The [recording acceptance draft](recording-acceptance.md) proposes measurable
+scene/scoring limits for owner and qualified physical review; those numeric
+limits are not yet accepted. The [bench plan](../../hardware/prototype-a/bench-plan.md)
+records host/card identification and future operation boundaries. macOS,
+Windows and Linux are acceptable host choices; actual host versions and executed
+results remain to be recorded. Card reader, USB-C data cable and soldering tools
+are reported available; measurement equipment is not confirmed.
+
+These are preparation artifacts for 0.3/0.5/0.7, not electrical signoff, a frozen
+rubric or card/device qualification. They do not modify package 0.6 contracts.
+
 ## 1. Product boundary and evidence
 
 Power-on recording is automatic when a qualified FAT32 card is available.
