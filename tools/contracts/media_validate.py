@@ -118,12 +118,22 @@ _MANIFEST_SUPPRESSED: frozenset[tuple[str, str]] = frozenset(MANIFEST_DEDICATED_
 #: :data:`_MANIFEST_SUPPRESSED`: a wire body meets those six rules and none of the numeric
 #: bounds, and silencing a keyword whose dedicated check never ran on this path would leave
 #: the defect reported by nobody at all.
+#:
+#: The three ``type`` rows are here because a member of the wrong type is still a *present*
+#: member, and those rules refuse any present value that is not the string they name; without
+#: them an integer ``device_id`` would be reported twice for one defect. ``start_utc`` and
+#: ``recovered`` are deliberately absent: their rules read a string and a bool and stay silent
+#: on a member of some other type, so the mirror's own keyword is the only thing that can name
+#: such a value on this path.
 MANIFEST_WIRE_SUPPRESSED: frozenset[tuple[str, str]] = frozenset(
     {
         ("v", "const"),
         ("device_id", "pattern"),
+        ("device_id", "type"),
         ("boot_id", "pattern"),
+        ("boot_id", "type"),
         ("clip_id", "pattern"),
+        ("clip_id", "type"),
         ("close_reason", "enum"),
         ("source", "enum"),
         ("start_utc", "pattern"),

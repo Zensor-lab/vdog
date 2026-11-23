@@ -1900,6 +1900,12 @@ def test_one_wire_defect_is_named_once_by_the_rule_that_actually_runs_it(
 
     not_hex = {**manifest, "clip_id": "z" * 32 + "-" + "z" * 8}
     assert codes(not_hex) == {E.ID_SYNTAX_INVALID}, codes(not_hex)
+    # A member of the wrong type is still a present member, and these three rules refuse any
+    # present value that is not the string they name — so the mirror's ``type`` keyword is the
+    # duplicate here, not the report.
+    for field in ("device_id", "boot_id", "clip_id"):
+        wrong_type = {**manifest, field: 5}
+        assert codes(wrong_type) == {E.ID_SYNTAX_INVALID}, (field, codes(wrong_type))
     melted = {**manifest, "close_reason": "melted"}
     assert codes(melted) == {E.CLOSE_REASON_UNKNOWN}, codes(melted)
     unknown_source = {**manifest, "clock": {**manifest["clock"], "source": "melted"}}
@@ -1908,6 +1914,12 @@ def test_one_wire_defect_is_named_once_by_the_rule_that_actually_runs_it(
     # mirror's own keyword is still the only thing that can name one out of range.
     too_many = {**manifest, "frame_count": 10_000}
     assert codes(too_many) == {E.MANIFEST_DECODED_SCHEMA}, codes(too_many)
+    # And the two exclusions from the set are not an oversight: those rules read a string and
+    # a bool, so on a member of some other type the keyword is the only report there is.
+    wrong_timestamp = {**manifest, "clock": {**manifest["clock"], "start_utc": 5}}
+    assert codes(wrong_timestamp) == {E.MANIFEST_DECODED_SCHEMA}, codes(wrong_timestamp)
+    wrong_recovered = {**manifest, "recovered": "yes"}
+    assert codes(wrong_recovered) == {E.MANIFEST_DECODED_SCHEMA}, codes(wrong_recovered)
 
 
 def test_the_size_bound_is_applied_to_the_bytes_before_the_field_rules(media_schemas: dict) -> None:
