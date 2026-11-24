@@ -26,6 +26,15 @@ device operation remains unverified here. For setup and USB flashing, follow the
 8. [Validation](validation.md), [security](security.md), and
    [references](references.md).
 
+## Hardware preparation alongside package 0.6
+
+Start with [Prototype A](../hardware/prototype-a/README.md) for 0.3 identities,
+candidate pins and power/service review, the [daytime recording rubric](specs/recording-acceptance.md)
+for 0.5, and the [card/bench procedure](../hardware/prototype-a/bench-plan.md)
+for 0.7. The [bounded preparation plan](plans/0.3-0.5-0.7-hardware-preparation.md)
+records scope, checks and remaining evidence. These documents do not mark
+wiring, physical limits, actual cards or hardware operations as approved.
+
 ## How to use the baseline
 
 Product requirements describe desired behavior, not demonstrated capabilities.
