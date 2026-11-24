@@ -57,8 +57,19 @@ INDEX_EMPTY = "INDEX_EMPTY"
 # --- JPEG ---------------------------------------------------------------------
 JPEG_SOI_MISSING = "JPEG_SOI_MISSING"
 JPEG_EOI_MISSING = "JPEG_EOI_MISSING"
+# The decoder cannot read the slice, and, with a detail that begins "marker chain to
+# EOI:", the structural walk of :func:`tools.contracts.jpeg.first_image_end_offset`
+# could not finish it either. Both are the same claim — the bytes do not hold the image
+# the record indexes — and neither lets the validator name trailing bytes it never
+# located, which is JPEG_TRAILING_DATA's alone.
 JPEG_DECODE_FAILED = "JPEG_DECODE_FAILED"
 JPEG_SOF_DIMENSION_MISMATCH = "JPEG_SOF_DIMENSION_MISMATCH"
+# The indexed slice runs past the first image's EOI: media-format.md §3 says each
+# record starts where the preceding one ends and the final one ends at the exact
+# file size, so one indexed slice is exactly one JPEG — the decoder reads only the
+# first image, and the bytes beside it are frame data no record or playback time
+# will ever reach.
+JPEG_TRAILING_DATA = "JPEG_TRAILING_DATA"
 
 # --- Manifest / active record -------------------------------------------------
 MANIFEST_MISSING = "MANIFEST_MISSING"
@@ -86,6 +97,11 @@ CLOCK_TIMESTAMP_INVALID = "CLOCK_TIMESTAMP_INVALID"
 CLOCK_SOURCE_UNKNOWN_VALUE = "CLOCK_SOURCE_UNKNOWN_VALUE"
 DURATION_LE_FINAL_T_US = "DURATION_LE_FINAL_T_US"
 DURATION_TOO_LONG = "DURATION_TOO_LONG"
+# media-format.md §4 fixes a recovered segment's close time: last frame time plus
+# one nominal frame period, clamped to the maximum duration. A measured close is
+# not available across a reset, so a recovered manifest whose duration is any
+# other number states a playback end the format cannot have produced.
+DURATION_RECOVERED_MISMATCH = "DURATION_RECOVERED_MISMATCH"
 DIMENSIONS_EXCEEDED = "DIMENSIONS_EXCEEDED"
 CLOSE_REASON_UNKNOWN = "CLOSE_REASON_UNKNOWN"
 RECOVERED_CLOSE_REASON_DISAGREE = "RECOVERED_CLOSE_REASON_DISAGREE"
@@ -187,6 +203,7 @@ CODES: frozenset[str] = frozenset(
         JPEG_EOI_MISSING,
         JPEG_DECODE_FAILED,
         JPEG_SOF_DIMENSION_MISMATCH,
+        JPEG_TRAILING_DATA,
         # manifest / active record
         MANIFEST_MISSING,
         MANIFEST_TOO_LARGE,
@@ -212,6 +229,7 @@ CODES: frozenset[str] = frozenset(
         CLOCK_SOURCE_UNKNOWN_VALUE,
         DURATION_LE_FINAL_T_US,
         DURATION_TOO_LONG,
+        DURATION_RECOVERED_MISMATCH,
         DIMENSIONS_EXCEEDED,
         CLOSE_REASON_UNKNOWN,
         RECOVERED_CLOSE_REASON_DISAGREE,

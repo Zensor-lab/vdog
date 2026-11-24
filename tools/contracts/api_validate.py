@@ -111,14 +111,16 @@ def validate_api_fixture(
     entry: Mapping[str, Any],
     specs: Mapping[str, Mapping[str, Any]],
     media_schemas: Mapping[str, Mapping[str, Any]],
-    clip_dimensions: Mapping[str, tuple[int, int]] | None = None,
+    clip_dimensions: Mapping[tuple[str, str], tuple[int, int]] | None = None,
 ) -> list[Violation]:
     """Validate one committed API vector; ``specs`` holds the two parsed documents.
 
-    ``clip_dimensions`` maps a committed clip's id to the source size its own manifest
-    records, which is the only way a derivative vector's ``crop`` can be measured against
-    the file it claims to have been cut from. Its absence is silence, never a pass: a
-    clip this corpus does not ship has no size this validator may invent.
+    ``clip_dimensions`` maps a committed clip's ``(device_id, clip_id)`` pair to the
+    source size its own manifest records, which is the only way a derivative vector's
+    ``crop`` can be measured against the file it claims to have been cut from — and the
+    pair is the key because ``clip_id`` is scoped by ``device_id`` in backend requests.
+    Its absence is silence, never a pass: a clip this corpus does not ship has no size
+    this validator may invent.
     """
     operation = ALL_OPERATIONS.get(str(entry.get("operation")))
     if operation is None:
@@ -376,10 +378,14 @@ def validate_api_fixture(
                 continue
             violations.extend(rule(context, name, value))
 
-    if direction == "response" and request_headers:
+    if direction == "response" and request_headers is not None:
         # The request this answer claims to answer is itself a request: the required-
         # header walk and the header rules judge it too, and the range/precondition
-        # pairing below reads it as the only statement of what was actually asked.
+        # pairing below reads it as the only statement of what was actually asked. A
+        # sidecar that is present but empty is still the request this vector claims
+        # it answered — §4 makes the lease, the specifier and the precondition facts
+        # about the pair whatever the request happened to omit — so only an absent
+        # sidecar keeps silence.
         violations.extend(
             _evaluate_request_sidecar(entry, operation, status, context.headers, request_headers)
         )
@@ -910,7 +916,12 @@ def _requested_span_mismatch(
 #:   hands the sidecar to the request row whatever the answer turned out to be, because
 #:   a gate is a fact about the answer. The one exemption is the 416, whose subject *is*
 #:   this specifier — refusing a form §4 refuses is the contract working, so the refused
-#:   form may not be named a second defect there.
+#:   form may not be named a second defect there. Only the forms a 416 may honestly
+#:   refuse are excused: an ordered specifier its own ``bytes */<total>`` shows the file
+#:   holds is refused as a sidecar defect (see ``_evaluate_request_sidecar``), and an
+#:   answer that states no total is left to this rule alone — the deliberate asymmetry
+#:   is that a 416 owes a ``Content-Range`` this contract does not require, so the
+#:   sidecar path has nothing to check the specifier against.
 
 
 def _rule_range(context: _HeaderContext, name: str, value: str) -> list[Violation]:
@@ -1249,7 +1260,12 @@ def _evaluate_request_sidecar(
     Syntax rules (``If-Match``, the lease id, unknown names) are never excused: they
     judge what the request itself says, whatever the answer turned out to be. A vector
     without a sidecar keeps every existing behaviour, because an absent request is
-    silence, not a pass.
+    silence, not a pass — while a sidecar that is *present but empty* is still the
+    request this vector claims to have answered, and owes every header §4 requires of
+    one. Two pairing rules complete the answer's side of the pair: a ``416`` may refuse
+    only a specifier its own ``Content-Range: bytes */<total>`` proves the file cannot
+    serve, and a ``206`` grants bytes only for a specifier some request actually sent —
+    §4's "No Range returns 200" reads both ways.
     """
     location = f"{entry['id']}: request sidecar"
     request_context = _HeaderContext(
@@ -1276,11 +1292,28 @@ def _evaluate_request_sidecar(
     # §15.5.17). Every other status, including the 401/404/409/410/412 gates, is silent
     # about the range *as an answer* — and a request is judged on its own, exactly as the
     # request row of the decision table above says, so a gated answer does not excuse a
-    # specifier no request of this contract may send.
+    # specifier no request of this contract may send. The 416's excuse reaches only the
+    # forms it legitimately refuses — those the anchored ``_SINGLE_RANGE`` will not parse
+    # at all, and a supported spelling whose ordering no file can satisfy — never a
+    # well-formed ordered request, whose refusal the satisfiability rule below judges.
     refuses_the_range = isinstance(status, int) and status == 416
+    specifier = _lookup_header(request_headers, "Range")
+    excused_at_416 = False
+    ordered_specifier: tuple[int, int | None] | None = None
+    if refuses_the_range and specifier is not None:
+        parsed = _SINGLE_RANGE.match(specifier)
+        if parsed is None:
+            excused_at_416 = True  # multipart, suffix, hyphenless, junk: the 416 refuses it
+        else:
+            start = int(parsed.group(1))
+            end = _as_int(parsed.group(2)) if parsed.group(2) else None
+            if end is not None and end < start:
+                excused_at_416 = True  # bytes past their own end: the request row's form
+            else:
+                ordered_specifier = (start, end)
     for name, value in request_headers.items():
-        if name.lower() == "range" and refuses_the_range:
-            continue  # the 416 is the answer about this very specifier
+        if name.lower() == "range" and refuses_the_range and excused_at_416:
+            continue  # the 416 is the answer about this very refused form
         rule = HEADER_RULES.get(name.lower())
         if rule is None:
             found.append(
@@ -1292,7 +1325,6 @@ def _evaluate_request_sidecar(
             )
             continue
         found.extend(rule(request_context, name, value))
-    specifier = _lookup_header(request_headers, "Range")
     if specifier is not None and status == 200:
         match = _SINGLE_RANGE.match(specifier)
         start = int(match.group(1)) if match is not None else 0
@@ -1311,6 +1343,45 @@ def _evaluate_request_sidecar(
                     f"{end if end is not None else ''} is the wrong grant",
                 )
             )
+    if ordered_specifier is not None:
+        # RFC 9110 §15.5.17: the 416 refuses a range the file cannot satisfy. Its
+        # ``Content-Range: bytes */<total>`` names the file's size, so a refusal of a
+        # supported, ordered specifier that *fits* inside that total is a refusal the
+        # answer's own proof contradicts — bytes the file holds, refused as though it
+        # did not hold them. Without a `*/<total>` there is nothing to check against,
+        # and the header's own rules own its absence or shape.
+        start, end = ordered_specifier
+        declared = _lookup_header(response_headers, "Content-Range")
+        total = _STAR_CONTENT_RANGE.match(declared) if declared is not None else None
+        if total is not None:
+            file_bytes = int(total.group(1))
+            if start < file_bytes and (end is None or end < file_bytes):
+                found.append(
+                    Violation(
+                        E.CONTENT_RANGE_INVALID,
+                        f"{location}: Range",
+                        f"{specifier!r} asks for bytes the {file_bytes}-byte file holds; a 416 "
+                        f"refuses only a range its bytes */{file_bytes} proves unsatisfiable, "
+                        f"and this specifier is inside it",
+                    )
+                )
+    if isinstance(status, int) and status == 206 and specifier is None and (
+        _lookup_header(response_headers, "Range") is None
+    ):
+        # A 206 is a grant of a window, and the window has to be the one some request
+        # asked for: §4's "No Range returns 200" reads both ways. The sidecar is the
+        # precise statement of the question and the vector's own header map the
+        # historical echo — neither present means this answer grants bytes no range
+        # request justified.
+        found.append(
+            Violation(
+                E.CONTENT_RANGE_INVALID,
+                f"{location}: Range",
+                "this 206 grants bytes but neither the request it answers nor the answer "
+                "itself names a Range; §4's \"No Range returns 200\" reads both ways: a 206 "
+                "grants bytes no range request justified",
+            )
+        )
     if_match = _lookup_header(request_headers, "If-Match")
     if if_match is not None and grants:
         etag = _lookup_header(response_headers, "ETag")
@@ -1601,22 +1672,30 @@ def validate_upload_chunk_body(
 def validate_derivative_crop(
     entry: Mapping[str, Any],
     body: Mapping[str, Any],
-    clip_dimensions: Mapping[str, tuple[int, int]],
+    clip_dimensions: Mapping[tuple[str, str], tuple[int, int]],
 ) -> list[Violation]:
     """A recorded crop has to lie inside the source the record names.
 
     ``CropRegion`` states a rectangle and the two bounds JSON Schema can state for it;
     that a crop is measured *in the source's pixels* is a statement about a pair of
     documents, since the encoder's window onto a 64×64 baseline cannot start at y=120. The
-    source size comes from the committed manifest of the very clip this record cites, so
-    the check is a fact about the corpus rather than an invented bound. A clip id nobody
-    shipped is silence: this validator has no size for it and must not conjure one.
+    source size comes from the committed manifest of the very clip this record cites —
+    and the citation is the ``(device_id, clip_id)`` pair, because ``clip_id`` is scoped
+    by ``device_id`` in backend requests: one id may name two differently-sized segments
+    on two devices, and measuring either record's crop against the other's pixels would
+    certify an encode of impossible geometry. A clip pair nobody shipped is silence:
+    this validator has no size for it and must not conjure one.
     """
+    device_id = body.get("device_id")
     clip_id = body.get("clip_id")
     crop = body.get("crop")
-    if not isinstance(clip_id, str) or not isinstance(crop, Mapping):
-        return []  # the bound schema reports a record without an id or without a crop
-    size = clip_dimensions.get(clip_id)
+    if (
+        not isinstance(device_id, str)
+        or not isinstance(clip_id, str)
+        or not isinstance(crop, Mapping)
+    ):
+        return []  # the bound schema reports a record without a device, an id or a crop
+    size = clip_dimensions.get((device_id, clip_id))
     if size is None:
         return []
     width, height = size
@@ -1638,7 +1717,8 @@ def validate_derivative_crop(
                     E.API_SCHEMA,
                     f"{entry['id']}: derivative.crop.{axis}",
                     f"crop {axis}={offset} with {extent_key}={extent} reaches "
-                    f"{offset + extent}, past the {limit}-pixel edge of source {clip_id}",
+                    f"{offset + extent}, past the {limit}-pixel edge of source "
+                    f"{device_id}/{clip_id}",
                 )
             )
     return found

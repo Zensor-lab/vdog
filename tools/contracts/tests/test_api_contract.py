@@ -325,6 +325,18 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     # valid vectors; a second row here would be a dict literal silently shadowing the first.
     "backend/invalid/upload-patch-request-wrong-checksum": ("CHUNK_HASH_MISMATCH",),
     "backend/invalid/upload-patch-request-length-mismatch": ("CONTENT_LENGTH_MISMATCH",),
+    # Round 7: the four validator defects' own vectors — the 416 that refuses bytes its
+    # own total proves it holds, the 206 that answers a request nobody sent, the sidecar
+    # that is present and empty, the slice that is two JPEGs, the recovered close time a
+    # manifest cannot have measured, and the one id two devices share at two sizes.
+    "device/invalid/clip-file-response-416-in-bounds-sidecar": ("CONTENT_RANGE_INVALID",),
+    "device/invalid/clip-file-response-206-no-range-sidecar": ("CONTENT_RANGE_INVALID",),
+    "device/invalid/clip-file-response-200-empty-sidecar": ("HEADER_MISSING",),
+    "media/invalid/double-jpeg-record": ("JPEG_TRAILING_DATA",),
+    "media/invalid/recovered-duration-mismatch": ("DURATION_RECOVERED_MISMATCH",),
+    "media/valid/wide-second-device": (),
+    "backend/valid/derivative-response-200-wide-second-device": (),
+    "backend/invalid/derivative-response-200-crop-out-of-bounds-second-device": ("API_SCHEMA",),
 }
 
 
@@ -2067,25 +2079,36 @@ def test_a_crop_is_measured_in_the_source_it_cites(
 
 
 def test_a_crop_of_a_clip_the_corpus_does_not_ship_is_silence() -> None:
-    """No committed manifest, no invented source size."""
+    """No committed manifest, no invented source size — and no cited device, no lookup."""
     from tools.contracts.api_validate import validate_derivative_crop
 
+    device_id = "1" * 32
+    clip_id = "0" * 32 + "-00000000"
     body = {
-        "clip_id": "0" * 32 + "-00000000",
+        "device_id": device_id,
+        "clip_id": clip_id,
         "crop": {"x": 0, "y": 60, "width": 64, "height": 36},
     }
     assert validate_derivative_crop({"id": "unit"}, body, {}) == []
-    found = validate_derivative_crop({"id": "unit"}, body, {body["clip_id"]: (64, 64)})
+    found = validate_derivative_crop({"id": "unit"}, body, {(device_id, clip_id): (64, 64)})
     assert [v.code for v in found] == [E.API_SCHEMA], [v.render() for v in found]
     # Both axes are measured, and a rectangle the schema cannot read is the schema's to report.
     both = validate_derivative_crop(
         {"id": "unit"},
         {**body, "crop": {"x": 8, "y": 60, "width": 64, "height": 36}},
-        {body["clip_id"]: (64, 64)},
+        {(device_id, clip_id): (64, 64)},
     )
     assert [v.location.rsplit(".", 1)[-1] for v in both] == ["x", "y"]
-    assert validate_derivative_crop({"id": "unit"}, {**body, "crop": {"x": "0"}}, {body["clip_id"]: (64, 64)}) == []
-    assert validate_derivative_crop({"id": "unit"}, {"crop": {"x": 0, "y": 60}}, {body["clip_id"]: (64, 64)}) == []
+    assert validate_derivative_crop({"id": "unit"}, {**body, "crop": {"x": "0"}}, {(device_id, clip_id): (64, 64)}) == []
+    assert validate_derivative_crop({"id": "unit"}, {"crop": {"x": 0, "y": 60}}, {(device_id, clip_id): (64, 64)}) == []
+    # A record that cites no device is not measured against any device's pixels: the
+    # id alone would let a same-id clip from another device bound it.
+    assert validate_derivative_crop(
+        {"id": "unit"}, {k: v for k, v in body.items() if k != "device_id"}, {(device_id, clip_id): (64, 64)}
+    ) == []
+    assert validate_derivative_crop(
+        {"id": "unit"}, {**body, "device_id": 7}, {(device_id, clip_id): (64, 64)}
+    ) == []
 
 
 def test_an_identifier_refuses_the_terminator_still_attached(
@@ -2226,14 +2249,17 @@ def test_a_grant_ships_the_etag_its_request_is_conditional_on() -> None:
     """A 200 or 206 under a precondition it does not satisfy is bytes handed out wrongly."""
     whole_file = {"X-Clip-Lease": RESUME["X-Clip-Lease"], "If-Match": f'"{"a" * 64}"'}
     mismatched = {**whole_file, "If-Match": f'"{"b" * 64}"'}
-    for request in ({**RESUME, "If-Match": f'"{"b" * 64}"'}, mismatched):
-        assert _found_codes(_sidecar_judgment(206, _GRANT_HEADERS, request)) == {
-            E.IF_MATCH_ETAG_DISAGREE
-        }, request
+    # The two requests state different pairs. The ranged one is a well-formed read whose
+    # only defect is the precondition. The Range-less one also asks for nothing, and a 206
+    # grants a window — §4's "No Range returns 200" reads both ways — so its judgment
+    # carries the pairing finding beside the precondition's, naming the same sidecar.
+    for request, codes in (
+        ({**RESUME, "If-Match": f'"{"b" * 64}"'}, {E.IF_MATCH_ETAG_DISAGREE}),
+        (mismatched, {E.IF_MATCH_ETAG_DISAGREE, E.CONTENT_RANGE_INVALID}),
+    ):
+        assert _found_codes(_sidecar_judgment(206, _GRANT_HEADERS, request)) == codes, request
         missing_etag = {name: value for name, value in _GRANT_HEADERS.items() if name != "ETag"}
-        assert _found_codes(_sidecar_judgment(206, missing_etag, request)) == {
-            E.IF_MATCH_ETAG_DISAGREE
-        }, request
+        assert _found_codes(_sidecar_judgment(206, missing_etag, request)) == codes, request
     # A whole-file answer is conditional too: the ETag is the file's, whatever was asked.
     assert _found_codes(
         _sidecar_judgment(200, {"ETag": f'"{"a" * 64}"', "Content-Length": "1000"}, mismatched)
@@ -2247,6 +2273,86 @@ def test_a_grant_ships_the_etag_its_request_is_conditional_on() -> None:
     assert [violation.location for violation in located] == [
         "unit:sidecar: request sidecar: If-Match"
     ]
+
+
+# --- Round 7: the refusal that contradicts its own proof, the grant nobody asked
+#     for, and the sidecar that is present and empty -----------------------------------
+
+
+def test_a_416_refuses_only_a_range_its_own_total_proves_unsatisfiable() -> None:
+    """A 416 refuses a range the file cannot serve; its ``bytes */<total>`` is the proof (AC-06).
+
+    The excusal a 416 buys the sidecar is bounded by what a 416 may honestly refuse. A
+    specifier the answer's own declared total places inside the file is bytes the file
+    holds, so refusing it contradicts the answer's own statement of the file's size —
+    and the sidecar that carries it is the defect, since the vector is asserting the pair.
+    """
+    refusal = {"Accept-Ranges": "bytes", "Content-Range": "bytes */1712"}
+    # The forms a 416 legitimately refuses: past the end, a suffix the file may resolve
+    # either way, an ordering no file satisfies, and a spelling §4 never supports.
+    for refused in ("bytes=1712-", "bytes=2000-3000", "bytes=-100", "bytes=99-0", "bytes=0-1,4-5"):
+        assert _found_codes(
+            _sidecar_judgment(416, refusal, {**RESUME, "Range": refused})
+        ) == set(), refused
+    # The forms it may not refuse: both supported spellings of a window inside the file.
+    for served in ("bytes=0-31", "bytes=100-", "bytes=1711-1711"):
+        found = _sidecar_judgment(416, refusal, {**RESUME, "Range": served})
+        assert _found_codes(found) == {E.CONTENT_RANGE_INVALID}, served
+        assert [violation.location for violation in found] == [
+            "unit:sidecar: request sidecar: Range"
+        ], served
+    # With no ``*/<total>`` there is nothing to check the specifier against, and the
+    # header's own rules own its absence or shape: the 416 stays as quiet as before.
+    for headers in ({"Accept-Ranges": "bytes"}, {}, {"Content-Range": "bytes 0-31/1712"}):
+        assert _found_codes(
+            _sidecar_judgment(416, headers, {**RESUME, "Range": "bytes=0-31"})
+        ) == set(), headers
+    # The boundary the rule is written at: the byte just past the end is unsatisfiable.
+    assert _found_codes(
+        _sidecar_judgment(416, refusal, {**RESUME, "Range": "bytes=1711-1712"})
+    ) == set()
+
+
+def test_a_206_grants_only_a_window_some_request_asked_for() -> None:
+    """§4's "No Range returns 200" reads both ways: a 206 grants a window that was asked for (AC-06)."""
+    whole_file = {name: value for name, value in RESUME.items() if name != "Range"}
+    # The sidecar is the statement of the question: without it, the grant has no subject.
+    found = _sidecar_judgment(206, _GRANT_HEADERS, whole_file)
+    assert _found_codes(found) == {E.CONTENT_RANGE_INVALID}, _found_codes(found)
+    assert [violation.location for violation in found] == ["unit:sidecar: request sidecar: Range"]
+    # The answer's own echo of the specifier states the pair too, and is the historical
+    # spelling the 416-reversed control already ships.
+    assert _found_codes(
+        _sidecar_judgment(206, {**_GRANT_HEADERS, "Range": "bytes=0-99"}, whole_file)
+    ) == set()
+    # A specifier the sidecar carries leaves the rule alone, whatever its window.
+    assert _found_codes(_sidecar_judgment(206, _GRANT_HEADERS, RESUME)) == set()
+    # A whole-file answer grants no window, so a Range-less request is exactly its pair.
+    assert _found_codes(
+        _sidecar_judgment(
+            200, {"ETag": f'"{"a" * 64}"', "Content-Length": "1000"}, whole_file
+        )
+    ) == set()
+
+
+def test_an_empty_request_sidecar_is_a_request_judged_as_one(
+    by_id: dict, specs: dict, media_schemas: dict
+) -> None:
+    """A present-but-empty sidecar asserts a pair, and the pair owes every required header (AC-06).
+
+    ``{}`` and an absent file are different facts: the second is silence about what was
+    asked, the first is a claim that *this* was asked. §4 makes the lease a fact about
+    the request, so an empty map is walked, not mistaken for no sidecar at all.
+    """
+    entry = by_id["device/invalid/clip-file-response-200-empty-sidecar"]
+    found = _violations(entry, specs, media_schemas)
+    assert {violation.code for violation in found} == {E.HEADER_MISSING}, [
+        violation.render() for violation in found
+    ]
+    assert found[0].location.endswith(": request sidecar: X-Clip-Lease"), found[0].render()
+    # The same answer with no sidecar file at all keeps its silence: nothing is asserted.
+    quiet = {**entry, "files": [name for name in entry["files"] if "request.headers" not in name]}
+    assert _violations(quiet, specs, media_schemas) == []
 
 
 def test_a_stored_clip_may_not_carry_a_manifest_of_another_clip(
@@ -2457,9 +2563,14 @@ def test_a_crop_written_in_an_integral_notation_is_still_measured(
     )
     from tools.contracts.api_validate import validate_derivative_crop
 
-    clip_id = _body(by_id["backend/valid/derivative-response-200"])["clip_id"]
-    size = {clip_id: (64, 64)}
-    crop = lambda y: {"clip_id": clip_id, "crop": {"x": 0, "y": y, "width": 64, "height": 36}}
+    record = _body(by_id["backend/valid/derivative-response-200"])
+    device_id, clip_id = record["device_id"], record["clip_id"]
+    size = {(device_id, clip_id): (64, 64)}
+    crop = lambda y: {
+        "device_id": device_id,
+        "clip_id": clip_id,
+        "crop": {"x": 0, "y": y, "width": 64, "height": 36},
+    }
     # The three spellings of one integer, and the two members the schema cannot read.
     for notation in (120, 120.0, decimal.Decimal("1.2e2")):
         assert [v.code for v in validate_derivative_crop({"id": "unit"}, crop(notation), size)] == [
@@ -2489,8 +2600,80 @@ def test_a_profile_written_in_integral_notation_still_measures_its_source() -> N
             continue
         data = (FIXTURES / entry["id"] / "manifest.json").read_bytes()
         if b'"width":64.0' in data:
-            notation_clip_ids.append(json.loads(data)["clip_id"])
+            manifest = json.loads(data)
+            notation_clip_ids.append((manifest["device_id"], manifest["clip_id"]))
     assert notation_clip_ids, "no clip spells its profile dimensions in integral notation"
     dimensions = clip_dimensions(FIXTURES, entries)
-    for clip_id in notation_clip_ids:
-        assert dimensions.get(clip_id) == (64, 64), clip_id
+    for key in notation_clip_ids:
+        assert dimensions.get(key) == (64, 64), key
+
+
+def test_one_clip_id_on_two_devices_keeps_two_source_sizes(
+    by_id: dict, specs: dict, media_schemas: dict
+) -> None:
+    """``clip_id`` is scoped by ``device_id``, so the size map is keyed by the pair (AC-05/AC-06).
+
+    The corpus commits two finalized captures that share a ``clip_id`` and differ in
+    profile size: the baseline's 64×64 and the second device's 128×128. A map keyed by
+    the id alone would hand whichever manifest the walk happened to read first to both
+    devices, and one of the two crops below would be certified or refused on the other
+    device's pixels — an order-dependent verdict on identical bytes.
+    """
+    from tools.contracts.validate import clip_dimensions
+
+    document = json.loads((FIXTURES / "fixtures.json").read_bytes().decode("utf-8"))
+    entries = document["fixtures"]
+    forward = clip_dimensions(FIXTURES, entries)
+    backward = clip_dimensions(FIXTURES, list(reversed(entries)))
+    baseline = by_id["backend/invalid/derivative-response-200-crop-out-of-bounds-second-device"]
+    wide = by_id["backend/valid/derivative-response-200-wide-second-device"]
+    narrow_key = (_body(baseline)["device_id"], _body(baseline)["clip_id"])
+    wide_key = (_body(wide)["device_id"], _body(wide)["clip_id"])
+    assert narrow_key[1] == wide_key[1], "the two records must share the id to prove the scoping"
+    assert narrow_key[0] != wide_key[0], "the two records must name different devices"
+    assert forward[narrow_key] == (64, 64) and forward[wide_key] == (128, 128)
+    # Order of the walk changes nothing: the pair, not the first entry seen, decides.
+    assert forward == backward
+    # The two committed records differ in exactly the device, and the verdict follows it.
+    assert _body(baseline)["crop"] == _body(wide)["crop"]
+    assert _observed(baseline, specs, media_schemas) == {E.API_SCHEMA}
+    assert _observed(wide, specs, media_schemas) == set()
+    assert _violations(baseline, specs, media_schemas)[0].location.endswith("derivative.crop.x")
+    # A manifest without a device cannot scope anything: it is absent from the map, and
+    # the crop rule treats absence as silence rather than as a zero-pixel source.
+    unscoped = {key: size for key, size in forward.items() if key[0] != narrow_key[0]}
+    assert narrow_key not in unscoped
+    from tools.contracts.api_validate import validate_derivative_crop
+
+    body = dict(_body(baseline))
+    assert validate_derivative_crop({"id": "unit"}, body, unscoped) == []
+
+
+def test_a_manifest_that_cites_no_device_contributes_no_source_size(tmp_path) -> None:
+    """A manifest whose ``device_id`` is not a string is scoped to no device, so it is not indexed (AC-05).
+
+    The pair is what the map keys on; a record that states its size beside a device that
+    is not a device id cannot contribute a bound to any crop, and a map that guessed the
+    pair from such a manifest would measure some other device's pixels against it.
+    """
+    from tools.contracts.bounds import MANIFEST_NAME
+    from tools.contracts.validate import clip_dimensions
+
+    manifest = json.loads((FIXTURES / "media/valid/baseline" / MANIFEST_NAME).read_bytes())
+    directory = tmp_path / "media" / "valid" / "one-clip"
+    directory.mkdir(parents=True)
+    path = directory / MANIFEST_NAME
+    entry = {
+        "id": "media/valid/one-clip",
+        "kind": "clip",
+        "expected": "valid",
+        "files": [MANIFEST_NAME],
+    }
+    path.write_text(json.dumps({**manifest, "device_id": 7}), encoding="utf-8")
+    assert clip_dimensions(tmp_path, [entry]) == {}
+    path.write_text(json.dumps({**manifest, "clip_id": None}), encoding="utf-8")
+    assert clip_dimensions(tmp_path, [entry]) == {}
+    path.write_bytes((FIXTURES / "media/valid/baseline" / MANIFEST_NAME).read_bytes())
+    assert clip_dimensions(tmp_path, [entry]) == {
+        (manifest["device_id"], manifest["clip_id"]): (64, 64)
+    }

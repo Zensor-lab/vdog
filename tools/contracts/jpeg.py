@@ -33,6 +33,18 @@ SOF_MARKERS: Final[frozenset[int]] = frozenset(
 
 _MARKER_SEGMENT_LENGTH = 2
 
+#: The codes that, seen after an ``FF`` inside a scan, are structure rather than
+#: entropy-coded data: the stuffed byte, the restart range, and the table, definition
+#: and start-of-scan segments a multi-scan image carries between scans (DHT ``0xC4``,
+#: DAC ``0xCC``, DNL ``0xDC``, SOS ``0xDA``), read by their length as the scan
+#: continues. Every other code inside a scan is data — including ``01``, which is a
+#: standalone marker in a header but an un-stuffed byte in entropy data. This is the
+#: scan half of the walk only: :func:`sof_dimensions` stops at the first SOF and never
+#: reads scan data at all.
+_IN_SCAN_MARKER_CODES: Final[frozenset[int]] = frozenset(
+    {0x00, 0xC4, 0xCC, 0xDC, 0xDA, SOI_MARKER, EOI_MARKER, *range(0xD0, 0xD8)}
+)
+
 
 class JpegStructureError(ValueError):
     """Raised when a byte string is not a walkable JPEG marker sequence."""
@@ -121,6 +133,72 @@ def sof_dimensions(data: bytes) -> tuple[int, int] | None:
             return width, height
         pos = segment_end
     return None
+
+
+def first_image_end_offset(data: bytes) -> int:
+    """Return the offset of the marker that ends the first image in ``data``.
+
+    Walks the marker chain structurally like :func:`sof_dimensions` — fill bytes,
+    standalone markers (``00``, ``01``, ``D0``-``D7``), variable-length segments read
+    by their length field — and then, once a scan (``DA``) has been opened, walks the
+    entropy-coded data as a scan: ``FF00`` is a stuffed byte, ``D0``-``D7`` are restart
+    markers, and ``C4``/``CC``/``DC``/``DA`` (DHT, DAC, DNL and the next SOS of a
+    multi-scan image) are the segments a scan may legitimately be interrupted by, read
+    by length as the scan continues. The first ``D9`` (EOI) ends the image. The
+    returned offset is that of the ``FF`` starting the two-byte marker, so the first
+    image is exactly ``data[: first_image_end_offset(data) + 2]``.
+
+    A second ``D8`` (SOI) *inside scan data* means the first image ended early: the
+    data cannot hold a well-formed image at all, so the walk returns that marker's
+    offset for the caller to name rather than raising — a second JPEG concatenated
+    behind the first, or spliced into the middle of one, is precisely what this offset
+    exists to reveal. Any other structural failure (a truncated marker or segment)
+    raises :class:`JpegStructureError`, as the other walks in this module do.
+    """
+    if not data.startswith(JPEG_SOI):
+        raise JpegStructureError("payload does not start with SOI")
+    pos = 2
+    end = len(data)
+    scanning = False
+    while pos < end:
+        if scanning and data[pos] != 0xFF:
+            pos += 1  # entropy-coded data carries no structure to read
+            continue
+        if data[pos] != 0xFF:
+            raise JpegStructureError(f"expected marker prefix at offset {pos}")
+        while pos < end and data[pos] == 0xFF:
+            pos += 1  # fill bytes may precede a marker
+        if pos >= end:
+            raise JpegStructureError("truncated marker sequence")
+        marker = data[pos]
+        if scanning and marker not in _IN_SCAN_MARKER_CODES:
+            pos += 1  # entropy-coded data that merely looks like a marker prefix
+            continue
+        if scanning:
+            if marker == 0x00 or 0xD0 <= marker <= 0xD7:
+                pos += 1  # stuffed byte or restart: the scan continues
+                continue
+            if marker == EOI_MARKER:
+                return pos - 1  # the FF starting this EOI is the image's last byte
+            if marker == SOI_MARKER:
+                return pos - 1  # a new image is starting: this one ended early
+        pos += 1
+        if marker == 0x00 or marker == 0x01 or marker == SOI_MARKER or 0xD0 <= marker <= 0xD7:
+            continue  # standalone markers carry no segment length
+        if marker == EOI_MARKER:
+            return pos - 2  # EOI before any scan: the image ends here
+        if pos + _MARKER_SEGMENT_LENGTH > end:
+            raise JpegStructureError("segment length field truncated")
+        length = int.from_bytes(data[pos : pos + _MARKER_SEGMENT_LENGTH], "big")
+        if length < _MARKER_SEGMENT_LENGTH:
+            raise JpegStructureError(f"invalid segment length {length}")
+        segment_end = pos + length
+        if segment_end > end:
+            raise JpegStructureError("segment extends past the payload")
+        if marker == 0xDA:  # SOS: everything after the header is scan data
+            scanning = True
+        pos = segment_end
+    raise JpegStructureError("marker sequence ends before any EOI")
 
 
 def decode_size(data: bytes) -> tuple[int, int]:

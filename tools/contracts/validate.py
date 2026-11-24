@@ -315,17 +315,21 @@ def _load_index(fixtures: Path) -> tuple[list[dict[str, Any]], list[Violation]]:
 
 def clip_dimensions(
     fixtures: Path, entries: list[dict[str, Any]]
-) -> dict[str, tuple[int, int]]:
-    """``clip_id -> (width, height)`` for every finalized clip the corpus ships.
+) -> dict[tuple[str, str], tuple[int, int]]:
+    """``(device_id, clip_id) -> (width, height)`` for every finalized clip the corpus ships.
 
     A derivative record states a crop and cites the clip it was cut from, and the only
     honest source for the source's size is that clip's own committed manifest: the
     profile that recorded the capture is the one the encoder's window has to fit inside.
-    Only a vector the index expects to be valid contributes, so a manifest this run is
-    already set out to refuse cannot redefine what its clip's pixels measure, and a clip
-    absent from the map is a clip no cross-document check here may claim anything about.
+    ``clip_id`` is scoped by ``device_id`` in backend requests (interfaces.md), so the
+    key is the pair: one id may name two differently-sized segments on two devices, and
+    a map that collapsed them would measure one device's crop against the other's
+    pixels — whichever entry happened to be indexed first. Only a vector the index
+    expects to be valid contributes, so a manifest this run is already set out to
+    refuse cannot redefine what its clip's pixels measure, and a pair absent from the
+    map is a clip no cross-document check here may claim anything about.
     """
-    dimensions: dict[str, tuple[int, int]] = {}
+    dimensions: dict[tuple[str, str], tuple[int, int]] = {}
     for entry in entries:
         # An interrupted segment ships ``active.json``, never ``manifest.json``: the record
         # that claims a completed capture is the one whose profile states the pixels.
@@ -344,11 +348,16 @@ def clip_dimensions(
             continue  # the media walk reads and reports these bytes; this map only borrows them
         profile = manifest.get("profile") if isinstance(manifest, dict) else None
         clip_id = manifest.get("clip_id") if isinstance(manifest, dict) else None
-        if not isinstance(clip_id, str) or not isinstance(profile, dict):
-            continue
+        device_id = manifest.get("device_id") if isinstance(manifest, dict) else None
+        if (
+            not isinstance(clip_id, str)
+            or not isinstance(device_id, str)
+            or not isinstance(profile, dict)
+        ):
+            continue  # a manifest without a string device_id is not scoped to any device
         width, height = profile.get("width"), profile.get("height")
         if is_json_integer(None, width) and is_json_integer(None, height):
-            dimensions.setdefault(clip_id, (int(width), int(height)))
+            dimensions.setdefault((device_id, clip_id), (int(width), int(height)))
     return dimensions
 
 

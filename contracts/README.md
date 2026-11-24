@@ -2,7 +2,7 @@
 
 The published wire contract for the recorder, the backend and the original
 recording format: two OpenAPI 3.1 documents, three JSON Schema 2020-12 documents,
-and 419 committed golden fixtures that say exactly what every accepted and refused
+and 427 committed golden fixtures that say exactly what every accepted and refused
 request and response looks like on the wire. Everything here is machine-checked
 offline by `tools/validate_contracts.py`; nothing in this tree is prose-only.
 
@@ -14,7 +14,7 @@ documents are corrected — and the validator is expected to fail loudly in betw
 
 ## Running the checks
 
-The suite is 207 test functions; `tools/contracts/tests/test_corpus.py` fails if this
+The suite is 220 test functions; `tools/contracts/tests/test_corpus.py` fails if this
 number and the corpus counts quoted below ever drift apart from the tree.
 
 From the repository root, on the qualified interpreter (`uv` fetches CPython 3.12
@@ -51,10 +51,10 @@ uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
 | `media-v1/manifest.schema.json` | `manifest.json` of a finalized segment: identity, profile, clock, duration, count, close reason and the per-file hashes |
 | `media-v1/frame-record.schema.json` | one `frames.jsonl` line: `v`, `seq`, `offset`, `size`, `t_us`, `crc32` and nothing else |
 | `media-v1/active-record.schema.json` | `active.json` of an interrupted segment: the same identity without any completion claim |
-| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 419 vectors |
-| `fixtures/media/valid/` | 15 finalized and in-progress segments a healthy recorder writes, including the clock, gap, boundary, notation and recovery shapes |
-| `fixtures/media/invalid/` | 70 single-defect segments: every documented corruption class, one defect each |
-| `fixtures/device/`, `fixtures/backend/` | 334 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
+| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 427 vectors |
+| `fixtures/media/valid/` | 16 finalized and in-progress segments a healthy recorder writes, including the clock, gap, boundary, notation and recovery shapes |
+| `fixtures/media/invalid/` | 72 single-defect segments: every documented corruption class, one defect each |
+| `fixtures/device/`, `fixtures/backend/` | 339 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
 | `firmware-release-v1.schema.json` | **not part of this package** — the Stage 0.9 release-archive manifest, mirrored by `tools/firmware/contract.py` |
 
 A media fixture is a directory of the real files (`video.mjpg`, `frames.jsonl`,
@@ -84,10 +84,12 @@ harness artifact beside a valid clip, never something the recorder writes.
    the normative header rules. Any disagreement is `SPEC_COMPONENT_DRIFT`.
 3. **Every valid vector is accepted.** Schema validation plus the explicit bounds
    and cross-field rules (CRC-32 recomputed over the exact payload slice, JPEG
-   markers decoded with a real decoder, offsets walked, timestamps checked, hashes
+   markers decoded with a real decoder and the marker chain walked to the first
+   image's EOI, offsets walked, timestamps checked, hashes
    recomputed from bytes, a granted `Content-Range` compared with the `Range` its
    sidecar commits, an `Upload-Offset` that may not pass the `Upload-Length` beside
-   it, and a derivative `crop` measured against the source clip's own manifest).
+   it, and a derivative `crop` measured against the source clip's own manifest under
+   the `(device_id, clip_id)` pair the record cites).
 4. **Every invalid vector is refused, by name and only by the expected name.** A
    negative vector that passes, or that fails with a code nobody declared, is itself
    a finding — a detector that quietly stopped detecting cannot pass this gate.
@@ -101,7 +103,7 @@ harness artifact beside a valid clip, never something the recorder writes.
 
 They are different registers and deliberately do not share a namespace.
 
-**Validator diagnostics** (`tools/contracts/errors.py`, 102 codes) name *why the
+**Validator diagnostics** (`tools/contracts/errors.py`, 104 codes) name *why the
 contract or a fixture is wrong* — they appear in the validator report and in
 `fixtures.json` as `expected_error_codes`, and never on the wire. The specs state
 these conditions in prose but assign no identifiers, so this package named them;
@@ -121,7 +123,14 @@ rather than one document: `IF_MATCH_ETAG_DISAGREE` refuses a 200 or 206 whose re
 sidecar is conditional on an `ETag` the answer does not ship (interfaces.md §4 requires
 412 `CONTENT_CHANGED` for that pairing), and `CHUNK_HASH_MISMATCH` refuses a chunk whose
 committed bytes are not the `sha256` its well-formed `Upload-Checksum` declares (the 422
-`INTEGRITY_FAILURE` the same section requires). Every registered code is exercised: by a committed
+`INTEGRITY_FAILURE` the same section requires). Two more are consequences a field cannot
+state and a walk can: `JPEG_TRAILING_DATA` refuses an indexed slice that is not exactly
+one image — media-format.md §3 makes every record start where the preceding one ends and
+the final one end at the payload's exact file size, so bytes beside the first image's
+`EOI` are frame data no record and no playback time will ever reach, and the decoder
+reads only the first image — and `DURATION_RECOVERED_MISMATCH` refuses a recovered
+manifest whose `duration_us` is not the close time §4 fixes for it: last frame time plus
+one nominal frame period, clamped to the segment maximum. Every registered code is exercised: by a committed
 vector, by a mutation test, or — for the 256 MiB payload and 1.75 MiB index bounds
 that cannot be committed — by a synthetic temporary vector.
 

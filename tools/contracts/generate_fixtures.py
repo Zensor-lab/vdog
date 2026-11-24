@@ -48,13 +48,14 @@ from .fixture_spec import (
     media_fixtures,
 )
 from .api_model import ALL_OPERATIONS
-from .jpeg import make_jpeg
+from .jpeg import jpeg_seed, make_jpeg
 from .media_model import (
     BuiltClip,
     ClipPlan,
     active_document,
     build_index,
     checksums_document,
+    crc32_hex,
     dump_json,
     manifest_document,
     sha256_hex,
@@ -465,6 +466,33 @@ def _corrupt_jpeg_entropy(editable: _Editable) -> None:
     editable.built.payload = bytes(payload)
 
 
+def _corrupt_double_jpeg_record(editable: _Editable) -> None:
+    """The final record's slice becomes two complete JPEGs concatenated.
+
+    The second image is a real distinct-seed generation at the profile's own size, so
+    every marker, decode and hash the walk checks stays honest about the doubled bytes:
+    the record's ``size`` covers both, its ``crc32`` is the CRC of the concatenation,
+    the payload's length follows, and :meth:`BuiltClip.recompute_integrity` re-points
+    the manifest afterwards. Only the marker chain can see that one indexed slice holds
+    two images — the decoder reads the first and the second is frame data no playback
+    time will ever reach (media-format.md §3: one record, one JPEG, ending where the
+    file does).
+    """
+    assert editable.built.manifest is not None
+    profile = editable.built.manifest["profile"]
+    record = editable.line_json(-1)
+    second = make_jpeg(
+        profile["width"],
+        profile["height"],
+        jpeg_seed("clip", "double-jpeg-record", "second-image"),
+    )
+    first = editable.built.payload[record["offset"] : record["offset"] + record["size"]]
+    record["size"] = record["size"] + len(second)
+    record["crc32"] = crc32_hex(first + second)
+    editable.set_line(-1, record)
+    editable.built.payload = editable.built.payload + second
+
+
 def _corrupt_checksums_missing_entry(editable: _Editable) -> None:
     assert editable.built.checksums is not None
     del editable.built.checksums["files"][MANIFEST_NAME]
@@ -615,6 +643,7 @@ CORRUPTIONS: Final[Mapping[str, Callable[[_Editable], None]]] = {
     "clock_timestamp_impossible_date": _corrupt_clock_impossible_date,
     "jpeg_soi_missing": _corrupt_jpeg_soi,
     "jpeg_entropy_garbage": _corrupt_jpeg_entropy,
+    "double_jpeg_record": _corrupt_double_jpeg_record,
     "checksums_missing_entry": _corrupt_checksums_missing_entry,
     "manifest_size_mismatch": _corrupt_manifest_size,
     "manifest_sha_trailing_newline": _corrupt_manifest_sha_trailing_newline,
@@ -799,7 +828,9 @@ def build_media_corpus(media: Sequence[MediaFixture]) -> MediaCorpus:
     gap = by_id["media/valid/gap-long-jump"]
     recovered = by_id["media/valid/recovered-prefix"]
     notation_dimensions = by_id["media/valid/manifest-integral-dimension-notations"]
+    wide_second = by_id["media/valid/wide-second-device"]
     assert notation_dimensions.manifest is not None
+    assert wide_second.manifest is not None
     assert baseline.manifest is not None
     manifest_bytes = dump_json(baseline.manifest)
     chunk = baseline.payload[:512]
@@ -835,6 +866,10 @@ def build_media_corpus(media: Sequence[MediaFixture]) -> MediaCorpus:
         notation_dimensions_clip_id=notation_dimensions.manifest["clip_id"],
         notation_dimensions_payload_sha256=sha256_hex(notation_dimensions.payload),
         notation_dimensions_index_sha256=sha256_hex(notation_dimensions.index),
+        wide_second_device_device_id=wide_second.manifest["device_id"],
+        wide_second_device_clip_id=wide_second.manifest["clip_id"],
+        wide_second_device_payload_sha256=sha256_hex(wide_second.payload),
+        wide_second_device_index_sha256=sha256_hex(wide_second.index),
         gap_clip_id=gap.manifest["clip_id"] if gap.manifest else "",
         gap_payload_bytes=len(gap.payload),
         gap_index_bytes=len(gap.index),

@@ -244,6 +244,28 @@
     },
     {
       "api_error_code": null,
+      "category": "boundary",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "backend/invalid/derivative-response-200-crop-out-of-bounds-second-device.json"
+      ],
+      "id": "backend/invalid/derivative-response-200-crop-out-of-bounds-second-device",
+      "invariant": "AC-06 boundary: clip_id is scoped by device_id, and this record cites the baseline's pair — where that id names the 64x64 capture. The window that fits the second device's 128x128 segment reaches pixel 80 of a file that stops at 64, so the crop is measured against the cited device's pixels, not whichever same-id clip the corpus indexed first",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_derivative",
+      "operation_id": "getDerivative",
+      "path": "/derivatives/{id}",
+      "schema": "DerivativeRecord",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
       "category": "id",
       "contract": "backend-v1",
       "direction": "request",
@@ -1960,6 +1982,26 @@
       ],
       "id": "backend/valid/derivative-response-200-crop-integral-float-notation",
       "invariant": "AC-05/AC-06 a crop measured inside its source is conformant whatever notation its members carry: 0/14/64/36 and 0.0/14.0/64.0/36.0 are the same window, and refusing the second would refuse bytes the schema calls integers",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_derivative",
+      "operation_id": "getDerivative",
+      "path": "/derivatives/{id}",
+      "schema": "DerivativeRecord",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "derivative",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "backend/valid/derivative-response-200-wide-second-device.json"
+      ],
+      "id": "backend/valid/derivative-response-200-wide-second-device",
+      "invariant": "AC-05 a crop is measured against the pixels of the device the record cites: this one names the second device's 128x128 capture under the baseline's clip_id, and x=16 with width=64 ends at 80 — inside the source it names, certifying that wide segment's own digests",
       "kind": "api",
       "method": "GET",
       "operation": "backend.get_derivative",
@@ -3845,6 +3887,29 @@
     },
     {
       "api_error_code": null,
+      "category": "lease",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "HEADER_MISSING"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-200-empty-sidecar.headers.json",
+        "device/invalid/clip-file-response-200-empty-sidecar.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-200-empty-sidecar",
+      "invariant": "AC-06 lease: a response that ships a request sidecar is asserting the pair, and a present-but-empty sidecar is still the request it claims to have answered — the required X-Clip-Lease is required of that request too, so an empty map is judged, not mistaken for no sidecar at all",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 200
+    },
+    {
+      "api_error_code": null,
       "category": "range",
       "contract": "device-v1",
       "direction": "response",
@@ -4051,6 +4116,29 @@
       "direction": "response",
       "expected": "invalid",
       "expected_error_codes": [
+        "CONTENT_RANGE_INVALID"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-206-no-range-sidecar.headers.json",
+        "device/invalid/clip-file-response-206-no-range-sidecar.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-206-no-range-sidecar",
+      "invariant": "AC-06 range: a 206 grants a window, and neither the sidecar it answers nor its own header map names a Range — §4's \"No Range returns 200\" reads both ways: this answer grants bytes no range request justified",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
+      "api_error_code": null,
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
         "RANGE_MULTI_NOT_ALLOWED"
       ],
       "files": [
@@ -4225,6 +4313,30 @@
       "path": "/clips/{clip_id}/files/{name}",
       "schema": null,
       "status": 412
+    },
+    {
+      "api_error_code": "RANGE_INVALID",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CONTENT_RANGE_INVALID"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-416-in-bounds-sidecar.headers.json",
+        "device/invalid/clip-file-response-416-in-bounds-sidecar.json",
+        "device/invalid/clip-file-response-416-in-bounds-sidecar.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-416-in-bounds-sidecar",
+      "invariant": "AC-06 range: the 416 refuses a range its own bytes */1712 proves unsatisfiable, and bytes=0-31 is comfortably inside that file — a satisfiable single range refused by a 416 is a wrong refusal, and the sidecar that carries it is the defect the answer's proof contradicts",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 416
     },
     {
       "api_error_code": null,
@@ -7285,6 +7397,23 @@
       "kind": "clip"
     },
     {
+      "category": "jpeg",
+      "contract": "media-v1",
+      "corruption": "double_jpeg_record",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "JPEG_TRAILING_DATA"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/double-jpeg-record",
+      "invariant": "AC-03 JPEG: one indexed slice is one JPEG — each record starts where the preceding one ends and the final one ends at the exact file size, so a record whose slice is two complete distinct-seed images concatenated (size, CRC, offsets and hashes all honest about the doubled bytes) indexes frame data no playback time will ever reach",
+      "kind": "clip"
+    },
+    {
       "category": "time",
       "contract": "media-v1",
       "corruption": "duration_le_final_t",
@@ -8056,6 +8185,23 @@
       "kind": "clip"
     },
     {
+      "category": "recovery",
+      "contract": "media-v1",
+      "corruption": null,
+      "expected": "invalid",
+      "expected_error_codes": [
+        "DURATION_RECOVERED_MISMATCH"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/recovered-duration-mismatch",
+      "invariant": "AC-03 recovered prefix: media-format.md §4 fixes the close time of a recovered segment at last frame time plus one nominal frame period clamped to the maximum duration — for this two-frame 15 fps prefix that is 133334 us, and this manifest states 1133334 us, a playback end no recovery can have measured",
+      "kind": "clip"
+    },
+    {
       "category": "index",
       "contract": "media-v1",
       "corruption": "seq_skip",
@@ -8394,6 +8540,22 @@
       ],
       "id": "media/valid/recovered-prefix",
       "invariant": "AC-02 recovered prefix: maximal validated prefix republished as a recovered manifest, so recovered true pairs with close_reason recovery and duration is last frame time plus one nominal frame period",
+      "kind": "clip"
+    },
+    {
+      "category": "baseline",
+      "contract": "media-v1",
+      "corruption": null,
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "checksums.json",
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/valid/wide-second-device",
+      "invariant": "AC-02/AC-05 a second device finalizes the baseline's clip_id at a 128x128 profile: clip_id is scoped by device_id, so this wide capture and the baseline's 64x64 coexist, and a derivative's crop is measured against the pixels of the device it cites",
       "kind": "clip"
     }
   ],

@@ -1379,3 +1379,249 @@ def test_a_manifest_number_is_judged_on_the_digits_it_carries(index: list[dict],
             assert notation in data, (vector_id, notation)
         sidecar = json.loads(_read(vector["id"], CHECKSUMS_NAME).decode("utf-8"))
         assert sidecar["files"][MANIFEST_NAME]["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+# --- Round 7: the slice that holds two images, and the close time a recovery fixes -----
+
+
+def test_the_first_image_end_offset_reads_the_image_the_slice_holds() -> None:
+    """One indexed slice is one image: the walk ends at its EOI and names any second one (AC-03).
+
+    The structure-only walk has to agree with Pillow about where an image stops, has to
+    read a restart marker and a stuffed byte as scan data rather than as structure, and
+    has to hand back the offset of a second SOI rather than raise: a second image
+    concatenated behind the first is the exact defect the caller names.
+    """
+    from tools.contracts.jpeg import (
+        JpegStructureError,
+        first_image_end_offset,
+        jpeg_seed,
+        make_jpeg,
+    )
+
+    single = make_jpeg(64, 64, jpeg_seed("clip", "unit", "one-image"))
+    assert first_image_end_offset(single) + 2 == len(single)
+    second = make_jpeg(64, 64, jpeg_seed("clip", "unit", "second-image"))
+    assert first_image_end_offset(single + second) + 2 == len(single)
+    # Bytes past the EOI are not scan data and not a second image; they are still bytes
+    # the slice claims and the image does not have.
+    assert first_image_end_offset(single + b"\x00\x01\x02") + 2 == len(single)
+
+    # The same facts on a hand-written marker chain, where every byte is the test's.
+    scan = b"\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00"
+    scan += b"\x11\x22"  # entropy-coded data: no structure to read
+    scan += b"\xff\xd0"  # RST0: a restart, and the scan continues
+    scan += b"\x33\xff\x00\x44"  # FF00 is a stuffed FF, not a marker
+    prefix = b"\xff\xd8" + scan
+    assert first_image_end_offset(prefix + b"\xff\xd9") + 2 == len(prefix) + 2
+    assert first_image_end_offset(prefix + b"\xff\xd8\x00") == len(prefix)
+    # A table segment between two scans is structure the walk reads by its length, and
+    # the image still ends at its own EOI.
+    with_table = prefix + b"\xff\xc4\x00\x04\x00\x00" + b"\xff\xd9"
+    assert first_image_end_offset(with_table) + 2 == len(with_table)
+    # An un-stuffed FF xx inside entropy data is data: mistaking it for a segment would
+    # end the walk at a marker the decoder never saw, and name bytes that are reachable.
+    assert first_image_end_offset(prefix + b"\xff\xe0" + b"\xff\xd9") + 2 == len(prefix) + 4
+    for broken in (
+        b"not a jpeg",  # no SOI at all
+        prefix,  # a scan that never ends
+        prefix + b"\xff",  # a marker prefix with no code after it
+        b"\xff\xd8\xff\xc0\x00",  # a segment length field cut in half
+    ):
+        with pytest.raises(JpegStructureError):
+            first_image_end_offset(broken)
+
+
+def test_bytes_past_the_first_image_are_a_finding_and_only_a_finding() -> None:
+    """A doubled slice is honest about its bytes everywhere except the marker chain (AC-03)."""
+    from tools.contracts.jpeg import jpeg_seed, make_jpeg
+    from tools.contracts.media_validate import _jpeg_violations
+
+    single = make_jpeg(64, 64, jpeg_seed("clip", "unit", "one-image"))
+    assert _jpeg_violations(single, "unit.frame", width=64, height=64) == []
+    doubled = single + make_jpeg(64, 64, jpeg_seed("clip", "unit", "second-image"))
+    found = _jpeg_violations(doubled, "unit.frame", width=64, height=64)
+    assert [violation.code for violation in found] == [E.JPEG_TRAILING_DATA], [
+        violation.render() for violation in found
+    ]
+    assert found[0].location == "unit.frame"
+    assert str(len(single)) in found[0].detail and str(len(doubled)) in found[0].detail
+
+
+def test_a_slice_whose_chain_lies_keeps_the_marker_chain_code() -> None:
+    """A length field that overruns is a chain failure, never an invented trailing-byte count (AC-03).
+
+    Pillow reads the first image and is unconcerned by a later segment's lying length,
+    so this is the one shape where the walk fails while the decoder succeeds. Naming it
+    ``JPEG_TRAILING_DATA`` would claim bytes the walk never located; the code is the one
+    the SOF walk's own failure already uses.
+    """
+    from tools.contracts.jpeg import jpeg_seed, make_jpeg
+    from tools.contracts.media_validate import _jpeg_violations
+
+    single = make_jpeg(64, 64, jpeg_seed("clip", "unit", "one-image"))
+    lying = single[:-2] + b"\xff\xc4\xff\xff" + b"\xff\xd9"  # DHT claiming 65535 bytes
+    found = _jpeg_violations(lying, "unit.frame", width=64, height=64)
+    assert [violation.code for violation in found] == [E.JPEG_DECODE_FAILED], [
+        violation.render() for violation in found
+    ]
+    assert found[0].detail.startswith("marker chain to EOI:")
+
+
+def test_the_first_image_end_offset_reads_every_chain_it_is_handed() -> None:
+    """The branches a fixture generator never writes are still walked, not guessed (AC-03)."""
+    from tools.contracts.jpeg import first_image_end_offset, jpeg_seed, make_jpeg
+
+    # EOI with no scan at all: the two-byte marker ends the image where it stands.
+    assert first_image_end_offset(b"\xff\xd8\xff\xd9") == 2
+    # The segments a scan may be interrupted by, each read by its own length: the body
+    # of each here contains EOI- and SOI-looking bytes on purpose, so a walk that
+    # mistook the segment for entropy data would end the image inside the table
+    # instead of at the EOI after it. (These are structural chains, not images: no
+    # decoder sees them, and the multi-scan SOS names a second component whose table
+    # the walk must read past rather than treat as the end of the first image.)
+    for segment in (
+        b"\xff\xc4\x00\x06\xff\xd9\xff\xd8",  # DHT
+        b"\xff\xcc\x00\x05\xff\xd9\x01",  # DAC
+        b"\xff\xdc\x00\x06\xff\xd9\x00\x10",  # DNL
+        b"\xff\xda\x00\x08\x01\x01\xff\xd8\x3f\x00",  # the next SOS, header and all
+    ):
+        frame = b"\xff\xd8\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00\x11\x22" + segment + b"\xff\xd9"
+        assert first_image_end_offset(frame) + 2 == len(frame), segment
+    # TEM is standalone where it belongs — in a header, before any scan. Read as
+    # length-delimited it would swallow the segment behind it. No fixture carries one
+    # (Pillow refuses it outright, which is why this chain is hand-written and the
+    # decoder is deliberately not consulted here), and none ever will: the point is
+    # that the walk's header half agrees with :func:`sof_dimensions` on what carries a
+    # length field.
+    single = make_jpeg(64, 64, jpeg_seed("clip", "unit", "one-image"))
+    header_tem = single[:2] + b"\xff\x01" + single[2:]
+    assert first_image_end_offset(header_tem) + 2 == len(header_tem)
+    # And un-stuffed inside entropy data, TEM is just data: the walk still reaches EOI.
+    stuffed = b"\xff\xd8\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00\xff\x01\xff\xd9"
+    assert first_image_end_offset(stuffed) + 2 == len(stuffed)
+
+
+def test_every_committed_slice_is_exactly_one_image(index: list[dict]) -> None:
+    """The control the doubled vector needs: every conformant slice ends at its first EOI (AC-03)."""
+    from tools.contracts.jpeg import first_image_end_offset
+
+    for entry in media_entries(index, "valid"):
+        payload = _payload_bytes(entry)
+        for record in _records(entry):
+            frame = payload[record["offset"] : record["offset"] + record["size"]]
+            assert first_image_end_offset(frame) + 2 == len(frame), (entry["id"], record["seq"])
+
+
+def test_a_record_whose_slice_holds_two_images_is_refused(index: list[dict], schemas: dict) -> None:
+    """Size, CRC, offsets and hashes all honest about two images, and still one record (AC-03)."""
+    from tools.contracts.jpeg import first_image_end_offset
+    from tools.contracts.media_model import crc32_hex
+
+    entry = next(item for item in index if item["id"] == "media/invalid/double-jpeg-record")
+    found = validate_media_fixture(FIXTURES, entry, schemas)
+    assert {violation.code for violation in found} == {E.JPEG_TRAILING_DATA}, [
+        violation.render() for violation in found
+    ]
+    last = _records(entry)[-1]
+    payload = _payload_bytes(entry)
+    frame = payload[last["offset"] : last["offset"] + last["size"]]
+    assert frame.count(b"\xff\xd8") == 2 and frame.endswith(b"\xff\xd9")
+    assert last["size"] == len(frame) and crc32_hex(frame) == last["crc32"]
+    assert first_image_end_offset(frame) + 2 < len(frame)
+    # The slice still tiles the payload exactly: the defect is the doubled image inside
+    # the record, not a record that lost track of the file.
+    assert last["offset"] + last["size"] == len(payload)
+
+
+def _recovered_manifest(**changes: object) -> dict:
+    """The committed baseline manifest, closed the way a recovery has to close it."""
+    manifest = _baseline_manifest()
+    manifest.update({"recovered": True, "close_reason": "recovery"})
+    manifest.update(changes)
+    return manifest
+
+
+def test_a_recovered_segment_states_the_close_time_the_format_fixes(schemas: dict) -> None:
+    """media-format.md §4: last frame time plus one nominal period, clamped (AC-03).
+
+    A recovered segment never measured its own end, so the format computes it, and the
+    manifest that states any other number claims a playback end no reset can have
+    produced. The equality is the recovered kind's alone, and it is a *closed* equality:
+    one microsecond in either direction is a different statement.
+    """
+    from tools.contracts.media_validate import _validate_manifest
+
+    files = baseline_files()
+    # The baseline's own honest close: final t_us 200000 plus the 66667 us 15 fps period.
+    records = [{"t_us": 200_000}]
+
+    def codes(record: dict, at: list[dict], *, claim: int | None = None) -> set[str]:
+        # The walk judged an index of exactly this length; the manifest counts it, so
+        # the recovered rule has a whole index to read. `claim` overrides the count to
+        # the shape a truncated walk would leave behind.
+        record = {**record, "frame_count": len(at) if claim is None else claim}
+        found = _validate_manifest(
+            record,
+            schemas["manifest"],
+            payload=files[PAYLOAD_NAME],
+            index=files[INDEX_NAME],
+            records=at,
+        )
+        return {violation.code for violation in found}
+
+    assert codes(_recovered_manifest(), records) == set()
+    assert codes(_recovered_manifest(duration_us=266_666), records) == {
+        E.DURATION_RECOVERED_MISMATCH
+    }
+    assert codes(_recovered_manifest(duration_us=266_668), records) == {
+        E.DURATION_RECOVERED_MISMATCH
+    }
+    # The clamp: at the ceiling the close time is the ceiling, not the sum — and a close
+    # above it is the segment maximum's finding as well as this one, which is honest: it
+    # is both too long and not the number §4 fixes.
+    near_ceiling = [{"t_us": 119_999_940}]
+    assert codes(_recovered_manifest(duration_us=120_000_000), near_ceiling) == set()
+    assert codes(_recovered_manifest(duration_us=120_066_607), near_ceiling) == {
+        E.DURATION_RECOVERED_MISMATCH,
+        E.DURATION_TOO_LONG,
+    }
+    # A measured close is the non-recovered kind's own: the equality is not its contract.
+    measured = {**_baseline_manifest(), "duration_us": 266_666}
+    assert E.DURATION_RECOVERED_MISMATCH not in codes(measured, records)
+    # A period the profile cannot state is the profile's finding, not a division by zero.
+    for fps in (0, 31, None, "15"):
+        broken = _recovered_manifest(duration_us=1, profile={**_baseline_manifest()["profile"], "nominal_fps": fps})
+        assert E.DURATION_RECOVERED_MISMATCH not in codes(broken, records), fps
+    # No records, no last frame time: the rule reads the walk's output and stays silent.
+    assert E.DURATION_RECOVERED_MISMATCH not in codes(_recovered_manifest(duration_us=1), [])
+    # A walk that stopped early hands this rule a *prefix* of the index, not the index:
+    # the close time cannot be read off records the manifest does not count, and that
+    # disagreement is FRAME_COUNT_MISMATCH's to name.
+    prefix = [{"t_us": 0}, {"t_us": 66_667}, {"t_us": 133_334}]  # manifest counts 4
+    assert codes(_recovered_manifest(duration_us=266_667), prefix, claim=4) == set()
+    assert codes(_recovered_manifest(duration_us=200_001), prefix) == set()
+    found = _validate_manifest(
+        {**_recovered_manifest(duration_us=1_133_334), "frame_count": len(records)},
+        schemas["manifest"],
+        payload=files[PAYLOAD_NAME],
+        index=files[INDEX_NAME],
+        records=records,
+    )
+    assert [violation.location for violation in found] == ["manifest.duration_us"]
+
+
+def test_the_committed_recovered_vector_states_a_close_no_recovery_measured(
+    index: list[dict], schemas: dict
+) -> None:
+    """The corpus half: one honest prefix, and the duration that is 1 000 000 us wrong."""
+    entry = next(item for item in index if item["id"] == "media/invalid/recovered-duration-mismatch")
+    found = validate_media_fixture(FIXTURES, entry, schemas)
+    assert {violation.code for violation in found} == {E.DURATION_RECOVERED_MISMATCH}, [
+        violation.render() for violation in found
+    ]
+    manifest = json.loads(_read(entry["id"], MANIFEST_NAME).decode("utf-8"))
+    assert manifest["recovered"] is True and manifest["close_reason"] == "recovery"
+    final_t_us = _records(entry)[-1]["t_us"]
+    assert manifest["duration_us"] == 1_133_334
+    assert final_t_us + 66_667 == 133_334  # what §4 fixes, and what this manifest does not say

@@ -70,6 +70,7 @@ from .errors import (
     CURSOR_TOO_LONG,
     DIMENSIONS_EXCEEDED,
     DURATION_LE_FINAL_T_US,
+    DURATION_RECOVERED_MISMATCH,
     DURATION_TOO_LONG,
     ERROR_CODE_UNDOCUMENTED,
     ERROR_ENVELOPE_INVALID,
@@ -100,6 +101,7 @@ from .errors import (
     JPEG_EOI_MISSING,
     JPEG_SOF_DIMENSION_MISMATCH,
     JPEG_SOI_MISSING,
+    JPEG_TRAILING_DATA,
     MANIFEST_DECODED_SCHEMA,
     MANIFEST_DECODED_TOO_LARGE,
     MANIFEST_HASH_MISMATCH,
@@ -131,6 +133,12 @@ DEVICE_ID: Final[str] = "0123456789abcdef0123456789abcdef"
 
 #: Second device identity, used only where a mismatch must be exercised.
 OTHER_DEVICE_ID: Final[str] = "fedcba9876543210fedcba9876543210"
+
+#: A third device that finalizes the *baseline's* ``clip_id`` at a different profile
+#: size: ``clip_id`` is scoped by ``device_id`` (interfaces.md), so a derivative's crop
+#: has to be measured against the pixels of the device it cites — and one id naming two
+#: differently-sized sources is what proves the dimensions map is keyed by the pair.
+WIDE_DEVICE_ID: Final[str] = "abcdef0123456789abcdef0123456789"
 
 NOMINAL_FRAME_PERIOD_US: Final[int] = 66_667  # 15 fps, rounded up
 
@@ -178,12 +186,13 @@ def _plan(
     hardware_revision: str = "xiao-esp32s3-sense-proto-a",
     width: int = FIXTURE_FRAME_WIDTH,
     height: int = FIXTURE_FRAME_HEIGHT,
+    device_id: str = DEVICE_ID,
 ) -> ClipPlan:
     """Build one deterministic segment plan; ``duration_us`` defaults to one frame past the last."""
     if not times:
         raise ValueError("a fixture segment needs at least one frame")
     return ClipPlan(
-        device_id=DEVICE_ID,
+        device_id=device_id,
         boot_id=boot_id(name),
         sequence=sequence,
         capture_order=capture_order,
@@ -320,6 +329,28 @@ def _valid_media() -> tuple[MediaFixture, ...]:
             invariant=(
                 "AC-02 capture gap: a 44.75 s jump is expressed by timestamps only, with no "
                 "invented filler records, and duration still exceeds the final t_us"
+            ),
+        ),
+        MediaFixture(
+            id="media/valid/wide-second-device",
+            kind="clip",
+            category="baseline",
+            # Same boot id (the "baseline" name) and sequence as the baseline segment, so
+            # one clip_id names two differently-sized finalized captures on two devices.
+            plan=_plan(
+                "baseline",
+                VALID_BASELINE_TIMES,
+                clock=SNTP_CLOCK,
+                capture_order=42,
+                device_id=WIDE_DEVICE_ID,
+                width=128,
+                height=128,
+            ),
+            invariant=(
+                "AC-02/AC-05 a second device finalizes the baseline's clip_id at a 128x128 "
+                "profile: clip_id is scoped by device_id, so this wide capture and the "
+                "baseline's 64x64 coexist, and a derivative's crop is measured against the "
+                "pixels of the device it cites"
             ),
         ),
         MediaFixture(
@@ -498,6 +529,12 @@ class _Negative:
     times: Sequence[int] | None = None
     #: The same idea for the clock block, which no byte-level corruption reaches.
     clock: ClockPlan | None = None
+    #: And for the closing facts, which likewise live in the plan rather than in a
+    #: byte a corruption rewrites: a recovered segment's mandatory close reason, the
+    #: recovered flag, and the duration a recovery must state exactly.
+    close_reason: str | None = None
+    recovered: bool = False
+    duration_us: int | None = None
 
 
 _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
@@ -674,6 +711,22 @@ _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
             "AC-03 recovered true with close_reason duration: a recovered segment always uses "
             "recovery, and only recovery implies recovered"
         ),
+    ),
+    _Negative(
+        id="media/invalid/recovered-duration-mismatch",
+        category="recovery",
+        corruption=None,
+        codes=(DURATION_RECOVERED_MISMATCH,),
+        invariant=(
+            "AC-03 recovered prefix: media-format.md §4 fixes the close time of a recovered "
+            "segment at last frame time plus one nominal frame period clamped to the maximum "
+            "duration — for this two-frame 15 fps prefix that is 133334 us, and this "
+            "manifest states 1133334 us, a playback end no recovery can have measured"
+        ),
+        times=TWO_FRAME_TIMES,
+        close_reason="recovery",
+        recovered=True,
+        duration_us=1_133_334,
     ),
     _Negative(
         id="media/invalid/offset-beyond-payload-end",
@@ -935,6 +988,19 @@ _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
         ),
     ),
     _Negative(
+        id="media/invalid/double-jpeg-record",
+        category="jpeg",
+        corruption="double_jpeg_record",
+        codes=(JPEG_TRAILING_DATA,),
+        invariant=(
+            "AC-03 JPEG: one indexed slice is one JPEG — each record starts where the "
+            "preceding one ends and the final one ends at the exact file size, so a record "
+            "whose slice is two complete distinct-seed images concatenated (size, CRC, "
+            "offsets and hashes all honest about the doubled bytes) indexes frame data no "
+            "playback time will ever reach"
+        ),
+    ),
+    _Negative(
         id="media/invalid/checksums-missing-entry",
         category="hash",
         corruption="checksums_missing_entry",
@@ -1118,6 +1184,9 @@ def media_fixtures() -> tuple[MediaFixture, ...]:
                 VALID_BASELINE_TIMES if item.times is None else item.times,
                 clock=SNTP_CLOCK if item.clock is None else item.clock,
                 capture_order=42,
+                close_reason=item.close_reason or "duration",
+                recovered=item.recovered,
+                duration_us=item.duration_us,
             ),
             invariant=item.invariant,
             expected="invalid",
@@ -2703,6 +2772,86 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "satisfy — an open-ended start at the byte just past its end — is refused with "
             "416 and proved by bytes */<total>: the request and the refusal agree about a "
             "file neither of them can serve bytes from"
+        ),
+    )
+    out.add(
+        id="clip-file-response-416-in-bounds-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=416,
+        api_error_code="RANGE_INVALID",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes */{media.baseline_payload_bytes}",
+        },
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": payload_etag,
+            "Range": "bytes=0-31",
+        },
+        body=_error_body(
+            "RANGE_INVALID",
+            "Range is not satisfiable",
+            retryable=False,
+            request_id="req-bf15",
+        ),
+        expected="invalid",
+        codes=(CONTENT_RANGE_INVALID,),
+        invariant=(
+            "AC-06 range: the 416 refuses a range its own bytes */"
+            f"{media.baseline_payload_bytes} proves unsatisfiable, and bytes=0-31 is "
+            "comfortably inside that file — a satisfiable single range refused by a 416 "
+            "is a wrong refusal, and the sidecar that carries it is the defect the "
+            "answer's proof contradicts"
+        ),
+    )
+    out.add(
+        id="clip-file-response-206-no-range-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes 0-99/{media.baseline_payload_bytes}",
+            "ETag": payload_etag,
+            "Content-Length": "100",
+        },
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": payload_etag,
+        },
+        expected="invalid",
+        codes=(CONTENT_RANGE_INVALID,),
+        invariant=(
+            "AC-06 range: a 206 grants a window, and neither the sidecar it answers nor "
+            "its own header map names a Range — §4's \"No Range returns 200\" reads both "
+            "ways: this answer grants bytes no range request justified"
+        ),
+    )
+    out.add(
+        id="clip-file-response-200-empty-sidecar",
+        contract="device",
+        category="lease",
+        operation="device.get_clip_file",
+        direction="response",
+        status=200,
+        headers={
+            "Accept-Ranges": "bytes",
+            "ETag": payload_etag,
+            "Content-Length": str(media.baseline_payload_bytes),
+        },
+        request_headers={},
+        expected="invalid",
+        codes=(HEADER_MISSING,),
+        invariant=(
+            "AC-06 lease: a response that ships a request sidecar is asserting the pair, "
+            "and a present-but-empty sidecar is still the request it claims to have "
+            "answered — the required X-Clip-Lease is required of that request too, so an "
+            "empty map is judged, not mistaken for no sidecar at all"
         ),
     )
     out.add(
@@ -4852,6 +5001,86 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
+        id="derivative-response-200-wide-second-device",
+        contract="backend",
+        category="derivative",
+        operation="backend.get_derivative",
+        direction="response",
+        status=200,
+        schema="DerivativeRecord",
+        body={
+            "v": API_VERSION,
+            "derivative_id": "drv-7",
+            # The same clip_id the baseline carries, cited under the second device: on
+            # that device the id names the committed 128x128 capture, so this window
+            # ends at pixel 80 and fits — measured against the baseline's 64 pixels the
+            # identical rectangle would overrun, which is the pair this record proves
+            # the size map keeps apart.
+            "device_id": media.wide_second_device_device_id,
+            "clip_id": media.wide_second_device_clip_id,
+            "job_id": "job-0007",
+            "type": "transcode",
+            "preset": "h264-vbr-720p",
+            "encoder_version": "libx264-0.165",
+            "filter_version": "vdog-eis-1",
+            "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
+            "output": {"width": 1280, "height": 720},
+            "crop": {"x": 16, "y": 16, "width": 64, "height": 64},
+            "original_hashes": {
+                "video.mjpg": media.wide_second_device_payload_sha256,
+                "frames.jsonl": media.wide_second_device_index_sha256,
+            },
+            "sha256": _sha("derivative-wide-second-device"),
+        },
+        invariant=(
+            "AC-05 a crop is measured against the pixels of the device the record cites: "
+            "this one names the second device's 128x128 capture under the baseline's "
+            "clip_id, and x=16 with width=64 ends at 80 — inside the source it names, "
+            "certifying that wide segment's own digests"
+        ),
+    )
+    out.add(
+        id="derivative-response-200-crop-out-of-bounds-second-device",
+        contract="backend",
+        category="boundary",
+        operation="backend.get_derivative",
+        direction="response",
+        status=200,
+        schema="DerivativeRecord",
+        body={
+            "v": API_VERSION,
+            "derivative_id": "drv-8",
+            # The identical rectangle from the record above, cited under the baseline
+            # device: there the same clip_id is the 64x64 capture, so both axes reach
+            # pixel 80 of a file that stops at 64 — order-dependence between the two
+            # devices' manifests is exactly what this pair refuses.
+            "device_id": DEVICE_ID,
+            "clip_id": media.baseline_clip_id,
+            "job_id": "job-0008",
+            "type": "transcode",
+            "preset": "h264-vbr-720p",
+            "encoder_version": "libx264-0.165",
+            "filter_version": "vdog-eis-1",
+            "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
+            "output": {"width": 1280, "height": 720},
+            "crop": {"x": 16, "y": 16, "width": 64, "height": 64},
+            "original_hashes": {
+                "video.mjpg": media.baseline_payload_sha256,
+                "frames.jsonl": media.baseline_index_sha256,
+            },
+            "sha256": _sha("derivative-crop-second-device"),
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-06 boundary: clip_id is scoped by device_id, and this record cites the "
+            "baseline's pair — where that id names the 64x64 capture. The window that "
+            "fits the second device's 128x128 segment reaches pixel 80 of a file that "
+            "stops at 64, so the crop is measured against the cited device's pixels, "
+            "not whichever same-id clip the corpus indexed first"
+        ),
+    )
+    out.add(
         id="derivative-response-200-bad-hash",
         contract="backend",
         category="hash",
@@ -4955,6 +5184,14 @@ class MediaCorpus:
     #: gate in :mod:`tools.contracts.tests.test_corpus` now refuses.
     notation_dimensions_payload_sha256: str
     notation_dimensions_index_sha256: str
+    #: The second device's capture that finalizes the *baseline's* clip_id at 128x128.
+    #: A derivative citing that pair is measured against those pixels and certifies
+    #: these digests — the corpus half of the proof that the size map is keyed by
+    #: ``(device_id, clip_id)`` and not by an id two devices share.
+    wide_second_device_device_id: str
+    wide_second_device_clip_id: str
+    wide_second_device_payload_sha256: str
+    wide_second_device_index_sha256: str
     gap_clip_id: str
     gap_payload_bytes: int
     gap_index_bytes: int

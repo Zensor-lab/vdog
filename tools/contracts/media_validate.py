@@ -49,7 +49,12 @@ from .bounds import (
     UINT53_MAX,
 )
 from .errors import Violation
-from .jpeg import JpegStructureError, decode_size, sof_dimensions
+from .jpeg import (
+    JpegStructureError,
+    decode_size,
+    first_image_end_offset,
+    sof_dimensions,
+)
 from .media_model import sha256_hex, split_index_lines
 from .schema_docs import decimal_is_integral, schema_error_report
 
@@ -635,6 +640,36 @@ def _jpeg_violations(
                 f"decoder reported {decoded[0]}x{decoded[1]} but SOF reported {sof[0]}x{sof[1]}",
             )
         )
+    # media-format.md §3: each record starts where the preceding one ends and the
+    # final one ends at the exact file size, so an indexed slice is exactly one
+    # JPEG. The decoder reads only the first image, so a second complete image
+    # concatenated behind it — or any other bytes past its EOI — is frame data no
+    # record and no playback time will ever reach; only this structural walk of the
+    # marker chain sees it.
+    try:
+        first_end = first_image_end_offset(frame)
+    except JpegStructureError as error:
+        # A chain the walk cannot finish is not a statement about trailing bytes: the
+        # decoder may well have read the first image while a later segment's length
+        # field lies. The marker-chain failure keeps the code the SOF walk's own
+        # failure uses, so the report never claims bytes the walk did not locate.
+        found.append(
+            Violation(
+                E.JPEG_DECODE_FAILED,
+                location,
+                f"marker chain to EOI: {str(error).replace(chr(10), ' ')[:160]}",
+            )
+        )
+        return found
+    if first_end + 2 != len(frame):
+        found.append(
+            Violation(
+                E.JPEG_TRAILING_DATA,
+                location,
+                f"the first image ends at offset {first_end + 2} but the record's slice runs to "
+                f"{len(frame)}: the {len(frame) - first_end - 2} trailing bytes belong to no frame",
+            )
+        )
     return found
 
 
@@ -763,6 +798,42 @@ def _validate_manifest(
                     f"{duration_us} does not exceed the final t_us {records[-1]['t_us']}",
                 )
             )
+
+    # media-format.md §4: "After recovery, use last frame time plus one nominal
+    # frame period, clamped to the maximum duration". A non-recovered segment's
+    # close time is measured and not derivable from the index, so this equality
+    # is the recovered kind's alone; it reads the records only after the full
+    # index walk has judged them, and stays silent when any value it would
+    # compute with is one the checks above have already refused — including a
+    # walk that stopped early, whose records are a prefix rather than the index
+    # the manifest counts (that disagreement is FRAME_COUNT_MISMATCH's to name).
+    claimed_frames = record.get("frame_count")
+    if (
+        record.get("recovered") is True
+        and records
+        and _is_int(duration_us)
+        and not (_is_int(claimed_frames) and int(claimed_frames) != len(records))
+    ):
+        profile = record.get("profile")
+        final_t_us = records[-1].get("t_us")
+        fps = profile.get("nominal_fps") if isinstance(profile, Mapping) else None
+        if (
+            _is_int(fps)
+            and _is_int(final_t_us)
+            and MIN_NOMINAL_FPS <= int(fps) <= MAX_NOMINAL_FPS
+        ):
+            period_us = -(-1_000_000 // int(fps))
+            expected = min(int(final_t_us) + period_us, MAX_SEGMENT_DURATION_US)
+            if int(duration_us) != expected:
+                found.append(
+                    Violation(
+                        E.DURATION_RECOVERED_MISMATCH,
+                        "manifest.duration_us",
+                        f"{int(duration_us)} is not the recovery close time: last frame time "
+                        f"{int(final_t_us)} plus one nominal frame period of {period_us} us at "
+                        f"{int(fps)} fps, clamped to {MAX_SEGMENT_DURATION_US}, is {expected}",
+                    )
+                )
 
     found.extend(_profile_bound_violations(record.get("profile"), "manifest.profile"))
 
