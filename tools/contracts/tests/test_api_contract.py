@@ -23,6 +23,7 @@ from tools.contracts.api_model import (
 )
 from tools.contracts.api_validate import validate_api_fixture
 from tools.contracts.bounds import MAX_CURSOR_CHARS, MAX_PAGE_LIMIT
+from tools.contracts.media_validate import validate_media_fixture
 from tools.contracts.openapi_check import load_media_schemas
 from tools.contracts.schema_docs import resolve_refs
 
@@ -40,6 +41,13 @@ def index() -> list[dict]:
 @pytest.fixture(scope="module")
 def by_id(index: list[dict]) -> dict[str, dict]:
     return {entry["id"]: entry for entry in index}
+
+
+@pytest.fixture(scope="module")
+def full_by_id() -> dict[str, dict]:
+    """Every committed vector, both transports: the AC table names clip rows too."""
+    document = json.loads((FIXTURES / "fixtures.json").read_bytes().decode("utf-8"))
+    return {entry["id"]: entry for entry in document["fixtures"]}
 
 
 @pytest.fixture(scope="module")
@@ -251,17 +259,54 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "backend/invalid/upload-head-response-410-with-body": ("FIXTURE_INDEX_INVALID",),
     "backend/valid/clips-page-response-200-full-page": (),
     "backend/valid/patch_upload_file-response-410-expired": (),
+    # Round 5: the eight findings' own vectors (the clip rows ride the media validator).
+    "device/invalid/settings-put-response-409-missing-revision": ("API_SCHEMA",),
+    "device/invalid/settings-put-response-409-revision-non-integer": ("API_SCHEMA",),
+    "device/invalid/clip-file-response-401-no-challenge": ("HEADER_MISSING",),
+    "device/invalid/clip-file-response-401-wrong-scheme": ("HEADER_INVALID",),
+    "device/invalid/clip-file-response-401-challenge-trailing-newline": ("HEADER_INVALID",),
+    "backend/invalid/upload-head-response-401-no-challenge": ("HEADER_MISSING",),
+    "device/invalid/clip-file-response-206-wrong-offset": ("CONTENT_RANGE_INVALID",),
+    "device/valid/clip-file-response-206-resume": (),
+    "backend/invalid/upload-create-request-manifest-boot-prefix": ("CLIP_BOOT_PREFIX_MISMATCH",),
+    "backend/invalid/upload-create-request-manifest-clock-unknown-timestamp": (
+        "CLOCK_NULLITY_MISMATCH",
+    ),
+    "device/invalid/clip-manifest-response-200-boot-prefix": ("CLIP_BOOT_PREFIX_MISMATCH",),
+    "device/invalid/clip-manifest-response-200-clock-unknown-timestamp": (
+        "CLOCK_NULLITY_MISMATCH",
+    ),
+    "device/invalid/clip-manifest-response-200-oversize": (
+        "API_SCHEMA",
+        "MANIFEST_DECODED_TOO_LARGE",
+    ),
+    "media/invalid/index-first-t-us-fractional": ("FRAME_SCHEMA",),
+    "media/valid/index-integral-notations": (),
+    "backend/valid/upload-head-response-200-offset-equal": (),
+    "backend/invalid/upload-head-response-200-offset-beyond-end": ("UPLOAD_OFFSET_INVALID",),
+    "backend/invalid/derivative-response-200-crop-out-of-bounds": ("API_SCHEMA",),
+    "backend/invalid/devices-request-id-trailing-newline": ("API_SCHEMA",),
 }
 
 
 @pytest.mark.parametrize("fixture_id", sorted(AC_VECTORS))
 def test_ac_vector_exists_and_behaves_as_declared(
-    fixture_id: str, index: list[dict], by_id: dict, specs: dict, media_schemas: dict
+    fixture_id: str, full_by_id: dict, specs: dict, media_schemas: dict
 ) -> None:
-    """Every AC-named vector ships, and its observed codes match its declaration."""
-    entry = by_id.get(fixture_id)
-    assert entry is not None, f"{fixture_id} is required by AC-04/AC-05 but is not in the corpus"
-    observed = _observed(entry, specs, media_schemas)
+    """Every AC-named vector ships, and its observed codes match its declaration.
+
+    The table spans both transports: an API vector is judged by the API validator,
+    and a clip vector — the committed notation and fraction rows — by the media
+    validator, which is the only thing that reads its ``frames.jsonl``.
+    """
+    entry = full_by_id.get(fixture_id)
+    assert entry is not None, f"{fixture_id} is required by the AC table but is not in the corpus"
+    if entry["kind"] == "api":
+        observed = _observed(entry, specs, media_schemas)
+    else:
+        observed = {
+            violation.code for violation in validate_media_fixture(FIXTURES, entry, media_schemas)
+        }
     if entry["expected"] == "valid":
         assert observed == set(), (fixture_id, sorted(observed))
     else:
