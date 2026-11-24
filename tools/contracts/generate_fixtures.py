@@ -29,6 +29,7 @@ from typing import Any, Callable, Final, Mapping, Sequence
 
 from .bounds import (
     ACTIVE_NAME,
+    CHECKSUMS_NAME,
     MAX_DIMENSION_PX,
     MAX_INDEX_BYTES,
     MAX_NOMINAL_FPS,
@@ -41,6 +42,7 @@ from .bounds import (
 from .fixture_spec import (
     MediaCorpus,
     MediaFixture,
+    _raw_number,
     api_fixtures,
     boot_id,
     media_fixtures,
@@ -517,28 +519,32 @@ OVERSIZED_INDEX_DECLARATION_BYTES: Final[int] = 2_000_000
 assert OVERSIZED_INDEX_DECLARATION_BYTES > MAX_INDEX_BYTES
 
 
-def _raw_number(data: bytes, key: str, notation: str) -> bytes:
-    """Rewrite one numeric member of a committed JSON document as raw JSON text.
-
-    The *notation* is the point of these vectors, so the bytes are edited instead of the
-    parsed model: ``json.dumps`` would normalise ``120000001.0`` back to the plain
-    integer a conforming writer produces, which is exactly the value the vector is not.
-    """
-    member = key.encode("utf-8")
-    pattern = re.compile(rb'"%b":-?[0-9]+' % member)
-    replaced, count = pattern.subn(
-        b'"%b":%b' % (member, notation.encode("utf-8")), data, count=1
-    )
-    if count != 1:  # pragma: no cover - the key is part of the committed manifest
-        raise KeyError(f"{key!r} is not a numeric member of the committed manifest")
-    return replaced
-
-
 def _raw_manifest_number(key: str, notation: str) -> FileMutation:
     """A whole-manifest rewrite of one number, written in the notation under test."""
 
     def mutate(_fixture: MediaFixture, _built: BuiltClip, files: dict[str, bytes]) -> dict[str, bytes]:
         return _replace(files, MANIFEST_NAME, _raw_number(files[MANIFEST_NAME], key, notation))
+
+    return mutate
+
+
+def _mutate_manifest_notations(**notations: str) -> FileMutation:
+    """Rewrite several manifest numbers in their under-test notations, honestly.
+
+    A *valid* vector may not cheat on the checksum side: the raw rewrite changes
+    ``manifest.json``'s bytes, so the sidecar that certifies them is recomputed from
+    the rewritten document here, in the generator, and never by hand afterwards.
+    """
+
+    def mutate(_fixture: MediaFixture, _built: BuiltClip, files: dict[str, bytes]) -> dict[str, bytes]:
+        data = files[MANIFEST_NAME]
+        for key, notation in notations.items():
+            data = _raw_number(data, key, notation)
+        files[MANIFEST_NAME] = data
+        if CHECKSUMS_NAME in files:
+            content = {name: blob for name, blob in files.items() if name != CHECKSUMS_NAME}
+            files[CHECKSUMS_NAME] = dump_json(checksums_document(content))
+        return files
 
     return mutate
 
@@ -700,6 +706,15 @@ FILE_MUTATIONS: Final[Mapping[str, FileMutation]] = {
     "duration_too_long_exponent": _raw_manifest_number("duration_us", "1.20000001e8"),
     "dimensions_oversized_decimal": _raw_manifest_number("width", "1601.0"),
     "nominal_fps_high_decimal": _raw_manifest_number("nominal_fps", "31.0"),
+    # The exact-number pair on the manifest path: the integral spellings a conforming
+    # writer may send (and must be accepted), and the fraction that a binary-float
+    # parse would silently round into the integer it is not (and must be refused).
+    "manifest_integral_notations": _mutate_manifest_notations(
+        duration_us="266667.0", frame_count="4.0", capture_order="42.0"
+    ),
+    "manifest_duration_rolls_to_integer": _raw_manifest_number(
+        "duration_us", "266667.000000000001"
+    ),
     "index_declared_oversize": _mutate_index_declared_oversize,
 }
 
@@ -803,6 +818,7 @@ def build_media_corpus(media: Sequence[MediaFixture]) -> MediaCorpus:
         baseline_manifest_base64url=_b64url(manifest_bytes),
         baseline_chunk_sha256=sha256_hex(chunk),
         baseline_chunk_bytes=len(chunk),
+        baseline_chunk=chunk,
         gap_clip_id=gap.manifest["clip_id"] if gap.manifest else "",
         gap_payload_bytes=len(gap.payload),
         gap_index_bytes=len(gap.index),
@@ -904,6 +920,11 @@ def _build_all() -> dict[str, bytes]:
             # Written verbatim: the whole point of such a vector is a wire form that no
             # serializer in this module may produce, so the bytes are the specification.
             out[fixture.body_file or ""] = fixture.raw_body
+        elif fixture.chunk_body is not None:
+            # The octet-stream body of a chunk upload, written as the bytes the device
+            # would hash: a checksum vector whose chunk is only *described* in a header
+            # would leave the hash comparing against nothing.
+            out[fixture.body_file or ""] = fixture.chunk_body
         elif fixture.body is not None:
             out[fixture.body_file or ""] = dump_json(fixture.body)
         if fixture.headers is not None:

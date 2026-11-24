@@ -230,7 +230,13 @@ def validate_media_fixture(
         # hostile document from being read into memory in the first place.
         return violations
     try:
-        record = json.loads(record_bytes.decode("utf-8"))
+        # ``parse_float=decimal.Decimal`` for the same reason the index walk parses that
+        # way (see :func:`_walk_index`): the manifest's durations, counts and byte
+        # lengths are integers the contract bounds exactly, and a binary-float read of
+        # ``266667.000000000001`` rounds into a value every ``type: integer`` check and
+        # every dedicated bound below would then read as the integer ``266667``. The
+        # digits the writer sent are what the bounds have to judge.
+        record = json.loads(record_bytes.decode("utf-8"), parse_float=decimal.Decimal)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         violations.append(
             Violation(

@@ -2,6 +2,94 @@
   "fixtures": [
     {
       "api_error_code": null,
+      "category": "manifest",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CLIP_BOOT_PREFIX_MISMATCH"
+      ],
+      "files": [
+        "backend/invalid/clip-detail-response-200-manifest-boot-prefix.json"
+      ],
+      "id": "backend/invalid/clip-detail-response-200-manifest-boot-prefix",
+      "invariant": "AC-05/AC-06 a stored clip hands out its completion manifest as a member, and the media rules that refuse a clip id outside its own boot apply to that member exactly as they do to the file the device shipped",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_clip",
+      "operation_id": "getClip",
+      "path": "/clips/{clip_id}",
+      "schema": "StoredClip",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "manifest",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "backend/invalid/clip-detail-response-200-manifest-clip-id-disagrees.json"
+      ],
+      "id": "backend/invalid/clip-detail-response-200-manifest-clip-id-disagrees",
+      "invariant": "AC-05/AC-06 GET /clips/{clip_id} returns the manifest of the clip the URL names: a manifest that is well-formed about a different clip of the same boot is a record served under the wrong name",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_clip",
+      "operation_id": "getClip",
+      "path": "/clips/{clip_id}",
+      "schema": "StoredClip",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "manifest",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CLOCK_NULLITY_MISMATCH"
+      ],
+      "files": [
+        "backend/invalid/clip-detail-response-200-manifest-clock-unknown-timestamp.json"
+      ],
+      "id": "backend/invalid/clip-detail-response-200-manifest-clock-unknown-timestamp",
+      "invariant": "AC-05/AC-06 a clock that says it never synced may not also carry the time it claims to have synced to, whether the record travels as a manifest file or inside a stored-clip answer",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_clip",
+      "operation_id": "getClip",
+      "path": "/clips/{clip_id}",
+      "schema": "StoredClip",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "manifest",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "backend/invalid/clip-detail-response-200-manifest-device-id-disagrees.json"
+      ],
+      "id": "backend/invalid/clip-detail-response-200-manifest-device-id-disagrees",
+      "invariant": "AC-05/AC-06 the record and its own manifest name one clip: a stored clip of this device whose manifest is a well-formed record of another is two answers to one question, and no schema keyword of a member can say so",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_clip",
+      "operation_id": "getClip",
+      "path": "/clips/{clip_id}",
+      "schema": "StoredClip",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
       "category": "version",
       "contract": "backend-v1",
       "direction": "response",
@@ -102,6 +190,28 @@
       ],
       "id": "backend/invalid/derivative-response-200-crop-out-of-bounds",
       "invariant": "AC-06 boundary: a crop is measured in the source's pixels, and this record binds the committed 64x64 baseline, so y=60 with height=36 reaches pixel 96 of a file that stops at 64 — no such encode can have produced this derivative",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_derivative",
+      "operation_id": "getDerivative",
+      "path": "/derivatives/{id}",
+      "schema": "DerivativeRecord",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "boundary",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "backend/invalid/derivative-response-200-crop-out-of-bounds-float-notation.json"
+      ],
+      "id": "backend/invalid/derivative-response-200-crop-out-of-bounds-float-notation",
+      "invariant": "AC-06 boundary: y=120.0 is the same rectangle member as y=120 — the schema calls it an integer, so the bound has to measure it too. A crop whose defect is spelled with a decimal point is not a crop that fits",
       "kind": "api",
       "method": "GET",
       "operation": "backend.get_derivative",
@@ -433,6 +543,29 @@
       "direction": "request",
       "expected": "invalid",
       "expected_error_codes": [
+        "MANIFEST_DECODED_SCHEMA"
+      ],
+      "files": [
+        "backend/invalid/upload-create-request-manifest-duration-rolls-to-integer.headers.json",
+        "backend/invalid/upload-create-request-manifest-duration-rolls-to-integer.json"
+      ],
+      "id": "backend/invalid/upload-create-request-manifest-duration-rolls-to-integer",
+      "invariant": "AC-05/AC-06 the decoded manifest of an upload initialization is judged on the digits it carries, not on the nearest float: 266667.000000000001 is not an integer because it rounds to one, and an allocation must not be made against a duration the writer never stated",
+      "kind": "api",
+      "method": "POST",
+      "operation": "backend.create_upload",
+      "operation_id": "createUpload",
+      "path": "/uploads",
+      "schema": "CreateUploadRequest",
+      "status": null
+    },
+    {
+      "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
+      "direction": "request",
+      "expected": "invalid",
+      "expected_error_codes": [
         "API_SCHEMA_MISSING_FIELD"
       ],
       "files": [
@@ -613,6 +746,7 @@
         "UPLOAD_CHECKSUM_SYNTAX"
       ],
       "files": [
+        "backend/invalid/upload-patch-request-bad-checksum.chunk",
         "backend/invalid/upload-patch-request-bad-checksum.headers.json"
       ],
       "id": "backend/invalid/upload-patch-request-bad-checksum",
@@ -635,6 +769,7 @@
         "FILE_NAME_NOT_ALLOWED"
       ],
       "files": [
+        "backend/invalid/upload-patch-request-disallowed-name.chunk",
         "backend/invalid/upload-patch-request-disallowed-name.headers.json"
       ],
       "id": "backend/invalid/upload-patch-request-disallowed-name",
@@ -671,6 +806,29 @@
     },
     {
       "api_error_code": null,
+      "category": "boundary",
+      "contract": "backend-v1",
+      "direction": "request",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CONTENT_LENGTH_MISMATCH"
+      ],
+      "files": [
+        "backend/invalid/upload-patch-request-length-mismatch.chunk",
+        "backend/invalid/upload-patch-request-length-mismatch.headers.json"
+      ],
+      "id": "backend/invalid/upload-patch-request-length-mismatch",
+      "invariant": "AC-05/AC-06 boundary: Content-Length is a promise about the bytes that follow, and an in-range promise that is one byte longer than the committed chunk is a truncated stream — the device would append the next request's first byte to this one",
+      "kind": "api",
+      "method": "PATCH",
+      "operation": "backend.patch_upload_file",
+      "operation_id": "patchUploadFile",
+      "path": "/uploads/{id}/files/{name}",
+      "schema": null,
+      "status": null
+    },
+    {
+      "api_error_code": null,
       "category": "upload",
       "contract": "backend-v1",
       "direction": "request",
@@ -679,6 +837,7 @@
         "UPLOAD_OFFSET_INVALID"
       ],
       "files": [
+        "backend/invalid/upload-patch-request-negative-offset.chunk",
         "backend/invalid/upload-patch-request-negative-offset.headers.json"
       ],
       "id": "backend/invalid/upload-patch-request-negative-offset",
@@ -705,6 +864,29 @@
       ],
       "id": "backend/invalid/upload-patch-request-oversized-body",
       "invariant": "AC-05/AC-06 boundary: Content-Length 1048577 is above the 1,048,576-byte chunk ceiling and is 413",
+      "kind": "api",
+      "method": "PATCH",
+      "operation": "backend.patch_upload_file",
+      "operation_id": "patchUploadFile",
+      "path": "/uploads/{id}/files/{name}",
+      "schema": null,
+      "status": null
+    },
+    {
+      "api_error_code": null,
+      "category": "hash",
+      "contract": "backend-v1",
+      "direction": "request",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CHUNK_HASH_MISMATCH"
+      ],
+      "files": [
+        "backend/invalid/upload-patch-request-wrong-checksum.chunk",
+        "backend/invalid/upload-patch-request-wrong-checksum.headers.json"
+      ],
+      "id": "backend/invalid/upload-patch-request-wrong-checksum",
+      "invariant": "AC-05/AC-06 hash: a checksum in the exact documented form that is simply not the SHA-256 of the bytes beside it is the integrity failure the contract answers with 422 INTEGRITY_FAILURE — spelling and size are clean, so the bytes themselves are the only thing that can be wrong",
       "kind": "api",
       "method": "PATCH",
       "operation": "backend.patch_upload_file",
@@ -3416,10 +3598,11 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
+        "backend/valid/upload-patch-request-valid.chunk",
         "backend/valid/upload-patch-request-valid.headers.json"
       ],
       "id": "backend/valid/upload-patch-request-valid",
-      "invariant": "AC-05 chunk append carries the expected offset plus sha256 over the chunk, within the 1-1,048,576 byte body range",
+      "invariant": "AC-05 chunk append carries the expected offset plus sha256 over the chunk, within the 1-1,048,576 byte body range — and the chunk is committed as the raw bytes it streams, so the checksum and Content-Length are measured against them",
       "kind": "api",
       "method": "PATCH",
       "operation": "backend.patch_upload_file",
@@ -3604,6 +3787,29 @@
       "direction": "response",
       "expected": "invalid",
       "expected_error_codes": [
+        "RANGE_MULTI_NOT_ALLOWED"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-200-range-sidecar.headers.json",
+        "device/invalid/clip-file-response-200-range-sidecar.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-200-range-sidecar",
+      "invariant": "AC-06 range: §4's \"No Range returns 200\" reads both ways. A sidecar that asks for a hundred bytes and is handed the whole file is not the pair the contract describes: the answer is a 206 for that window, or a gated refusal, never 200",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
         "ACCEPT_RANGES_INVALID"
       ],
       "files": [
@@ -3709,6 +3915,52 @@
     },
     {
       "api_error_code": null,
+      "category": "etag",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "IF_MATCH_ETAG_DISAGREE"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-206-if-match-mismatch.headers.json",
+        "device/invalid/clip-file-response-206-if-match-mismatch.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-206-if-match-mismatch",
+      "invariant": "AC-06 range: a resume is conditional on the ETag it was given, and this grant ships one while its own request carries another. The required answer to that pairing is 412 CONTENT_CHANGED, so a 206 of bytes 0-99 is a file handed out under a precondition that was never satisfied",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
+      "api_error_code": null,
+      "category": "lease",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "HEADER_MISSING"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-206-missing-lease-sidecar.headers.json",
+        "device/invalid/clip-file-response-206-missing-lease-sidecar.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-206-missing-lease-sidecar",
+      "invariant": "AC-04/AC-06 a granted slice is bytes the device agreed not to evict: the X-Clip-Lease this operation requires on the request is required of the request a response vector names, not only of one filed on its own",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
+      "api_error_code": null,
       "category": "range",
       "contract": "device-v1",
       "direction": "response",
@@ -3758,6 +4010,29 @@
       "direction": "response",
       "expected": "invalid",
       "expected_error_codes": [
+        "RANGE_MULTI_NOT_ALLOWED"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-206-suffix-sidecar.headers.json",
+        "device/invalid/clip-file-response-206-suffix-sidecar.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-206-suffix-sidecar",
+      "invariant": "AC-06 range: bytes=-100 is a suffix range, which §4 refuses with 416 rather than serve. The answer on its own is impeccable — the grant is well-formed, in bounds and matches its Content-Length — which is exactly why the form of the request this 206 claims to answer has to be read at all",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
+      "api_error_code": null,
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
         "CONTENT_RANGE_INVALID"
       ],
       "files": [
@@ -3765,7 +4040,7 @@
         "device/invalid/clip-file-response-206-wrong-offset.request.headers.json"
       ],
       "id": "device/invalid/clip-file-response-206-wrong-offset",
-      "invariant": "AC-06 range: a well-formed, in-bounds Content-Range that answers a different specifier than it was given hands over bytes nobody asked for, so the granted interval is checked against the request it claims to serve",
+      "invariant": "AC-06 range: a well-formed, in-bounds Content-Range that answers a different specifier than it was given hands over bytes nobody asked for, so the granted interval is checked against the request it claims to serve. The sidecar is a complete conforming resume — lease, original ETag, and the specifier — so the wrong window is the only thing left to report",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_file",
@@ -3992,6 +4267,28 @@
       ],
       "id": "device/invalid/clip-manifest-response-200-clock-unknown-timestamp",
       "invariant": "AC-04/AC-06 the null-ness pairing of the media contract binds the manifest route as much as the card: unknown UTC with a timestamp attached is a fabrication wherever it is read",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_manifest",
+      "operation_id": "getClipManifest",
+      "path": "/clips/{clip_id}/manifest",
+      "schema": "Manifest",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "manifest",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "device/invalid/clip-manifest-response-200-duration-rolls-to-integer.json"
+      ],
+      "id": "device/invalid/clip-manifest-response-200-duration-rolls-to-integer",
+      "invariant": "AC-06 manifest: read as a binary float these digits are exactly 266667.0, the duration of the committed clip; read as the digits the writer sent they are a fraction, and no `type: integer` member of a manifest is a fraction. The manifest path parses exact numbers precisely so this difference survives",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_manifest",
@@ -4710,7 +5007,7 @@
         "device/valid/clip-file-response-206-resume.request.headers.json"
       ],
       "id": "device/valid/clip-file-response-206-resume",
-      "invariant": "AC-04/AC-06 a resumed download: the open-ended specifier bytes=200- is answered by exactly the interval it names, from byte 200 to the end of the committed payload, with Content-Length to match",
+      "invariant": "AC-04/AC-06 a resumed download: the open-ended specifier bytes=200- is answered by exactly the interval it names, from byte 200 to the end of the committed payload, with Content-Length to match — and the resume carries its sidecar in full, because §4 requires If-Match with the original ETag and the lease beside the Range it grants",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_file",
@@ -4804,6 +5101,28 @@
       "status": 412
     },
     {
+      "api_error_code": "CONTENT_CHANGED",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-file-response-412-unsupportable-sidecar.headers.json",
+        "device/valid/clip-file-response-412-unsupportable-sidecar.json",
+        "device/valid/clip-file-response-412-unsupportable-sidecar.request.headers.json"
+      ],
+      "id": "device/valid/clip-file-response-412-unsupportable-sidecar",
+      "invariant": "AC-04/AC-06 range: the If-Match precondition is evaluated before a range is parsed or served (RFC 9110 §13.2.2), so a resume whose ETag does not match owes 412 CONTENT_CHANGED whatever else its request carries — the suffix specifier beside it is owed a 416 only by a request that got that far",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 412
+    },
+    {
       "api_error_code": "RANGE_INVALID",
       "category": "range",
       "contract": "device-v1",
@@ -4888,6 +5207,28 @@
       "status": 416
     },
     {
+      "api_error_code": "RANGE_INVALID",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-file-response-416-suffix-sidecar.headers.json",
+        "device/valid/clip-file-response-416-suffix-sidecar.json",
+        "device/valid/clip-file-response-416-suffix-sidecar.request.headers.json"
+      ],
+      "id": "device/valid/clip-file-response-416-suffix-sidecar",
+      "invariant": "AC-04/AC-06 range: a suffix range is refused with 416 and proved against this file's length by bytes */<total>, with the original ETag still matching so the precondition did not gate first — the whole pair, request and refusal, is what §4 requires here",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 416
+    },
+    {
       "api_error_code": null,
       "category": "manifest",
       "contract": "device-v1",
@@ -4899,6 +5240,26 @@
       ],
       "id": "device/valid/clip-manifest-response-200",
       "invariant": "AC-04/AC-06 GET /clips/{clip_id}/manifest returns the exact immutable committed manifest.json, so this vector is those bytes",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_manifest",
+      "operation_id": "getClipManifest",
+      "path": "/clips/{clip_id}/manifest",
+      "schema": "Manifest",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "manifest",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-manifest-response-200-duration-integral-notation.json"
+      ],
+      "id": "device/valid/clip-manifest-response-200-duration-integral-notation",
+      "invariant": "AC-04/AC-06 the manifest route parses exact numbers: 266667.0 and 4.0 are the duration and frame count of the committed manifest, so a conforming writer's integral notation is the answer this route owes, not a type error",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_manifest",
@@ -7272,6 +7633,23 @@
       "kind": "clip"
     },
     {
+      "category": "time",
+      "contract": "media-v1",
+      "corruption": "manifest_duration_rolls_to_integer",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "MANIFEST_SCHEMA"
+      ],
+      "files": [
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/invalid/manifest-duration-rolls-to-integer",
+      "invariant": "AC-03/AC-06 duration_us 266667.000000000001: the binary-float read of this notation is exactly 266667.0, an integer to every checker that parses the usual way, but the digits a conforming writer sent denote a fraction, and `type: integer` on the manifest path refuses it just as the frame index already does",
+      "kind": "clip"
+    },
+    {
       "category": "hash",
       "contract": "media-v1",
       "corruption": "manifest_hash_mismatch",
@@ -7821,6 +8199,22 @@
       ],
       "id": "media/valid/index-integral-notations",
       "invariant": "AC-02/AC-06 frame record notation: seq 0.0, offset 0e0 and t_us 0E+0 are the same three integers as 0, 0 and 0 — `type: integer` in the published schema admits any JSON integer notation, so a conforming writer's bytes validate and the byte arithmetic reads the positions they name",
+      "kind": "clip"
+    },
+    {
+      "category": "manifest",
+      "contract": "media-v1",
+      "corruption": "manifest_integral_notations",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "checksums.json",
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/valid/manifest-integral-notations",
+      "invariant": "AC-02/AC-06 manifest notation: duration_us 266667.0, frame_count 4.0 and capture_order 42.0 are the same three integers the baseline writes plainly — the manifest path parses exact numbers, so an integral spelling validates on the manifest's own terms and the checksums still certify the shipped bytes",
       "kind": "clip"
     },
     {

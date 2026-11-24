@@ -2,7 +2,7 @@
 
 The published wire contract for the recorder, the backend and the original
 recording format: two OpenAPI 3.1 documents, three JSON Schema 2020-12 documents,
-and 393 committed golden fixtures that say exactly what every accepted and refused
+and 411 committed golden fixtures that say exactly what every accepted and refused
 request and response looks like on the wire. Everything here is machine-checked
 offline by `tools/validate_contracts.py`; nothing in this tree is prose-only.
 
@@ -14,7 +14,7 @@ documents are corrected — and the validator is expected to fail loudly in betw
 
 ## Running the checks
 
-The suite is 193 test functions; `tools/contracts/tests/test_corpus.py` fails if this
+The suite is 205 test functions; `tools/contracts/tests/test_corpus.py` fails if this
 number and the corpus counts quoted below ever drift apart from the tree.
 
 From the repository root, on the qualified interpreter (`uv` fetches CPython 3.12
@@ -51,10 +51,10 @@ uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
 | `media-v1/manifest.schema.json` | `manifest.json` of a finalized segment: identity, profile, clock, duration, count, close reason and the per-file hashes |
 | `media-v1/frame-record.schema.json` | one `frames.jsonl` line: `v`, `seq`, `offset`, `size`, `t_us`, `crc32` and nothing else |
 | `media-v1/active-record.schema.json` | `active.json` of an interrupted segment: the same identity without any completion claim |
-| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 393 vectors |
-| `fixtures/media/valid/` | 12 finalized and in-progress segments a healthy recorder writes, including the clock, gap, boundary, notation and recovery shapes |
-| `fixtures/media/invalid/` | 69 single-defect segments: every documented corruption class, one defect each |
-| `fixtures/device/`, `fixtures/backend/` | 312 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
+| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 411 vectors |
+| `fixtures/media/valid/` | 13 finalized and in-progress segments a healthy recorder writes, including the clock, gap, boundary, notation and recovery shapes |
+| `fixtures/media/invalid/` | 70 single-defect segments: every documented corruption class, one defect each |
+| `fixtures/device/`, `fixtures/backend/` | 328 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
 | `firmware-release-v1.schema.json` | **not part of this package** — the Stage 0.9 release-archive manifest, mirrored by `tools/firmware/contract.py` |
 
 A media fixture is a directory of the real files (`video.mjpg`, `frames.jsonl`,
@@ -96,12 +96,12 @@ harness artifact beside a valid clip, never something the recorder writes.
 
 They are different registers and deliberately do not share a namespace.
 
-**Validator diagnostics** (`tools/contracts/errors.py`, 100 codes) name *why the
+**Validator diagnostics** (`tools/contracts/errors.py`, 102 codes) name *why the
 contract or a fixture is wrong* — they appear in the validator report and in
 `fixtures.json` as `expected_error_codes`, and never on the wire. The specs state
 these conditions in prose but assign no identifiers, so this package named them;
 the name is chosen so the condition is recognizable from the code alone
-(`OFFSET_NOT_CONTIGUOUS`, `MANIFEST_SIZE_MISMATCH`, `ETAG_INVALID`). Two of them
+(`OFFSET_NOT_CONTIGUOUS`, `MANIFEST_SIZE_MISMATCH`, `ETAG_INVALID`). Four of them
 are rules no single documented sentence states and the validator therefore adds:
 `CLOCK_NULLITY_MISMATCH` (three conditions on `clock`: a `clock.source` of `unknown`
 must carry neither `start_utc` nor `uncertainty_ms`; a known source must carry both; and
@@ -111,7 +111,12 @@ shared 2^53−1 ceiling) and `RECOVERED_CLOSE_REASON_DISAGREE`, which enforces t
 `settings`, `clock_change`, `shutdown`, `storage_fault` or `ota` cannot claim
 `recovered: true`, and `recovered: true` may not arrive with any other close reason.
 That is stricter than media-format.md §6 read alone, which only states that a
-recovered segment always uses `recovery`. Every registered code is exercised: by a committed
+recovered segment always uses `recovery`. The other two are read off a *pair* of vectors
+rather than one document: `IF_MATCH_ETAG_DISAGREE` refuses a 200 or 206 whose request
+sidecar is conditional on an `ETag` the answer does not ship (interfaces.md §4 requires
+412 `CONTENT_CHANGED` for that pairing), and `CHUNK_HASH_MISMATCH` refuses a chunk whose
+committed bytes are not the `sha256` its well-formed `Upload-Checksum` declares (the 422
+`INTEGRITY_FAILURE` the same section requires). Every registered code is exercised: by a committed
 vector, by a mutation test, or — for the 256 MiB payload and 1.75 MiB index bounds
 that cannot be committed — by a synthetic temporary vector.
 

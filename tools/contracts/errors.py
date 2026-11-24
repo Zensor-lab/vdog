@@ -144,6 +144,14 @@ ACCEPT_RANGES_INVALID = "ACCEPT_RANGES_INVALID"
 HEADER_MISSING = "HEADER_MISSING"
 HEADER_INVALID = "HEADER_INVALID"
 RANGE_MULTI_NOT_ALLOWED = "RANGE_MULTI_NOT_ALLOWED"
+# The `If-Match` of a resume that is not the ETag of the answer it accompanies: the
+# required refusal is 412 CONTENT_CHANGED (interfaces.md §4, RFC 9110 §13.2.2), so a
+# grant that carries both is the violation.
+IF_MATCH_ETAG_DISAGREE = "IF_MATCH_ETAG_DISAGREE"
+# A chunk whose committed bytes hash differently than its well-formed Upload-Checksum
+# declares: the required refusal is 422 INTEGRITY_FAILURE (interfaces.md §8), so the
+# header's claim about these exact bytes is what fails here, not its spelling.
+CHUNK_HASH_MISMATCH = "CHUNK_HASH_MISMATCH"
 
 #: Every validator code, registered explicitly so that adding a constant without
 #: registering it is a test failure rather than a silently unknown code.
@@ -258,5 +266,7 @@ CODES: frozenset[str] = frozenset(
         HEADER_MISSING,
         HEADER_INVALID,
         RANGE_MULTI_NOT_ALLOWED,
+        IF_MATCH_ETAG_DISAGREE,
+        CHUNK_HASH_MISMATCH,
     )
 )

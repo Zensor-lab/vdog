@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Final, Mapping, Sequence
@@ -57,6 +58,7 @@ from .errors import (
     CHECKSUMS_SCHEMA,
     CHECKSUM_HASH_MISMATCH,
     CHECKSUM_SIZE_MISMATCH,
+    CHUNK_HASH_MISMATCH,
     CHUNK_SIZE_INVALID,
     CLIP_BOOT_PREFIX_MISMATCH,
     CLOCK_NULLITY_MISMATCH,
@@ -90,6 +92,7 @@ from .errors import (
     HEADER_INVALID,
     HEADER_MISSING,
     ID_SYNTAX_INVALID,
+    IF_MATCH_ETAG_DISAGREE,
     INDEX_EMPTY,
     INDEX_ENCODING_INVALID,
     INDEX_TRUNCATED,
@@ -121,7 +124,7 @@ from .errors import (
     VERSION_UNSUPPORTED,
 )
 from .jpeg import jpeg_seed
-from .media_model import ClipPlan, ClockPlan, FramePlan, ProfilePlan
+from .media_model import ClipPlan, ClockPlan, FramePlan, ProfilePlan, dump_json, sha256_hex
 
 #: Provisioned device identity used across the corpus (media-format.md §1).
 DEVICE_ID: Final[str] = "0123456789abcdef0123456789abcdef"
@@ -242,6 +245,12 @@ class ApiFixture:
     #: back. Those few vectors name their exact bytes here instead, and the generator
     #: writes them verbatim.
     raw_body: bytes | None = None
+    #: The body of an ``application/octet-stream`` request — today only the chunk of an
+    #: upload ``PATCH``, which the contract documents as 1-1,048,576 raw bytes. These
+    #: bytes are the vector: they are written verbatim as ``<id>.chunk`` and judged as
+    #: bytes by :func:`tools.contracts.api_validate.validate_upload_chunk_body`, never
+    #: decoded as JSON.
+    chunk_body: bytes | None = None
     headers: dict[str, str] | None = None
     #: The request a response vector answers, when the pairing is part of what the vector
     #: demonstrates. A 206 only means something relative to the `Range` it grants, so the
@@ -252,9 +261,9 @@ class ApiFixture:
 
     @property
     def body_file(self) -> str | None:
-        if self.body is None and self.raw_body is None:
+        if self.body is None and self.raw_body is None and self.chunk_body is None:
             return None
-        return f"{self.id}.json"
+        return f"{self.id}.chunk" if self.chunk_body is not None else f"{self.id}.json"
 
     @property
     def headers_file(self) -> str | None:
@@ -324,6 +333,19 @@ def _valid_media() -> tuple[MediaFixture, ...]:
                 "same three integers as 0, 0 and 0 — `type: integer` in the published schema "
                 "admits any JSON integer notation, so a conforming writer's bytes validate and "
                 "the byte arithmetic reads the positions they name"
+            ),
+        ),
+        MediaFixture(
+            id="media/valid/manifest-integral-notations",
+            kind="clip",
+            category="manifest",
+            plan=_plan("manifest-integral-notations", VALID_BASELINE_TIMES, capture_order=42),
+            corruption="manifest_integral_notations",
+            invariant=(
+                "AC-02/AC-06 manifest notation: duration_us 266667.0, frame_count 4.0 and "
+                "capture_order 42.0 are the same three integers the baseline writes plainly — "
+                "the manifest path parses exact numbers, so an integral spelling validates on "
+                "the manifest's own terms and the checksums still certify the shipped bytes"
             ),
         ),
         MediaFixture(
@@ -956,6 +978,19 @@ _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
         ),
     ),
     _Negative(
+        id="media/invalid/manifest-duration-rolls-to-integer",
+        category="time",
+        corruption="manifest_duration_rolls_to_integer",
+        codes=(MANIFEST_SCHEMA,),
+        invariant=(
+            "AC-03/AC-06 duration_us 266667.000000000001: the binary-float read of this "
+            "notation is exactly 266667.0, an integer to every checker that parses the usual "
+            "way, but the digits a conforming writer sent denote a fraction, and "
+            "`type: integer` on the manifest path refuses it just as the frame index already "
+            "does"
+        ),
+    ),
+    _Negative(
         id="media/invalid/index-declared-oversize",
         category="boundary",
         corruption="index_declared_oversize",
@@ -1099,16 +1134,17 @@ class _ApiList:
         schema: str | None = None,
         body: dict[str, Any] | None = None,
         raw_body: bytes | None = None,
+        chunk_body: bytes | None = None,
         headers: dict[str, str] | None = None,
         request_headers: dict[str, str] | None = None,
         api_error_code: str | None = None,
     ) -> None:
         if operation not in ALL_OPERATIONS:
             raise KeyError(f"undeclared operation {operation}")
-        if body is not None and raw_body is not None:
+        if sum(value is not None for value in (body, raw_body, chunk_body)) > 1:
             # One vector, one body: two bodies for one wire file means whichever the
             # generator picked, the other would be a silent second truth about it.
-            raise ValueError(f"{id} declares both a structured and a raw body")
+            raise ValueError(f"{id} declares more than one body")
         self.items.append(
             ApiFixture(
                 id=f"{contract}/{'valid' if expected == 'valid' else 'invalid'}/{id}",
@@ -1123,6 +1159,7 @@ class _ApiList:
                 schema=schema,
                 body=body,
                 raw_body=raw_body,
+                chunk_body=chunk_body,
                 headers=headers,
                 request_headers=request_headers,
                 api_error_code=api_error_code,
@@ -1141,6 +1178,33 @@ def _error_body(code: str, message: str, *, retryable: bool, request_id: str) ->
             "request_id": request_id,
         },
     }
+
+
+def _raw_number(data: bytes, key: str, notation: str) -> bytes:
+    """Rewrite one numeric member of a committed JSON document as raw JSON text.
+
+    The *notation* is the point of these vectors, so the bytes are edited instead of the
+    parsed model: ``json.dumps`` would normalise ``120000001.0`` back to the plain
+    integer a conforming writer produces, which is exactly the value the vector is not.
+    The generator's manifest mutations and the raw-body API vectors share this one
+    writer so the notation cannot drift between the two transports.
+    """
+    member = key.encode("utf-8")
+    # The lookahead pins the number's end: the committed document carries plain
+    # integers, so requiring the digits to stop at a structural character is what
+    # keeps a partial rewrite (``"frame_count":4`` inside ``"frame_count":40``) out.
+    pattern = re.compile(rb'"%b":-?[0-9]+(?=[,}])' % member)
+    replaced, count = pattern.subn(
+        b'"%b":%b' % (member, notation.encode("utf-8")), data, count=1
+    )
+    if count != 1:  # pragma: no cover - the key is part of the committed document
+        raise KeyError(f"{key!r} is not a numeric member of the committed document")
+    return replaced
+
+
+def _manifest_b64url(manifest_bytes: bytes) -> str:
+    """Unpadded base64url of committed manifest bytes, the upload wire form wants."""
+    return base64.urlsafe_b64encode(manifest_bytes).decode("ascii").rstrip("=")
 
 
 def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
@@ -2039,6 +2103,52 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
     )
 
     out.add(
+        id="clip-manifest-response-200-duration-integral-notation",
+        contract="device",
+        category="manifest",
+        operation="device.get_clip_manifest",
+        direction="response",
+        status=200,
+        schema="Manifest",
+        # The same three integers the baseline writes plainly, in the two integral
+        # spellings JSON admits. They are written as bytes, not as a parsed model,
+        # because a serializer would normalise the notation away — and the notation is
+        # the whole vector.
+        raw_body=_raw_number(
+            _raw_number(
+                dump_json(media.baseline_manifest), "duration_us", "266667.0"
+            ),
+            "frame_count",
+            "4.0",
+        ),
+        invariant=(
+            "AC-04/AC-06 the manifest route parses exact numbers: 266667.0 and 4.0 are "
+            "the duration and frame count of the committed manifest, so a conforming "
+            "writer's integral notation is the answer this route owes, not a type error"
+        ),
+    )
+    out.add(
+        id="clip-manifest-response-200-duration-rolls-to-integer",
+        contract="device",
+        category="manifest",
+        operation="device.get_clip_manifest",
+        direction="response",
+        status=200,
+        schema="Manifest",
+        raw_body=_raw_number(
+            dump_json(media.baseline_manifest), "duration_us", "266667.000000000001"
+        ),
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-06 manifest: read as a binary float these digits are exactly 266667.0, the "
+            "duration of the committed clip; read as the digits the writer sent they are a "
+            "fraction, and no `type: integer` member of a manifest is a fraction. The "
+            "manifest path parses exact numbers precisely so this difference survives"
+        ),
+    )
+
+    out.add(
         id="lease-create-request",
         contract="device",
         category="lease",
@@ -2288,11 +2398,17 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "ETag": payload_etag,
             "Content-Length": str(media.baseline_payload_bytes - 200),
         },
-        request_headers={"Range": "bytes=200-"},
+        request_headers={
+            "If-Match": payload_etag,
+            "Range": "bytes=200-",
+            "X-Clip-Lease": lease_id,
+        },
         invariant=(
             "AC-04/AC-06 a resumed download: the open-ended specifier bytes=200- is "
             "answered by exactly the interval it names, from byte 200 to the end of the "
-            "committed payload, with Content-Length to match"
+            "committed payload, with Content-Length to match — and the resume carries its "
+            "sidecar in full, because §4 requires If-Match with the original ETag and the "
+            "lease beside the Range it grants"
         ),
     )
     out.add(
@@ -2308,13 +2424,182 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "ETag": payload_etag,
             "Content-Length": "100",
         },
-        request_headers={"Range": f"bytes={media.baseline_payload_bytes - 1}-"},
+        request_headers={
+            "If-Match": payload_etag,
+            "Range": f"bytes={media.baseline_payload_bytes - 1}-",
+            "X-Clip-Lease": lease_id,
+        },
         expected="invalid",
         codes=(CONTENT_RANGE_INVALID,),
         invariant=(
             "AC-06 range: a well-formed, in-bounds Content-Range that answers a different "
             "specifier than it was given hands over bytes nobody asked for, so the "
-            "granted interval is checked against the request it claims to serve"
+            "granted interval is checked against the request it claims to serve. The "
+            "sidecar is a complete conforming resume — lease, original ETag, and the "
+            "specifier — so the wrong window is the only thing left to report"
+        ),
+    )
+    # --- The request sidecar is a request (interfaces.md §4, RFC 9110 §13.2.2) -------
+    #
+    # A response vector that carries its request is asserting a *pair*, and the range
+    # and precondition rules of §4 are properties of that pair. These six vectors are
+    # the pair-level coverage: three grants whose sidecar is not the request the answer
+    # claims to be, and two refusals whose gated answer is the required one whatever the
+    # sidecar spelled.
+    out.add(
+        id="clip-file-response-206-suffix-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes 0-99/{media.baseline_payload_bytes}",
+            "ETag": payload_etag,
+            "Content-Length": "100",
+        },
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": payload_etag,
+            "Range": "bytes=-100",
+        },
+        expected="invalid",
+        codes=(RANGE_MULTI_NOT_ALLOWED,),
+        invariant=(
+            "AC-06 range: bytes=-100 is a suffix range, which §4 refuses with 416 rather "
+            "than serve. The answer on its own is impeccable — the grant is well-formed, "
+            "in bounds and matches its Content-Length — which is exactly why the form of "
+            "the request this 206 claims to answer has to be read at all"
+        ),
+    )
+    out.add(
+        id="clip-file-response-200-range-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=200,
+        headers={
+            "Accept-Ranges": "bytes",
+            "ETag": payload_etag,
+            "Content-Length": str(media.baseline_payload_bytes),
+        },
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": payload_etag,
+            "Range": "bytes=0-99",
+        },
+        expected="invalid",
+        codes=(RANGE_MULTI_NOT_ALLOWED,),
+        invariant=(
+            "AC-06 range: §4's \"No Range returns 200\" reads both ways. A sidecar that "
+            "asks for a hundred bytes and is handed the whole file is not the pair the "
+            "contract describes: the answer is a 206 for that window, or a gated refusal, "
+            "never 200"
+        ),
+    )
+    out.add(
+        id="clip-file-response-206-if-match-mismatch",
+        contract="device",
+        category="etag",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes 0-99/{media.baseline_payload_bytes}",
+            "ETag": payload_etag,
+            "Content-Length": "100",
+        },
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": f'"{"0" * 64}"',
+            "Range": "bytes=0-99",
+        },
+        expected="invalid",
+        codes=(IF_MATCH_ETAG_DISAGREE,),
+        invariant=(
+            "AC-06 range: a resume is conditional on the ETag it was given, and this "
+            "grant ships one while its own request carries another. The required answer "
+            "to that pairing is 412 CONTENT_CHANGED, so a 206 of bytes 0-99 is a file "
+            "handed out under a precondition that was never satisfied"
+        ),
+    )
+    out.add(
+        id="clip-file-response-206-missing-lease-sidecar",
+        contract="device",
+        category="lease",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes 0-99/{media.baseline_payload_bytes}",
+            "ETag": payload_etag,
+            "Content-Length": "100",
+        },
+        request_headers={"If-Match": payload_etag, "Range": "bytes=0-99"},
+        expected="invalid",
+        codes=(HEADER_MISSING,),
+        invariant=(
+            "AC-04/AC-06 a granted slice is bytes the device agreed not to evict: the "
+            "X-Clip-Lease this operation requires on the request is required of the "
+            "request a response vector names, not only of one filed on its own"
+        ),
+    )
+    out.add(
+        id="clip-file-response-412-unsupportable-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=412,
+        api_error_code="CONTENT_CHANGED",
+        headers={"Accept-Ranges": "bytes"},
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": f'"{"0" * 64}"',
+            "Range": "bytes=-100",
+        },
+        body=_error_body(
+            "CONTENT_CHANGED", "ETag no longer matches", retryable=False, request_id="req-bf10"
+        ),
+        invariant=(
+            "AC-04/AC-06 range: the If-Match precondition is evaluated before a range is "
+            "parsed or served (RFC 9110 §13.2.2), so a resume whose ETag does not match "
+            "owes 412 CONTENT_CHANGED whatever else its request carries — the suffix "
+            "specifier beside it is owed a 416 only by a request that got that far"
+        ),
+    )
+    out.add(
+        id="clip-file-response-416-suffix-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=416,
+        api_error_code="RANGE_INVALID",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes */{media.baseline_payload_bytes}",
+        },
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": payload_etag,
+            "Range": "bytes=-100",
+        },
+        body=_error_body(
+            "RANGE_INVALID",
+            "Suffix ranges are not supported",
+            retryable=False,
+            request_id="req-bf11",
+        ),
+        invariant=(
+            "AC-04/AC-06 range: a suffix range is refused with 416 and proved against "
+            "this file's length by bytes */<total>, with the original ETag still matching "
+            "so the precondition did not gate first — the whole pair, request and refusal, "
+            "is what §4 requires here"
         ),
     )
     out.add(
@@ -3125,6 +3410,117 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         invariant="AC-06 version: every response object carries top-level v:1",
     )
     out.add(
+        id="clip-detail-response-200-manifest-boot-prefix",
+        contract="backend",
+        category="manifest",
+        operation="backend.get_clip",
+        direction="response",
+        status=200,
+        schema="StoredClip",
+        body={
+            "v": API_VERSION,
+            "device_id": DEVICE_ID,
+            "clip_id": media.baseline_clip_id,
+            # The manifest is a member here, and a member the OpenAPI mirror only
+            # checks for shape: the media contract's own rule — a clip id begins with
+            # the boot id of the boot that made it — is the only thing that can notice.
+            "manifest": {**media.baseline_manifest, "boot_id": boot_id("stored-boot-rival")},
+            "uploaded_at": "2026-03-04T12:00:00.000Z",
+            "integrity_state": "verified",
+            "derivatives": [],
+        },
+        expected="invalid",
+        codes=(CLIP_BOOT_PREFIX_MISMATCH,),
+        invariant=(
+            "AC-05/AC-06 a stored clip hands out its completion manifest as a member, "
+            "and the media rules that refuse a clip id outside its own boot apply to "
+            "that member exactly as they do to the file the device shipped"
+        ),
+    )
+    out.add(
+        id="clip-detail-response-200-manifest-clock-unknown-timestamp",
+        contract="backend",
+        category="manifest",
+        operation="backend.get_clip",
+        direction="response",
+        status=200,
+        schema="StoredClip",
+        body={
+            "v": API_VERSION,
+            "device_id": DEVICE_ID,
+            "clip_id": media.baseline_clip_id,
+            "manifest": {
+                **media.baseline_manifest,
+                "clock": {**media.baseline_manifest["clock"], "source": "unknown"},
+            },
+            "uploaded_at": "2026-03-04T12:00:00.000Z",
+            "integrity_state": "verified",
+            "derivatives": [],
+        },
+        expected="invalid",
+        codes=(CLOCK_NULLITY_MISMATCH,),
+        invariant=(
+            "AC-05/AC-06 a clock that says it never synced may not also carry the time it "
+            "claims to have synced to, whether the record travels as a manifest file or "
+            "inside a stored-clip answer"
+        ),
+    )
+    out.add(
+        id="clip-detail-response-200-manifest-device-id-disagrees",
+        contract="backend",
+        category="manifest",
+        operation="backend.get_clip",
+        direction="response",
+        status=200,
+        schema="StoredClip",
+        body={
+            "v": API_VERSION,
+            "device_id": DEVICE_ID,
+            "clip_id": media.baseline_clip_id,
+            "manifest": {**media.baseline_manifest, "device_id": "0" * 32},
+            "uploaded_at": "2026-03-04T12:00:00.000Z",
+            "integrity_state": "verified",
+            "derivatives": [],
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-05/AC-06 the record and its own manifest name one clip: a stored clip of "
+            "this device whose manifest is a well-formed record of another is two answers "
+            "to one question, and no schema keyword of a member can say so"
+        ),
+    )
+    out.add(
+        id="clip-detail-response-200-manifest-clip-id-disagrees",
+        contract="backend",
+        category="manifest",
+        operation="backend.get_clip",
+        direction="response",
+        status=200,
+        schema="StoredClip",
+        body={
+            "v": API_VERSION,
+            "device_id": DEVICE_ID,
+            "clip_id": media.baseline_clip_id,
+            # The rival id of the same boot: its own prefix rule is satisfied, so the
+            # only thing wrong with it is that it is not the clip this record is about.
+            "manifest": {
+                **media.baseline_manifest,
+                "clip_id": f"{media.baseline_manifest['boot_id']}-00000002",
+            },
+            "uploaded_at": "2026-03-04T12:00:00.000Z",
+            "integrity_state": "verified",
+            "derivatives": [],
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-05/AC-06 GET /clips/{clip_id} returns the manifest of the clip the URL "
+            "names: a manifest that is well-formed about a different clip of the same boot "
+            "is a record served under the wrong name"
+        ),
+    )
+    out.add(
         id="clip-delete-response-202",
         contract="backend",
         category="catalog",
@@ -3358,6 +3754,33 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         invariant="AC-05 JSON that is not a valid media manifest is rejected before allocation",
     )
     out.add(
+        id="upload-create-request-manifest-duration-rolls-to-integer",
+        contract="backend",
+        category="upload",
+        operation="backend.create_upload",
+        direction="request",
+        schema="CreateUploadRequest",
+        headers={"Idempotency-Key": _uuid("idempotency-duration-notation")},
+        # The bytes the device would have sent, with the duration written in the one
+        # notation a binary-float reader turns into the committed clip's own duration_us.
+        body={
+            "v": API_VERSION,
+            "manifest_base64url": _manifest_b64url(
+                _raw_number(
+                    dump_json(media.baseline_manifest), "duration_us", "266667.000000000001"
+                )
+            ),
+        },
+        expected="invalid",
+        codes=(MANIFEST_DECODED_SCHEMA,),
+        invariant=(
+            "AC-05/AC-06 the decoded manifest of an upload initialization is judged on "
+            "the digits it carries, not on the nearest float: 266667.000000000001 is not "
+            "an integer because it rounds to one, and an allocation must not be made "
+            "against a duration the writer never stated"
+        ),
+    )
+    out.add(
         id="upload-create-request-manifest-boot-prefix",
         contract="backend",
         category="upload",
@@ -3428,6 +3851,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         category="upload",
         operation="backend.patch_upload_file",
         direction="request",
+        chunk_body=media.baseline_chunk,
         headers={
             "Upload-Offset": "0",
             "Upload-Checksum": f"sha256 {media.baseline_chunk_sha256}",
@@ -3435,7 +3859,8 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         },
         invariant=(
             "AC-05 chunk append carries the expected offset plus sha256 over the chunk, within the "
-            "1-1,048,576 byte body range"
+            "1-1,048,576 byte body range — and the chunk is committed as the raw bytes it "
+            "streams, so the checksum and Content-Length are measured against them"
         ),
     )
     out.add(
@@ -3530,6 +3955,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         category="hash",
         operation="backend.patch_upload_file",
         direction="request",
+        chunk_body=media.baseline_chunk,
         headers={
             "Upload-Offset": "0",
             "Upload-Checksum": f"sha256 {_sha('chunk').upper()}",
@@ -3540,11 +3966,33 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         invariant="AC-05/AC-06 hash: Upload-Checksum must be lowercase hex over exactly 64 digits",
     )
     out.add(
+        id="upload-patch-request-wrong-checksum",
+        contract="backend",
+        category="hash",
+        operation="backend.patch_upload_file",
+        direction="request",
+        chunk_body=media.baseline_chunk,
+        headers={
+            "Upload-Offset": "0",
+            "Upload-Checksum": f"sha256 {_sha('chunk-wrong-digest')}",
+            "Content-Length": str(media.baseline_chunk_bytes),
+        },
+        expected="invalid",
+        codes=(CHUNK_HASH_MISMATCH,),
+        invariant=(
+            "AC-05/AC-06 hash: a checksum in the exact documented form that is simply not "
+            "the SHA-256 of the bytes beside it is the integrity failure the contract "
+            "answers with 422 INTEGRITY_FAILURE — spelling and size are clean, so the "
+            "bytes themselves are the only thing that can be wrong"
+        ),
+    )
+    out.add(
         id="upload-patch-request-disallowed-name",
         contract="backend",
         category="upload",
         operation="backend.patch_upload_file",
         direction="request",
+        chunk_body=media.baseline_chunk,
         headers={
             "Upload-Offset": "0",
             "Upload-Checksum": f"sha256 {media.baseline_chunk_sha256}",
@@ -3556,11 +4004,33 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         invariant="AC-05 only video.mjpg and frames.jsonl may be streamed, never the manifest",
     )
     out.add(
+        id="upload-patch-request-length-mismatch",
+        contract="backend",
+        category="boundary",
+        operation="backend.patch_upload_file",
+        direction="request",
+        chunk_body=media.baseline_chunk,
+        headers={
+            "Upload-Offset": "0",
+            "Upload-Checksum": f"sha256 {media.baseline_chunk_sha256}",
+            "Content-Length": str(media.baseline_chunk_bytes + 1),
+        },
+        expected="invalid",
+        codes=(CONTENT_LENGTH_MISMATCH,),
+        invariant=(
+            "AC-05/AC-06 boundary: Content-Length is a promise about the bytes that "
+            "follow, and an in-range promise that is one byte longer than the committed "
+            "chunk is a truncated stream — the device would append the next request's "
+            "first byte to this one"
+        ),
+    )
+    out.add(
         id="upload-patch-request-negative-offset",
         contract="backend",
         category="upload",
         operation="backend.patch_upload_file",
         direction="request",
+        chunk_body=media.baseline_chunk,
         headers={
             "Upload-Offset": "-1",
             "Upload-Checksum": f"sha256 {media.baseline_chunk_sha256}",
@@ -4139,6 +4609,43 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
+        id="derivative-response-200-crop-out-of-bounds-float-notation",
+        contract="backend",
+        category="boundary",
+        operation="backend.get_derivative",
+        direction="response",
+        status=200,
+        schema="DerivativeRecord",
+        body={
+            "v": API_VERSION,
+            "derivative_id": "drv-4",
+            "device_id": DEVICE_ID,
+            "clip_id": media.baseline_clip_id,
+            "job_id": "job-0004",
+            "type": "transcode",
+            "preset": "h264-vbr-720p",
+            "encoder_version": "libx264-0.165",
+            "filter_version": "vdog-eis-1",
+            "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
+            "output": {"width": 1280, "height": 720},
+            # 120.0 is the integer 120 to ``type: integer``: a bounds check that only
+            # reads plain ``int`` instances would skip this row of pixels entirely.
+            "crop": {"x": 0, "y": 120.0, "width": 64, "height": 36},
+            "original_hashes": {
+                "video.mjpg": media.baseline_payload_sha256,
+                "frames.jsonl": media.baseline_index_sha256,
+            },
+            "sha256": _sha("derivative-crop-notation"),
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-06 boundary: y=120.0 is the same rectangle member as y=120 — the schema "
+            "calls it an integer, so the bound has to measure it too. A crop whose defect "
+            "is spelled with a decimal point is not a crop that fits"
+        ),
+    )
+    out.add(
         id="derivative-response-200-bad-hash",
         contract="backend",
         category="hash",
@@ -4228,6 +4735,10 @@ class MediaCorpus:
     baseline_manifest_base64url: str
     baseline_chunk_sha256: str
     baseline_chunk_bytes: int
+    #: The chunk those two facts describe, so an upload vector can ship the bytes rather
+    #: than only describe them: a checksum over a chunk nobody committed proves nothing
+    #: about the bytes a device would hash.
+    baseline_chunk: bytes
     gap_clip_id: str
     gap_payload_bytes: int
     gap_index_bytes: int

@@ -18,6 +18,8 @@ been evaluated ahead of it to excuse a form §4 does not support.
 from __future__ import annotations
 
 import base64
+import decimal
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -40,7 +42,7 @@ from .bounds import (
 )
 from .errors import Violation
 from .media_validate import MANIFEST_WIRE_SUPPRESSED, validate_manifest_fields
-from .schema_docs import resolve_refs, schema_error_report
+from .schema_docs import is_json_integer, resolve_refs, schema_error_report
 
 _UUID = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 _QUOTED_SHA = re.compile(r'\A"[0-9a-f]{64}"\Z')
@@ -85,6 +87,23 @@ _MANIFEST_RESPONSE_OPERATIONS: frozenset[str] = frozenset({"device.get_clip_mani
 #: Operations whose 200 body records a crop taken out of a clip this corpus also ships,
 #: so the rectangle can be measured against the source it claims to come from.
 _CROP_BOUND_OPERATIONS: frozenset[str] = frozenset({"backend.get_derivative"})
+
+#: Operations whose 200 body carries a completion manifest as a *member* — today the
+#: backend's ``StoredClip`` — so the media contract's own field rules apply to that
+#: nested record too. ``device.get_clip_manifest`` (the body *is* the manifest) rides
+#: :data:`_MANIFEST_RESPONSE_OPERATIONS` above; this table is for the transport where
+#: the manifest travels inside a larger record, which the OpenAPI mirror alone leaves
+#: free to contradict its own envelope.
+_STORED_CLIP_MANIFEST_OPERATIONS: frozenset[str] = frozenset({"backend.get_clip"})
+
+
+#: Operations whose request body is the raw bytes the contract publishes for them —
+#: today only the chunk of an upload ``PATCH``, which ``backend-v1.yaml`` documents as
+#: ``application/octet-stream`` of 1-1,048,576 bytes. Their body is never JSON-decoded:
+#: there is no ``v`` to read, no component schema to bind, and the request ceiling that
+#: guards control bodies would refuse a conforming chunk nobody sent text. What the
+#: chunk owes is judged as bytes by :func:`validate_upload_chunk_body`.
+_BINARY_REQUEST_OPERATIONS: frozenset[str] = frozenset({"backend.patch_upload_file"})
 
 
 def validate_api_fixture(
@@ -191,7 +210,8 @@ def validate_api_fixture(
         # contents rules have nothing legitimate to judge.
         violations.extend(presence)
         body_bytes = None
-    if body_bytes is not None:
+    binary_request = direction == "request" and operation.key in _BINARY_REQUEST_OPERATIONS
+    if body_bytes is not None and not binary_request:
         if direction == "request":
             # Only a request meets a published body ceiling here: the request is what
             # the receiving side has to buffer, and the upload-init exception (32 KiB)
@@ -210,7 +230,18 @@ def validate_api_fixture(
                 # Refuse an over-limit body before decoding any further of it.
                 return violations
         try:
-            parsed = json.loads(body_bytes.decode("utf-8"), parse_constant=_reject_nonfinite)
+            # ``parse_float=decimal.Decimal`` keeps the notation a body has to survive
+            # on: the media walk parses its index that way (see
+            # :func:`tools.contracts.media_validate._walk_index`), and a manifest
+            # response or upload binding carries the very integers that decision judges.
+            # The default float conversion turns ``266667.000000000001`` into exactly
+            # ``266667.0`` — an integral float the ``type: integer`` keyword and every
+            # dedicated bound below would then read as the integer it is not.
+            parsed = json.loads(
+                body_bytes.decode("utf-8"),
+                parse_float=decimal.Decimal,
+                parse_constant=_reject_nonfinite,
+            )
         except ValueError as error:
             # One path for every way a body fails to be JSON: the decoder's
             # ``JSONDecodeError``, the strict UTF-8 read's ``UnicodeDecodeError`` and
@@ -302,6 +333,15 @@ def validate_api_fixture(
     ):
         violations.extend(validate_derivative_crop(entry, body, clip_dimensions or {}))
 
+    if (
+        body is not None
+        and direction == "response"
+        and status == 200
+        and operation.key in _STORED_CLIP_MANIFEST_OPERATIONS
+        and isinstance(body.get("manifest"), Mapping)
+    ):
+        violations.extend(validate_stored_clip_manifest(entry, body))
+
     context = _HeaderContext(
         location=str(entry["id"]),
         operation=operation,
@@ -335,6 +375,20 @@ def validate_api_fixture(
                 )
                 continue
             violations.extend(rule(context, name, value))
+
+    if direction == "response" and request_headers:
+        # The request this answer claims to answer is itself a request: the required-
+        # header walk and the header rules judge it too, and the range/precondition
+        # pairing below reads it as the only statement of what was actually asked.
+        violations.extend(
+            _evaluate_request_sidecar(entry, operation, status, context.headers, request_headers)
+        )
+
+    if binary_request:
+        # Judged after the header walk, in the direction the contract documents this
+        # body: the size defect is the finding and nothing else, exactly as an
+        # over-limit manifest is a size defect before its fields are put on trial.
+        violations.extend(validate_upload_chunk_body(entry, context.headers, body_bytes))
 
     if (
         not operation.required_request_headers
@@ -1153,6 +1207,115 @@ HEADER_RULES: Mapping[str, Rule] = {
 }
 
 
+def _evaluate_request_sidecar(
+    entry: Mapping[str, Any],
+    operation: Operation,
+    status: Any,
+    response_headers: Mapping[str, str],
+    request_headers: Mapping[str, str],
+) -> list[Violation]:
+    """Judge a response vector's request sidecar as the request it claims to be.
+
+    A response sidecar used to be read for one thing: the specifier
+    :func:`_requested_span_mismatch` compares a grant against. That left the sidecar a
+    free pass — a ``206`` could answer a suffix range, a ``200`` could answer any
+    ``Range`` at all, and a resume could carry an ``If-Match`` that is not the ``ETag``
+    it ships beside, because nothing on the request side of the pairing was ever walked
+    (interfaces.md §4, RFC 9110 §13.2.2: the preconditions and the range rules are
+    properties of the *pair*, and a vector that carries its request is asserting that
+    pair). The judgment here is exactly the judgment any request of this operation
+    meets — the required-request-header walk plus every :data:`HEADER_RULES` entry in
+    the request direction, including the unknown-name refusal — with two precedence
+    rules so the validator never demands the refusal of the very defect:
+
+    * the sidecar's ``Range`` specifier findings belong to a grant (200/206). A status
+      the §4 gates reach before a range is parsed or served says nothing about the
+      specifier, and an unsupported one is answered by 416 exactly as it should be
+      (this mirrors the deliberate silence of :func:`_requested_span_mismatch`);
+    * ``IF_MATCH_ETAG_DISAGREE`` is a grant-side finding too: 412 is the *required*
+      answer to a mismatched precondition, never a violation of it.
+
+    Syntax rules (``If-Match``, the lease id, unknown names) are never excused: they
+    judge what the request itself says, whatever the answer turned out to be. A vector
+    without a sidecar keeps every existing behaviour, because an absent request is
+    silence, not a pass.
+    """
+    location = f"{entry['id']}: request sidecar"
+    request_context = _HeaderContext(
+        location=location,
+        operation=operation,
+        direction="request",
+        status=None,
+        headers=dict(request_headers),
+    )
+    found: list[Violation] = []
+    for name in operation.required_request_headers:
+        if _lookup_header(request_headers, name) is None:
+            found.append(
+                Violation(
+                    E.HEADER_MISSING,
+                    f"{location}: {name}",
+                    f"{operation.key} requires this header on the request it answers",
+                )
+            )
+    grants = isinstance(status, int) and status in (200, 206)
+    for name, value in request_headers.items():
+        if name.lower() == "range":
+            continue  # judged below, against the answer it claims to serve
+        rule = HEADER_RULES.get(name.lower())
+        if rule is None:
+            found.append(
+                Violation(
+                    E.HEADER_INVALID,
+                    f"{location}: {name}",
+                    "no documented header of this name exists for these contracts",
+                )
+            )
+            continue
+        found.extend(rule(request_context, name, value))
+    specifier = _lookup_header(request_headers, "Range")
+    if specifier is not None and grants:
+        match = _SINGLE_RANGE.match(specifier)
+        start = int(match.group(1)) if match is not None else 0
+        end = _as_int(match.group(2)) if match is not None and match.group(2) else None
+        reversed_order = end is not None and end < start
+        if match is None or reversed_order:
+            found.append(
+                Violation(
+                    E.RANGE_MULTI_NOT_ALLOWED,
+                    f"{location}: Range",
+                    f"{specifier!r} is not a single bytes=start-end or bytes=start- "
+                    f"range this contract can serve in ascending order; a grant answers "
+                    f"only the forms §4 supports, and 416 is the answer to this one",
+                )
+            )
+        elif status == 200:
+            found.append(
+                Violation(
+                    E.RANGE_MULTI_NOT_ALLOWED,
+                    f"{location}: Range",
+                    f"{specifier!r} is a range request, and §4's \"No Range returns 200\" "
+                    f"reads both ways: the answer is 206 or a gated refusal, never the "
+                    f"whole file, so a full 200 to {start}-"
+                    f"{end if end is not None else ''} is the wrong grant",
+                )
+            )
+    if_match = _lookup_header(request_headers, "If-Match")
+    if if_match is not None and grants:
+        etag = _lookup_header(response_headers, "ETag")
+        if etag is None or etag != if_match:
+            found.append(
+                Violation(
+                    E.IF_MATCH_ETAG_DISAGREE,
+                    f"{location}: If-Match",
+                    f"{if_match!r} is not the {etag!r} this answer ships; a resume "
+                    f"requires the original ETag, and the required answer to a mismatch "
+                    f"is 412 CONTENT_CHANGED",
+                )
+            )
+    return found
+
+
 def _as_int(value: str) -> int | None:
     try:
         return int(value)
@@ -1206,7 +1369,11 @@ def validate_manifest_binding(entry: Mapping[str, Any], body: Mapping[str, Any],
             )
         ]
     try:
-        manifest = json.loads(decoded.decode("utf-8"))
+        # The exact-number rule again (see :func:`_load_body`): this decoded manifest
+        # is the same document the card carries, and an upload must not be able to
+        # bind a manifest whose duration rounds into a legal integer only on the way
+        # through a binary float.
+        manifest = json.loads(decoded.decode("utf-8"), parse_float=decimal.Decimal)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         return [
             Violation(
@@ -1291,6 +1458,128 @@ def validate_manifest_response(
     return validate_manifest_fields(body, location_prefix=f"{location}: manifest")
 
 
+def validate_stored_clip_manifest(
+    entry: Mapping[str, Any], body: Mapping[str, Any]
+) -> list[Violation]:
+    """A ``StoredClip`` may not carry a manifest that contradicts the record around it.
+
+    ``GET /clips/{clip_id}`` hands a client the clip's completion manifest as a member,
+    and until now only the OpenAPI mirror judged it: a nested record was free to name a
+    boot prefix that disagrees with its own ``boot_id``, a clock that is both unknown
+    and timestamped, or a device the enclosing record does not belong to. The mirror
+    states the shape and nothing more, so the media contract's own field rules run here
+    too — the same six rules the card and the manifest route are judged by — and the
+    identity the envelope and its manifest share has to be stated once, not twice with
+    two answers. A disagreement of ``device_id`` or ``clip_id`` is a fact no schema
+    keyword can state about a member of a different document (the same precedent as
+    :func:`validate_derivative_crop`), so each is one ``API_SCHEMA``; an absent member
+    stays the schema's own finding.
+    """
+    location = str(entry["id"])
+    manifest = body.get("manifest")
+    if not isinstance(manifest, Mapping):
+        return []  # the mirror reports a record without its manifest
+    found = validate_manifest_fields(manifest, location_prefix=f"{location}: manifest")
+    for member in ("device_id", "clip_id"):
+        outer, inner = body.get(member), manifest.get(member)
+        if isinstance(outer, str) and isinstance(inner, str) and outer != inner:
+            found.append(
+                Violation(
+                    E.API_SCHEMA,
+                    f"{location}: manifest.{member}",
+                    f"the stored {member} is {outer!r} but its own manifest says "
+                    f"{inner!r}; one record cannot name two {member}s",
+                )
+            )
+    return found
+
+
+def validate_upload_chunk_body(
+    entry: Mapping[str, Any],
+    headers: Mapping[str, str],
+    body_bytes: bytes | None,
+) -> list[Violation]:
+    """The chunk of an upload ``PATCH`` is judged as bytes, never as JSON.
+
+    ``backend-v1.yaml`` documents this request body as ``application/octet-stream`` of
+    1-1,048,576 bytes, so the bytes are the wire form: this rule reads them as what
+    they are and compares them against exactly the facts the headers declare. The
+    ordering is a precedence, matching the over-limit-record gate in
+    :mod:`tools.contracts.media_validate`: a size defect is *the* finding about the
+    body, and nothing else speaks until it is cleared.
+
+    * no chunk committed while ``Content-Length`` still declares an in-range chunk size
+      means 0 bytes are present for it — below the 1-byte floor, ``CHUNK_SIZE_INVALID``
+      alone (a declared 0 or an over-limit declaration is already the header rule's
+      single ``CHUNK_SIZE_INVALID``, and a named-but-unreadable file its own
+      ``FIXTURE_FILE_MISSING``);
+    * committed bytes outside ``1..MAX_CHUNK_BYTES`` are ``CHUNK_SIZE_INVALID`` alone;
+    * ``Content-Length``, when it declares an in-range chunk size, disagreeing with the
+      committed length is ``CONTENT_LENGTH_MISMATCH``; a declaration outside the chunk
+      range is the header rule's ``CHUNK_SIZE_INVALID`` alone, whichever side of the pair
+      the bad number was written on;
+    * a well-formed ``Upload-Checksum`` that is not ``sha256`` of these bytes is
+      ``CHUNK_HASH_MISMATCH`` — the 422 ``INTEGRITY_FAILURE`` refusal this contract
+      owes the client. A malformed checksum is left to ``UPLOAD_CHECKSUM_SYNTAX`` and
+      an absent one to the required-header walk: each defect is named by the one rule
+      that measures it.
+    """
+    location = str(entry["id"])
+    declared_raw = _lookup_header(headers, "Content-Length")
+    declared = _as_int(declared_raw) if declared_raw is not None else None
+    if body_bytes is None:
+        named = any(
+            not str(name).endswith(".headers.json") for name in entry.get("files", [])
+        )
+        if named:
+            return []  # the file was named and could not be read: that is the finding
+        if declared is not None and MIN_CHUNK_BYTES <= declared <= MAX_CHUNK_BYTES:
+            return [
+                Violation(
+                    E.CHUNK_SIZE_INVALID,
+                    f"{location}: body",
+                    f"the index names no chunk file, so 0 bytes are present for the "
+                    f"declared {declared}-byte chunk, and no chunk is smaller than "
+                    f"{MIN_CHUNK_BYTES} byte",
+                )
+            ]
+        return []
+    if not MIN_CHUNK_BYTES <= len(body_bytes) <= MAX_CHUNK_BYTES:
+        return [
+            Violation(
+                E.CHUNK_SIZE_INVALID,
+                f"{location}: body",
+                f"{len(body_bytes)} committed bytes are outside the "
+                f"{MIN_CHUNK_BYTES}-{MAX_CHUNK_BYTES} byte chunk range",
+            )
+        ]
+    if declared is not None and not MIN_CHUNK_BYTES <= declared <= MAX_CHUNK_BYTES:
+        return []  # a declaration outside the chunk range is the header rule's one finding
+    if declared is not None and declared != len(body_bytes):
+        return [
+            Violation(
+                E.CONTENT_LENGTH_MISMATCH,
+                f"{location}: body",
+                f"Content-Length declares {declared} bytes, the committed chunk is "
+                f"{len(body_bytes)}",
+            )
+        ]
+    checksum = _lookup_header(headers, "Upload-Checksum")
+    if checksum is not None and _UPLOAD_CHECKSUM.match(checksum) is not None:
+        digest = hashlib.sha256(body_bytes).hexdigest()
+        if digest != checksum[len("sha256 "):]:
+            return [
+                Violation(
+                    E.CHUNK_HASH_MISMATCH,
+                    f"{location}: Upload-Checksum",
+                    f"declares {checksum!r} but these {len(body_bytes)} bytes hash to "
+                    f"sha256 {digest}; the answer to a chunk that does not match its "
+                    f"checksum is 422 INTEGRITY_FAILURE",
+                )
+            ]
+    return []
+
+
 def validate_derivative_crop(
     entry: Mapping[str, Any],
     body: Mapping[str, Any],
@@ -1316,8 +1605,15 @@ def validate_derivative_crop(
     found: list[Violation] = []
     for axis, extent_key, limit in (("x", "width", width), ("y", "height", height)):
         offset, extent = crop.get(axis), crop.get(extent_key)
-        if not _is_count(offset) or not _is_count(extent):
+        # The same predicate the ``type: integer`` keyword of ``CropRegion`` judges with
+        # (:func:`tools.contracts.schema_docs.is_json_integer`), not a narrower one:
+        # ``120``, ``120.0`` and ``1.2e2`` are the same integer to the schema, so a crop
+        # that slips past the bounds check on its spelling is a crop the schema called
+        # an integer and this check pretended not to see. The ``int()`` below is safe
+        # precisely because the predicate accepted the notation.
+        if not is_json_integer(None, offset) or not is_json_integer(None, extent):
             continue  # a rectangle the schema cannot read is the schema's to report
+        offset, extent = int(offset), int(extent)
         if offset + extent > limit:
             found.append(
                 Violation(
@@ -1328,8 +1624,3 @@ def validate_derivative_crop(
                 )
             )
     return found
-
-
-def _is_count(value: Any) -> bool:
-    """A nonnegative integer a schema-valid rectangle member has to be."""
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0

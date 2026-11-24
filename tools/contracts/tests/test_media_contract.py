@@ -1319,3 +1319,41 @@ def test_a_timestamp_with_the_terminator_still_attached_is_not_a_timestamp() -> 
         {**baseline, "clock": {**baseline["clock"], "start_utc": stamped + "\n"}}
     )
     assert [violation.code for violation in found] == [E.CLOCK_TIMESTAMP_INVALID], found
+
+
+def test_a_manifest_number_is_judged_on_the_digits_it_carries(index: list[dict], schemas: dict) -> None:
+    """``266667.000000000001`` is not the integer it rounds to, and ``266667.0`` is (AC-03).
+
+    The frame index has parsed exact numbers since round two; the manifest is the other
+    record the device writes, and a duration that becomes legal only on the way through a
+    binary float is a duration nobody stated. The valid twin is what keeps the refusal
+    from being a refusal of the notation as such, and its checksums are recomputed in the
+    generator because a sidecar that certifies other bytes than it ships is a defect of
+    the corpus, not of the clip.
+    """
+    by_id = {entry["id"]: entry for entry in index}
+    invalid = by_id["media/invalid/manifest-duration-rolls-to-integer"]
+    assert {violation.code for violation in validate_media_fixture(FIXTURES, invalid, schemas)} == {
+        E.MANIFEST_SCHEMA
+    }
+    data = _read(invalid["id"], MANIFEST_NAME)
+    assert b'"duration_us":266667.000000000001' in data
+    assert float("266667.000000000001") == 266667.0
+
+    valid = by_id["media/valid/manifest-integral-notations"]
+    assert {violation.code for violation in validate_media_fixture(FIXTURES, valid, schemas)} == set()
+    data = _read(valid["id"], MANIFEST_NAME)
+    for notation in (b'"duration_us":266667.0', b'"frame_count":4.0', b'"capture_order":42.0'):
+        assert notation in data, notation
+    manifest = json.loads(data.decode("utf-8"), parse_float=decimal.Decimal)
+    checksums = json.loads(_read(valid["id"], CHECKSUMS_NAME).decode("utf-8"))
+    entry = checksums["files"][MANIFEST_NAME]
+    assert entry["bytes"] == len(data)
+    assert entry["sha256"] == hashlib.sha256(data).hexdigest()
+    # The record still says what the baseline says it says: the notation is the only edit.
+    baseline = by_id["media/valid/baseline"]
+    assert manifest["duration_us"] == decimal.Decimal("266667.0")
+    assert manifest["frame_count"] == 4
+    assert manifest["capture_order"] == json.loads(
+        _read(baseline["id"], MANIFEST_NAME).decode("utf-8")
+    )["capture_order"]
