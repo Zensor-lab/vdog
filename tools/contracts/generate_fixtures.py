@@ -833,6 +833,8 @@ def build_media_corpus(media: Sequence[MediaFixture]) -> MediaCorpus:
         baseline_chunk_bytes=len(chunk),
         baseline_chunk=chunk,
         notation_dimensions_clip_id=notation_dimensions.manifest["clip_id"],
+        notation_dimensions_payload_sha256=sha256_hex(notation_dimensions.payload),
+        notation_dimensions_index_sha256=sha256_hex(notation_dimensions.index),
         gap_clip_id=gap.manifest["clip_id"] if gap.manifest else "",
         gap_payload_bytes=len(gap.payload),
         gap_index_bytes=len(gap.index),

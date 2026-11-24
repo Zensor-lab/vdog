@@ -4832,9 +4832,13 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
             "output": {"width": 1280, "height": 720},
             "crop": {"x": 0, "y": 60, "width": 64, "height": 36},
+            # The hashes of the clip this record cites, not the baseline's: a derivative
+            # certifies the two files of the segment it was cut from, and a record naming
+            # one clip while quoting another's digests is the divergence the corpus gate in
+            # test_corpus.py now refuses.
             "original_hashes": {
-                "video.mjpg": media.baseline_payload_sha256,
-                "frames.jsonl": media.baseline_index_sha256,
+                "video.mjpg": media.notation_dimensions_payload_sha256,
+                "frames.jsonl": media.notation_dimensions_index_sha256,
             },
             "sha256": _sha("derivative-crop-notation-source"),
         },
@@ -4945,6 +4949,12 @@ class MediaCorpus:
     #: notation: a derivative that cites it and overruns those pixels is the proof that
     #: the crop bound read those digits as pixels instead of dropping the clip.
     notation_dimensions_clip_id: str
+    #: That same segment's own two file digests. A derivative quotes the hashes of the
+    #: clip it cites, so a vector bound to this clip needs these and not the baseline's —
+    #: a record that names one clip while certifying another is the divergence the corpus
+    #: gate in :mod:`tools.contracts.tests.test_corpus` now refuses.
+    notation_dimensions_payload_sha256: str
+    notation_dimensions_index_sha256: str
     gap_clip_id: str
     gap_payload_bytes: int
     gap_index_bytes: int

@@ -70,6 +70,57 @@ def test_categories_required_by_ac06_are_present(index: list[dict]) -> None:
 DOCS = REPO_ROOT
 
 
+def test_a_derivative_certifies_the_clip_it_cites(index: list[dict]) -> None:
+    """The two halves of the corpus have to agree about which clip a derivative came from.
+
+    A ``DerivativeRecord`` names a ``clip_id`` *and* quotes the digests of the files it was
+    cut from, and no validator compares those two statements: the crop bound resolves
+    through ``clip_id`` alone. A vector could therefore argue about one segment in its
+    invariant while certifying another, and the argument would still be green. So every
+    quoted digest has to be a digest the cited segment's own committed ``checksums.json``
+    certifies (AC-05, AC-06) — spelled exactly for a vector the index expects to be valid,
+    and up to notation for a refused one, because an invalid record is allowed to get the
+    spelling wrong (``derivative-response-200-bad-hash`` is refused for exactly that) while
+    no record at all may quote a different clip's bytes.
+    """
+    certified: dict[str, dict[str, str]] = {}
+    for entry in index:
+        if entry["kind"] != "clip" or str(entry.get("expected")) != "valid":
+            continue
+        directory = FIXTURES / str(entry["id"])
+        manifest, sidecar = directory / "manifest.json", directory / "checksums.json"
+        if not manifest.is_file() or not sidecar.is_file():
+            continue
+        clip_id = json.loads(manifest.read_bytes().decode("utf-8")).get("clip_id")
+        files = json.loads(sidecar.read_bytes().decode("utf-8"))["files"]
+        certified[clip_id] = {str(name): str(claim["sha256"]) for name, claim in files.items()}
+
+    seen = 0
+    for entry in index:
+        if entry["kind"] != "api":
+            continue
+        path = FIXTURES / f"{entry['id']}.json"
+        if not path.is_file():
+            continue
+        body = json.loads(path.read_bytes().decode("utf-8"))
+        if not isinstance(body, dict) or not isinstance(body.get("original_hashes"), dict):
+            continue
+        seen += 1
+        clip_id = body.get("clip_id")
+        assert clip_id in certified, (entry["id"], clip_id)
+        exact = str(entry.get("expected")) == "valid"
+        for name, digest in body["original_hashes"].items():
+            assert name in certified[clip_id], (entry["id"], name)
+            claimed = certified[clip_id][name]
+            if exact:
+                assert digest == claimed, (entry["id"], clip_id, name, digest)
+            else:
+                # A refused record may be refused *for* its spelling (that is one committed
+                # vector's whole subject), but it may not quietly quote another clip.
+                assert digest.lower() == claimed, (entry["id"], clip_id, name, digest)
+    assert seen >= 5, seen  # the derivative records really are the ones being checked
+
+
 @pytest.mark.parametrize(
     "index,code",
     [(i, code) for i, (group, code, _mutate) in enumerate(CORPUS_MUTATIONS) if group == "corpus"],
