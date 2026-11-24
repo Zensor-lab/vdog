@@ -349,6 +349,33 @@ def _valid_media() -> tuple[MediaFixture, ...]:
             ),
         ),
         MediaFixture(
+            id="media/valid/manifest-integral-dimension-notations",
+            kind="clip",
+            category="manifest",
+            plan=_plan(
+                "manifest-integral-dimension-notations", VALID_BASELINE_TIMES, capture_order=42
+            ),
+            corruption="manifest_integral_dimension_notations",
+            invariant=(
+                "AC-02/AC-06 profile notation: width 64.0 and height 64.0 are the 64x64 the "
+                "baseline records — the crop bound every derivative of this clip is measured "
+                "against has to read them as those pixels, not drop the clip for spelling"
+            ),
+        ),
+        MediaFixture(
+            id="media/valid/manifest-exponent-notations",
+            kind="clip",
+            category="manifest",
+            plan=_plan("manifest-exponent-notations", VALID_BASELINE_TIMES, capture_order=42),
+            corruption="manifest_exponent_notations",
+            invariant=(
+                "AC-02/AC-06 manifest notation: duration_us 2.66667e5, frame_count 4e0 and "
+                "capture_order 4.2e1 are the same three integers written in exponent form — "
+                "``type: integer`` reads them as 266667, 4 and 42, so an exact-number parse "
+                "accepts the segment the writer meant and the sidecar still certifies it"
+            ),
+        ),
+        MediaFixture(
             id="media/valid/clock-unknown",
             kind="clip",
             category="clock",
@@ -2119,12 +2146,13 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
                 dump_json(media.baseline_manifest), "duration_us", "266667.0"
             ),
             "frame_count",
-            "4.0",
+            "4e0",
         ),
         invariant=(
-            "AC-04/AC-06 the manifest route parses exact numbers: 266667.0 and 4.0 are "
-            "the duration and frame count of the committed manifest, so a conforming "
-            "writer's integral notation is the answer this route owes, not a type error"
+            "AC-04/AC-06 the manifest route parses exact numbers: 266667.0, 4e0 and 42.0 "
+            "are the duration, frame count and capture order of the committed manifest — "
+            "the two integral spellings JSON admits are the same three integers, so a "
+            "conforming writer's bytes are the answer this route owes, not a type error"
         ),
     )
     out.add(
@@ -2549,7 +2577,7 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
-        id="clip-file-response-412-unsupportable-sidecar",
+        id="clip-file-response-412-stale-etag-sidecar",
         contract="device",
         category="range",
         operation="device.get_clip_file",
@@ -2560,16 +2588,61 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         request_headers={
             "X-Clip-Lease": lease_id,
             "If-Match": f'"{"0" * 64}"',
-            "Range": "bytes=-100",
+            "Range": "bytes=0-99",
         },
         body=_error_body(
             "CONTENT_CHANGED", "ETag no longer matches", retryable=False, request_id="req-bf10"
         ),
         invariant=(
-            "AC-04/AC-06 range: the If-Match precondition is evaluated before a range is "
-            "parsed or served (RFC 9110 §13.2.2), so a resume whose ETag does not match "
-            "owes 412 CONTENT_CHANGED whatever else its request carries — the suffix "
-            "specifier beside it is owed a 416 only by a request that got that far"
+            "AC-04/AC-06 range: the If-Match precondition of a resume is evaluated before a "
+            "range is parsed or served (RFC 9110 §13.2.2), so a resume that asks for the "
+            "conforming window under an ETag that is not the clip's owes 412 "
+            "CONTENT_CHANGED — the 206 it never granted is not this answer's defect"
+        ),
+    )
+    out.add(
+        id="clip-file-response-412-no-range-sidecar",
+        contract="device",
+        category="etag",
+        operation="device.get_clip_file",
+        direction="response",
+        status=412,
+        api_error_code="CONTENT_CHANGED",
+        headers={"Accept-Ranges": "bytes"},
+        request_headers={"X-Clip-Lease": lease_id, "If-Match": f'"{"0" * 64}"'},
+        body=_error_body(
+            "CONTENT_CHANGED", "ETag no longer matches", retryable=False, request_id="req-bf12"
+        ),
+        invariant=(
+            "AC-04/AC-06 a whole-file conditional read whose ETag is stale is refused the "
+            "same way: no Range is involved at all, and the pair this vector commits is "
+            "exactly the precondition and the 412 that answers it"
+        ),
+    )
+    out.add(
+        id="clip-file-response-412-unsupported-specifier-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=412,
+        api_error_code="CONTENT_CHANGED",
+        headers={"Accept-Ranges": "bytes"},
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": f'"{"0" * 64}"',
+            "Range": "bytes=0-99,200-299",
+        },
+        body=_error_body(
+            "CONTENT_CHANGED", "ETag no longer matches", retryable=False, request_id="req-bf13"
+        ),
+        expected="invalid",
+        codes=(RANGE_MULTI_NOT_ALLOWED,),
+        invariant=(
+            "AC-06 range: that a 412 was reached first is a fact about the answer. The "
+            "request it answers is still a request, and multipart is not one of the two "
+            "specifiers §4 supports whatever the device eventually replied; only the 416 "
+            "that refuses such a form may carry it as a sidecar"
         ),
     )
     out.add(
@@ -2599,7 +2672,37 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "AC-04/AC-06 range: a suffix range is refused with 416 and proved against "
             "this file's length by bytes */<total>, with the original ETag still matching "
             "so the precondition did not gate first — the whole pair, request and refusal, "
-            "is what §4 requires here"
+            "is what §4 requires here, and the refused form is not a second defect"
+        ),
+    )
+    out.add(
+        id="clip-file-response-416-beyond-eof-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=416,
+        api_error_code="RANGE_INVALID",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes */{media.baseline_payload_bytes}",
+        },
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": payload_etag,
+            "Range": f"bytes={media.baseline_payload_bytes}-",
+        },
+        body=_error_body(
+            "RANGE_INVALID",
+            "Range starts past the end of the file",
+            retryable=False,
+            request_id="req-bf14",
+        ),
+        invariant=(
+            "AC-04/AC-06 range: a specifier the contract supports but this file cannot "
+            "satisfy — an open-ended start at the byte just past its end — is refused with "
+            "416 and proved by bytes */<total>: the request and the refusal agree about a "
+            "file neither of them can serve bytes from"
         ),
     )
     out.add(
@@ -3754,6 +3857,30 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         invariant="AC-05 JSON that is not a valid media manifest is rejected before allocation",
     )
     out.add(
+        id="upload-create-request-manifest-integral-notation",
+        contract="backend",
+        category="upload",
+        operation="backend.create_upload",
+        direction="request",
+        schema="CreateUploadRequest",
+        headers={"Idempotency-Key": _uuid("idempotency-duration-integral")},
+        # The committed manifest with its duration written in exponent notation: the same
+        # 266667 microseconds the clip's own manifest records, and an allocation has to
+        # accept it as that integer rather than refuse the spelling.
+        body={
+            "v": API_VERSION,
+            "manifest_base64url": _manifest_b64url(
+                _raw_number(dump_json(media.baseline_manifest), "duration_us", "2.66667e5")
+            ),
+        },
+        invariant=(
+            "AC-05/AC-06 an upload initialization binds the manifest it was given in "
+            "whichever integer notation the writer chose: 2.66667e5 is 266667 microseconds, "
+            "and the exact-number parse is what keeps that true rather than approximately "
+            "true on the way through a float"
+        ),
+    )
+    out.add(
         id="upload-create-request-manifest-duration-rolls-to-integer",
         contract="backend",
         category="upload",
@@ -4646,6 +4773,81 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
+        id="derivative-response-200-crop-integral-float-notation",
+        contract="backend",
+        category="boundary",
+        operation="backend.get_derivative",
+        direction="response",
+        status=200,
+        schema="DerivativeRecord",
+        body={
+            "v": API_VERSION,
+            "derivative_id": "drv-5",
+            "device_id": DEVICE_ID,
+            "clip_id": media.baseline_clip_id,
+            "job_id": "job-0005",
+            "type": "transcode",
+            "preset": "h264-vbr-720p",
+            "encoder_version": "libx264-0.165",
+            "filter_version": "vdog-eis-1",
+            "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
+            "output": {"width": 1280, "height": 720},
+            # The baseline's own conformant window, spelled the way a writer that carries
+            # every number as a decimal may spell it: inside 64 rows, so the notation is
+            # the only thing that differs from the conformant record above.
+            "crop": {"x": 0.0, "y": 14.0, "width": 64.0, "height": 36.0},
+            "original_hashes": {
+                "video.mjpg": media.baseline_payload_sha256,
+                "frames.jsonl": media.baseline_index_sha256,
+            },
+            "sha256": _sha("derivative-crop-in-bounds-notation"),
+        },
+        invariant=(
+            "AC-05/AC-06 a crop measured inside its source is conformant whatever notation "
+            "its members carry: 0/14/64/36 and 0.0/14.0/64.0/36.0 are the same window, and "
+            "refusing the second would refuse bytes the schema calls integers"
+        ),
+    )
+    out.add(
+        id="derivative-response-200-crop-out-of-bounds-notation-source",
+        contract="backend",
+        category="boundary",
+        operation="backend.get_derivative",
+        direction="response",
+        status=200,
+        schema="DerivativeRecord",
+        body={
+            "v": API_VERSION,
+            "derivative_id": "drv-6",
+            "device_id": DEVICE_ID,
+            # The clip whose profile spells width and height as 64.0: the bound comes from
+            # those digits, so this vector is the proof that a float-spelled profile keeps
+            # its pixels instead of dropping the clip out of the size map.
+            "clip_id": media.notation_dimensions_clip_id,
+            "job_id": "job-0006",
+            "type": "transcode",
+            "preset": "h264-vbr-720p",
+            "encoder_version": "libx264-0.165",
+            "filter_version": "vdog-eis-1",
+            "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
+            "output": {"width": 1280, "height": 720},
+            "crop": {"x": 0, "y": 60, "width": 64, "height": 36},
+            "original_hashes": {
+                "video.mjpg": media.baseline_payload_sha256,
+                "frames.jsonl": media.baseline_index_sha256,
+            },
+            "sha256": _sha("derivative-crop-notation-source"),
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-06 boundary: the source of this crop is the clip whose manifest records "
+            "64.0x64.0, and a 64.0-tall frame is 64 pixels tall — y=60 with height=36 "
+            "still reaches pixel 96 of it, so the source's notation may not excuse the "
+            "encode that cannot have produced this record"
+        ),
+    )
+    out.add(
         id="derivative-response-200-bad-hash",
         contract="backend",
         category="hash",
@@ -4739,6 +4941,10 @@ class MediaCorpus:
     #: than only describe them: a checksum over a chunk nobody committed proves nothing
     #: about the bytes a device would hash.
     baseline_chunk: bytes
+    #: The clip id of the segment whose profile spells ``width``/``height`` in integral
+    #: notation: a derivative that cites it and overruns those pixels is the proof that
+    #: the crop bound read those digits as pixels instead of dropping the clip.
+    notation_dimensions_clip_id: str
     gap_clip_id: str
     gap_payload_bytes: int
     gap_index_bytes: int

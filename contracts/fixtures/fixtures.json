@@ -222,6 +222,28 @@
     },
     {
       "api_error_code": null,
+      "category": "boundary",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "backend/invalid/derivative-response-200-crop-out-of-bounds-notation-source.json"
+      ],
+      "id": "backend/invalid/derivative-response-200-crop-out-of-bounds-notation-source",
+      "invariant": "AC-06 boundary: the source of this crop is the clip whose manifest records 64.0x64.0, and a 64.0-tall frame is 64 pixels tall — y=60 with height=36 still reaches pixel 96 of it, so the source's notation may not excuse the encode that cannot have produced this record",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_derivative",
+      "operation_id": "getDerivative",
+      "path": "/derivatives/{id}",
+      "schema": "DerivativeRecord",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
       "category": "id",
       "contract": "backend-v1",
       "direction": "request",
@@ -1928,6 +1950,26 @@
     },
     {
       "api_error_code": null,
+      "category": "boundary",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "backend/valid/derivative-response-200-crop-integral-float-notation.json"
+      ],
+      "id": "backend/valid/derivative-response-200-crop-integral-float-notation",
+      "invariant": "AC-05/AC-06 a crop measured inside its source is conformant whatever notation its members carry: 0/14/64/36 and 0.0/14.0/64.0/36.0 are the same window, and refusing the second would refuse bytes the schema calls integers",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_derivative",
+      "operation_id": "getDerivative",
+      "path": "/derivatives/{id}",
+      "schema": "DerivativeRecord",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
       "category": "identity",
       "contract": "backend-v1",
       "direction": "request",
@@ -3416,6 +3458,27 @@
       "api_error_code": null,
       "category": "upload",
       "contract": "backend-v1",
+      "direction": "request",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "backend/valid/upload-create-request-manifest-integral-notation.headers.json",
+        "backend/valid/upload-create-request-manifest-integral-notation.json"
+      ],
+      "id": "backend/valid/upload-create-request-manifest-integral-notation",
+      "invariant": "AC-05/AC-06 an upload initialization binds the manifest it was given in whichever integer notation the writer chose: 2.66667e5 is 266667 microseconds, and the exact-number parse is what keeps that true rather than approximately true on the way through a float",
+      "kind": "api",
+      "method": "POST",
+      "operation": "backend.create_upload",
+      "operation_id": "createUpload",
+      "path": "/uploads",
+      "schema": "CreateUploadRequest",
+      "status": null
+    },
+    {
+      "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
       "direction": "response",
       "expected": "valid",
       "expected_error_codes": [],
@@ -4138,6 +4201,30 @@
       "path": "/clips/{clip_id}/files/{name}",
       "schema": null,
       "status": 410
+    },
+    {
+      "api_error_code": "CONTENT_CHANGED",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "RANGE_MULTI_NOT_ALLOWED"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-412-unsupported-specifier-sidecar.headers.json",
+        "device/invalid/clip-file-response-412-unsupported-specifier-sidecar.json",
+        "device/invalid/clip-file-response-412-unsupported-specifier-sidecar.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-412-unsupported-specifier-sidecar",
+      "invariant": "AC-06 range: that a 412 was reached first is a fact about the answer. The request it answers is still a request, and multipart is not one of the two specifiers §4 supports whatever the device eventually replied; only the 416 that refuses such a form may carry it as a sidecar",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 412
     },
     {
       "api_error_code": null,
@@ -5102,18 +5189,40 @@
     },
     {
       "api_error_code": "CONTENT_CHANGED",
+      "category": "etag",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-file-response-412-no-range-sidecar.headers.json",
+        "device/valid/clip-file-response-412-no-range-sidecar.json",
+        "device/valid/clip-file-response-412-no-range-sidecar.request.headers.json"
+      ],
+      "id": "device/valid/clip-file-response-412-no-range-sidecar",
+      "invariant": "AC-04/AC-06 a whole-file conditional read whose ETag is stale is refused the same way: no Range is involved at all, and the pair this vector commits is exactly the precondition and the 412 that answers it",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 412
+    },
+    {
+      "api_error_code": "CONTENT_CHANGED",
       "category": "range",
       "contract": "device-v1",
       "direction": "response",
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
-        "device/valid/clip-file-response-412-unsupportable-sidecar.headers.json",
-        "device/valid/clip-file-response-412-unsupportable-sidecar.json",
-        "device/valid/clip-file-response-412-unsupportable-sidecar.request.headers.json"
+        "device/valid/clip-file-response-412-stale-etag-sidecar.headers.json",
+        "device/valid/clip-file-response-412-stale-etag-sidecar.json",
+        "device/valid/clip-file-response-412-stale-etag-sidecar.request.headers.json"
       ],
-      "id": "device/valid/clip-file-response-412-unsupportable-sidecar",
-      "invariant": "AC-04/AC-06 range: the If-Match precondition is evaluated before a range is parsed or served (RFC 9110 §13.2.2), so a resume whose ETag does not match owes 412 CONTENT_CHANGED whatever else its request carries — the suffix specifier beside it is owed a 416 only by a request that got that far",
+      "id": "device/valid/clip-file-response-412-stale-etag-sidecar",
+      "invariant": "AC-04/AC-06 range: the If-Match precondition of a resume is evaluated before a range is parsed or served (RFC 9110 §13.2.2), so a resume that asks for the conforming window under an ETag that is not the clip's owes 412 CONTENT_CHANGED — the 206 it never granted is not this answer's defect",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_file",
@@ -5135,6 +5244,28 @@
       ],
       "id": "device/valid/clip-file-response-416-beyond-eof",
       "invariant": "AC-04/AC-06 range: a supported range whose start is at or past the end is unsatisfiable, and the 416 proves it with `Content-Range: bytes */<total>`",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 416
+    },
+    {
+      "api_error_code": "RANGE_INVALID",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-file-response-416-beyond-eof-sidecar.headers.json",
+        "device/valid/clip-file-response-416-beyond-eof-sidecar.json",
+        "device/valid/clip-file-response-416-beyond-eof-sidecar.request.headers.json"
+      ],
+      "id": "device/valid/clip-file-response-416-beyond-eof-sidecar",
+      "invariant": "AC-04/AC-06 range: a specifier the contract supports but this file cannot satisfy — an open-ended start at the byte just past its end — is refused with 416 and proved by bytes */<total>: the request and the refusal agree about a file neither of them can serve bytes from",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_file",
@@ -5219,7 +5350,7 @@
         "device/valid/clip-file-response-416-suffix-sidecar.request.headers.json"
       ],
       "id": "device/valid/clip-file-response-416-suffix-sidecar",
-      "invariant": "AC-04/AC-06 range: a suffix range is refused with 416 and proved against this file's length by bytes */<total>, with the original ETag still matching so the precondition did not gate first — the whole pair, request and refusal, is what §4 requires here",
+      "invariant": "AC-04/AC-06 range: a suffix range is refused with 416 and proved against this file's length by bytes */<total>, with the original ETag still matching so the precondition did not gate first — the whole pair, request and refusal, is what §4 requires here, and the refused form is not a second defect",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_file",
@@ -5259,7 +5390,7 @@
         "device/valid/clip-manifest-response-200-duration-integral-notation.json"
       ],
       "id": "device/valid/clip-manifest-response-200-duration-integral-notation",
-      "invariant": "AC-04/AC-06 the manifest route parses exact numbers: 266667.0 and 4.0 are the duration and frame count of the committed manifest, so a conforming writer's integral notation is the answer this route owes, not a type error",
+      "invariant": "AC-04/AC-06 the manifest route parses exact numbers: 266667.0, 4e0 and 42.0 are the duration, frame count and capture order of the committed manifest — the two integral spellings JSON admits are the same three integers, so a conforming writer's bytes are the answer this route owes, not a type error",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_manifest",
@@ -8199,6 +8330,38 @@
       ],
       "id": "media/valid/index-integral-notations",
       "invariant": "AC-02/AC-06 frame record notation: seq 0.0, offset 0e0 and t_us 0E+0 are the same three integers as 0, 0 and 0 — `type: integer` in the published schema admits any JSON integer notation, so a conforming writer's bytes validate and the byte arithmetic reads the positions they name",
+      "kind": "clip"
+    },
+    {
+      "category": "manifest",
+      "contract": "media-v1",
+      "corruption": "manifest_exponent_notations",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "checksums.json",
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/valid/manifest-exponent-notations",
+      "invariant": "AC-02/AC-06 manifest notation: duration_us 2.66667e5, frame_count 4e0 and capture_order 4.2e1 are the same three integers written in exponent form — ``type: integer`` reads them as 266667, 4 and 42, so an exact-number parse accepts the segment the writer meant and the sidecar still certifies it",
+      "kind": "clip"
+    },
+    {
+      "category": "manifest",
+      "contract": "media-v1",
+      "corruption": "manifest_integral_dimension_notations",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "checksums.json",
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/valid/manifest-integral-dimension-notations",
+      "invariant": "AC-02/AC-06 profile notation: width 64.0 and height 64.0 are the 64x64 the baseline records — the crop bound every derivative of this clip is measured against has to read them as those pixels, not drop the clip for spelling",
       "kind": "clip"
     },
     {

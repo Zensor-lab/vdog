@@ -8,6 +8,7 @@ and deterministic: no network, no device, no clock read, no environment read.
 
 from __future__ import annotations
 
+import decimal
 import importlib.metadata
 import json
 from dataclasses import dataclass, field
@@ -28,7 +29,7 @@ from .openapi_check import (
     check_shared_error_envelope,
     load_media_schemas,
 )
-from .schema_docs import load_json, load_yaml
+from .schema_docs import is_json_integer, load_json, load_yaml
 
 #: Names the CLI reports so an evidence record can pin what ran.
 DEPENDENCY_NAMES: tuple[str, ...] = ("jsonschema", "PyYAML", "Pillow")
@@ -334,7 +335,11 @@ def clip_dimensions(
             continue
         path = fixtures / str(entry["id"]) / MANIFEST_NAME
         try:
-            manifest = json.loads(path.read_text(encoding="utf-8"))
+            # The exact-number parse again, and the very ``type: integer`` predicate the
+            # manifest schema judges with: a profile that spells its dimensions ``64.0``
+            # states the same pixels as ``64``, and a map that dropped that clip would
+            # silently leave every derivative citing it unmeasured against its source.
+            manifest = json.loads(path.read_text(encoding="utf-8"), parse_float=decimal.Decimal)
         except (OSError, ValueError):
             continue  # the media walk reads and reports these bytes; this map only borrows them
         profile = manifest.get("profile") if isinstance(manifest, dict) else None
@@ -342,13 +347,8 @@ def clip_dimensions(
         if not isinstance(clip_id, str) or not isinstance(profile, dict):
             continue
         width, height = profile.get("width"), profile.get("height")
-        if (
-            isinstance(width, int)
-            and not isinstance(width, bool)
-            and isinstance(height, int)
-            and not isinstance(height, bool)
-        ):
-            dimensions.setdefault(clip_id, (width, height))
+        if is_json_integer(None, width) and is_json_integer(None, height):
+            dimensions.setdefault(clip_id, (int(width), int(height)))
     return dimensions
 
 

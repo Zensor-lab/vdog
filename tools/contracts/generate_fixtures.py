@@ -712,6 +712,17 @@ FILE_MUTATIONS: Final[Mapping[str, FileMutation]] = {
     "manifest_integral_notations": _mutate_manifest_notations(
         duration_us="266667.0", frame_count="4.0", capture_order="42.0"
     ),
+    # The same three integers in exponent notation: `type: integer` reads `4e0` as the
+    # integer 4 exactly as it reads `4`, so an exact-number parser has to agree.
+    "manifest_exponent_notations": _mutate_manifest_notations(
+        duration_us="2.66667e5", frame_count="4e0", capture_order="4.2e1"
+    ),
+    # The profile's own two numbers, in the integral spellings a conforming writer may
+    # send: the crop bound a derivative is measured against comes from these, so a clip
+    # that spells them ``64.0`` must keep its pixels and not quietly leave the map.
+    "manifest_integral_dimension_notations": _mutate_manifest_notations(
+        width="64.0", height="64.0"
+    ),
     "manifest_duration_rolls_to_integer": _raw_manifest_number(
         "duration_us", "266667.000000000001"
     ),
@@ -787,6 +798,8 @@ def build_media_corpus(media: Sequence[MediaFixture]) -> MediaCorpus:
     baseline = by_id["media/valid/baseline"]
     gap = by_id["media/valid/gap-long-jump"]
     recovered = by_id["media/valid/recovered-prefix"]
+    notation_dimensions = by_id["media/valid/manifest-integral-dimension-notations"]
+    assert notation_dimensions.manifest is not None
     assert baseline.manifest is not None
     manifest_bytes = dump_json(baseline.manifest)
     chunk = baseline.payload[:512]
@@ -819,6 +832,7 @@ def build_media_corpus(media: Sequence[MediaFixture]) -> MediaCorpus:
         baseline_chunk_sha256=sha256_hex(chunk),
         baseline_chunk_bytes=len(chunk),
         baseline_chunk=chunk,
+        notation_dimensions_clip_id=notation_dimensions.manifest["clip_id"],
         gap_clip_id=gap.manifest["clip_id"] if gap.manifest else "",
         gap_payload_bytes=len(gap.payload),
         gap_index_bytes=len(gap.index),

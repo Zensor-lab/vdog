@@ -286,6 +286,44 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "backend/invalid/upload-head-response-200-offset-beyond-end": ("UPLOAD_OFFSET_INVALID",),
     "backend/invalid/derivative-response-200-crop-out-of-bounds": ("API_SCHEMA",),
     "backend/invalid/devices-request-id-trailing-newline": ("API_SCHEMA",),
+    # Round 6: the five findings' own vectors — the request a response answers, the
+    # manifest inside a stored record, the digits a manifest number carries, and the
+    # chunk that is bytes rather than JSON.
+    "device/invalid/clip-file-response-206-suffix-sidecar": ("RANGE_MULTI_NOT_ALLOWED",),
+    "device/invalid/clip-file-response-200-range-sidecar": ("RANGE_MULTI_NOT_ALLOWED",),
+    "device/invalid/clip-file-response-206-if-match-mismatch": ("IF_MATCH_ETAG_DISAGREE",),
+    "device/invalid/clip-file-response-206-missing-lease-sidecar": ("HEADER_MISSING",),
+    "device/invalid/clip-file-response-412-unsupported-specifier-sidecar": (
+        "RANGE_MULTI_NOT_ALLOWED",
+    ),
+    "device/valid/clip-file-response-412-stale-etag-sidecar": (),
+    "device/valid/clip-file-response-412-no-range-sidecar": (),
+    "device/valid/clip-file-response-416-suffix-sidecar": (),
+    "device/valid/clip-file-response-416-beyond-eof-sidecar": (),
+    "backend/invalid/clip-detail-response-200-manifest-boot-prefix": (
+        "CLIP_BOOT_PREFIX_MISMATCH",
+    ),
+    "backend/invalid/clip-detail-response-200-manifest-clock-unknown-timestamp": (
+        "CLOCK_NULLITY_MISMATCH",
+    ),
+    "backend/invalid/clip-detail-response-200-manifest-device-id-disagrees": ("API_SCHEMA",),
+    "backend/invalid/clip-detail-response-200-manifest-clip-id-disagrees": ("API_SCHEMA",),
+    "device/invalid/clip-manifest-response-200-duration-rolls-to-integer": ("API_SCHEMA",),
+    "device/valid/clip-manifest-response-200-duration-integral-notation": (),
+    "backend/invalid/upload-create-request-manifest-duration-rolls-to-integer": (
+        "MANIFEST_DECODED_SCHEMA",
+    ),
+    "backend/valid/upload-create-request-manifest-integral-notation": (),
+    "media/invalid/manifest-duration-rolls-to-integer": ("MANIFEST_SCHEMA",),
+    "media/valid/manifest-integral-notations": (),
+    "media/valid/manifest-integral-dimension-notations": (),
+    "media/valid/manifest-exponent-notations": (),
+    "backend/invalid/derivative-response-200-crop-out-of-bounds-float-notation": ("API_SCHEMA",),
+    "backend/valid/derivative-response-200-crop-integral-float-notation": (),
+    "backend/invalid/derivative-response-200-crop-out-of-bounds-notation-source": ("API_SCHEMA",),
+    "backend/valid/upload-patch-request-valid": (),
+    "backend/invalid/upload-patch-request-wrong-checksum": ("CHUNK_HASH_MISMATCH",),
+    "backend/invalid/upload-patch-request-length-mismatch": ("CONTENT_LENGTH_MISMATCH",),
 }
 
 
@@ -577,7 +615,12 @@ def test_pagination_bounds_are_respected_by_valid_vectors(by_id: dict) -> None:
     for entry in by_id.values():
         if entry["category"] != "pagination" or entry["expected"] != "valid":
             continue
-        if any(name.endswith(".headers.json") for name in entry["files"]):
+        # The answer's own header map only: a request sidecar is not what this vector put
+        # on the wire, and a vector whose only sidecar is a request has nothing to check.
+        if any(
+            name.endswith(".headers.json") and not name.endswith(".request.headers.json")
+            for name in entry["files"]
+        ):
             headers = _headers(entry)
             if "cursor" in headers:
                 assert len(headers["cursor"]) <= MAX_CURSOR_CHARS, entry["id"]
@@ -588,7 +631,10 @@ def test_pagination_bounds_are_respected_by_valid_vectors(by_id: dict) -> None:
 def test_idempotency_keys_are_canonical_uuids(by_id: dict) -> None:
     seen = 0
     for entry in by_id.values():
-        if any(name.endswith(".headers.json") for name in entry["files"]):
+        if any(
+            name.endswith(".headers.json") and not name.endswith(".request.headers.json")
+            for name in entry["files"]
+        ):
             headers = _headers(entry)
             if "Idempotency-Key" in headers:
                 seen += 1
@@ -629,17 +675,20 @@ def test_header_only_vectors_keep_their_sidecar(by_id: dict) -> None:
     The two kinds are named apart on purpose: `<id>.headers.json` is what the vector puts
     on the wire, and `<id>.request.headers.json` is only the question an answer claims to
     answer. The second one alone would be a request with no reply beside it, which is a
-    vector of nothing.
+    vector of nothing — and it is judged only on the answer side, so a request vector may
+    not carry one whatever else it ships (a raw chunk beside a request sidecar would be a
+    second, unjudged statement of the same request).
     """
     for entry in by_id.values():
         files = entry["files"]
+        asked = [name for name in files if name.endswith(".request.headers.json")]
+        assert len(asked) <= 1, entry["id"]
+        if asked:
+            assert entry["direction"] == "response", entry["id"]
         if not files or not all(name.endswith(".headers.json") for name in files):
             continue
         own = [name for name in files if not name.endswith(".request.headers.json")]
-        asked = [name for name in files if name.endswith(".request.headers.json")]
         assert len(own) == 1, entry["id"]
-        assert len(asked) <= 1, entry["id"]
-        assert entry["direction"] == "response" or not asked, entry["id"]
 
 
 def test_api_bodies_carry_the_version_field(by_id: dict) -> None:
@@ -2116,26 +2165,42 @@ def test_the_sidecar_of_a_response_is_judged_as_a_request(
         ("device/invalid/clip-file-response-200-range-sidecar", E.RANGE_MULTI_NOT_ALLOWED),
         ("device/invalid/clip-file-response-206-if-match-mismatch", E.IF_MATCH_ETAG_DISAGREE),
         ("device/invalid/clip-file-response-206-missing-lease-sidecar", E.HEADER_MISSING),
+        # A gated answer is not a licence for the request it answers to send a form §4
+        # never supports: the gate is a fact about the answer.
+        ("device/invalid/clip-file-response-412-unsupported-specifier-sidecar",
+         E.RANGE_MULTI_NOT_ALLOWED),
     ):
         assert _observed(by_id[vector_id], specs, media_schemas) == {code}, vector_id
+    # The four refusal-pair controls: the two 412 pairs whose precondition is what the
+    # answer is about, and the two 416 pairs whose subject *is* the specifier.
     for vector_id in (
-        "device/valid/clip-file-response-412-unsupportable-sidecar",
+        "device/valid/clip-file-response-412-stale-etag-sidecar",
+        "device/valid/clip-file-response-412-no-range-sidecar",
         "device/valid/clip-file-response-416-suffix-sidecar",
+        "device/valid/clip-file-response-416-beyond-eof-sidecar",
     ):
         assert _observed(by_id[vector_id], specs, media_schemas) == set(), vector_id
 
 
-def test_a_gated_answer_is_quiet_about_the_specifier_it_was_given() -> None:
-    """A status the §4 gates reach never speaks about the range, so it owes none (AC-06)."""
+def test_only_the_refusal_of_a_specifier_is_quiet_about_that_specifier() -> None:
+    """A gate answers the precondition, not the range; only a 416 is about the form (AC-06)."""
+    # A 416 is the answer *about* this specifier: refusing a form §4 refuses is the
+    # contract working, so nothing may call the refused form a second defect.
+    for specifier in UNSUPPORTED_FORMS + ("bytes=200-100",):
+        assert _found_codes(
+            _sidecar_judgment(416, {"Accept-Ranges": "bytes"}, {**RESUME, "Range": specifier})
+        ) == set(), specifier
+    # Every other status, the §4 gates included, says nothing about the range as an
+    # answer — and a request is judged on its own, so a form outside the contract is a
+    # violation whatever the device eventually replied.
     for status in GATE_STATUSES:
-        for specifier in UNSUPPORTED_FORMS:
-            found = _sidecar_judgment(status, {"Accept-Ranges": "bytes"}, {**RESUME, "Range": specifier})
-            assert _found_codes(found) == set(), (status, specifier)
-    # A 416 is a refusal, not a grant: the suffix form it refuses is not a second defect.
-    assert _found_codes(_sidecar_judgment(416, {"Accept-Ranges": "bytes"}, {**RESUME, "Range": "bytes=-100"})) == set()
-    # And a gated answer is still not free to skip the lease or misspell a header value:
+        for specifier in UNSUPPORTED_FORMS + ("bytes=200-100",):
+            assert _found_codes(
+                _sidecar_judgment(status, {}, {**RESUME, "Range": specifier})
+            ) == {E.RANGE_MULTI_NOT_ALLOWED}, (status, specifier)
+    # A gated answer is still not free to skip the lease or misspell a header value:
     # those are facts about the request, whatever the answer turned out to be.
-    gated = _sidecar_judgment(412, {}, {"Range": "bytes=-100"})
+    gated = _sidecar_judgment(412, {}, {"Range": "bytes=0-99"})
     assert _found_codes(gated) == {E.HEADER_MISSING}, [v.render() for v in gated]
     assert _found_codes(_sidecar_judgment(416, {}, {**RESUME, "If-Match": "nope"})) == {E.ETAG_INVALID}
     assert _found_codes(_sidecar_judgment(404, {}, {**RESUME, "X-Nope": "1"})) == {E.HEADER_INVALID}
@@ -2144,7 +2209,7 @@ def test_a_gated_answer_is_quiet_about_the_specifier_it_was_given() -> None:
 def test_a_grant_answers_only_a_specifier_the_contract_supports() -> None:
     """Granting bytes for a form §4 refuses is the violation the answer alone hides (AC-06)."""
     for status in _GRANTING:
-        for specifier in UNSUPPORTED_FORMS:
+        for specifier in UNSUPPORTED_FORMS + ("bytes=200-100",):
             assert _found_codes(
                 _sidecar_judgment(status, _GRANT_HEADERS, {**RESUME, "Range": specifier})
             ) == {E.RANGE_MULTI_NOT_ALLOWED}, (status, specifier)
@@ -2233,27 +2298,30 @@ def test_the_stored_manifest_is_judged_by_the_rules_the_card_is_judged_by() -> N
 def test_a_manifest_number_is_judged_on_the_digits_it_carries(
     by_id: dict, specs: dict, media_schemas: dict
 ) -> None:
-    """The same notation on three transports: refused, refused, and accepted when integral."""
+    """The same notation on three transports: refused, and accepted in both integer spellings."""
     assert _observed(
         by_id["device/invalid/clip-manifest-response-200-duration-rolls-to-integer"],
         specs,
         media_schemas,
     ) == {E.API_SCHEMA}
     assert _observed(
-        by_id["device/valid/clip-manifest-response-200-duration-integral-notation"],
-        specs,
-        media_schemas,
-    ) == set()
-    assert _observed(
         by_id["backend/invalid/upload-create-request-manifest-duration-rolls-to-integer"],
         specs,
         media_schemas,
     ) == {E.MANIFEST_DECODED_SCHEMA}
+    # The accepted spellings, per transport: the plain fraction-less decimal and the
+    # exponent form, both of which denote exactly the integers the clip records.
+    for vector_id in (
+        "device/valid/clip-manifest-response-200-duration-integral-notation",
+        "backend/valid/upload-create-request-manifest-integral-notation",
+    ):
+        assert _observed(by_id[vector_id], specs, media_schemas) == set(), vector_id
     # The float read the corpus refuses is exactly the read this contract cannot make.
     import decimal
 
     assert float("266667.000000000001") == 266667.0
     assert decimal.Decimal("266667.000000000001") != decimal.Decimal(266667)
+    assert decimal.Decimal("2.66667e5") == 266667
 
 
 def test_the_body_parsers_read_exact_numbers() -> None:
@@ -2339,6 +2407,9 @@ def test_the_chunk_rules_report_the_defect_about_the_body_and_nothing_else() -> 
     # A declaration outside the chunk range is the header rule's finding wherever it was
     # written, so this rule keeps silent rather than naming the same act twice.
     assert codes({"Content-Length": "1048577"}, body) == set()
+    # Both sides impossible at once — the header declares the oversized chunk and the
+    # vector ships it — is still one act, and the header says it once.
+    assert codes({"Content-Length": "1048577"}, b"\xff" * 1_048_577) == set()
     assert codes(good, b"\xff" * 1_048_577) == {E.CHUNK_SIZE_INVALID}
     # Length and hash are judged in that order, and a malformed checksum is not this rule's.
     assert codes({"Content-Length": "513", "Upload-Checksum": f"sha256 {'0' * 64}"}, body) == {
@@ -2361,6 +2432,24 @@ def test_a_crop_written_in_an_integral_notation_is_still_measured(
     entry = by_id["backend/invalid/derivative-response-200-crop-out-of-bounds-float-notation"]
     assert _observed(entry, specs, media_schemas) == {E.API_SCHEMA}
     assert _violations(entry, specs, media_schemas)[0].location.endswith("derivative.crop.y")
+    # The control AC-2 asks for: the same window, in bounds, spelled with decimal points.
+    assert (
+        _observed(
+            by_id["backend/valid/derivative-response-200-crop-integral-float-notation"],
+            specs,
+            media_schemas,
+        )
+        == set()
+    )
+    # And a source whose own profile spells 64.0 still has 64 pixels of bound.
+    assert (
+        _observed(
+            by_id["backend/invalid/derivative-response-200-crop-out-of-bounds-notation-source"],
+            specs,
+            media_schemas,
+        )
+        == {E.API_SCHEMA}
+    )
     from tools.contracts.api_validate import validate_derivative_crop
 
     clip_id = _body(by_id["backend/valid/derivative-response-200"])["clip_id"]
@@ -2373,3 +2462,30 @@ def test_a_crop_written_in_an_integral_notation_is_still_measured(
         ], notation
     for unreadable in ("120", 120.5, None, True):
         assert validate_derivative_crop({"id": "unit"}, crop(unreadable), size) == [], unreadable
+    # The conformant window in the same three spellings: measured, and inside the source.
+    for notation in (14, 14.0, decimal.Decimal("1.4e1")):
+        assert validate_derivative_crop({"id": "unit"}, crop(notation), size) == [], notation
+
+
+def test_a_profile_written_in_integral_notation_still_measures_its_source() -> None:
+    """A clip that spells its pixels ``64.0`` is a 64-pixel source, not a missing one (AC-06).
+
+    The crop bound is read out of the committed manifest by ``clip_dimensions``, and a map
+    that refused a decimal spelling would quietly drop that clip — leaving every
+    derivative citing it measured against nothing, which is a check that stopped running.
+    """
+    from tools.contracts.validate import clip_dimensions
+
+    document = json.loads((FIXTURES / "fixtures.json").read_bytes().decode("utf-8"))
+    entries = document["fixtures"]
+    notation_clip_ids = []
+    for entry in entries:
+        if entry["kind"] != "clip" or entry["expected"] != "valid":
+            continue
+        data = (FIXTURES / entry["id"] / "manifest.json").read_bytes()
+        if b'"width":64.0' in data:
+            notation_clip_ids.append(json.loads(data)["clip_id"])
+    assert notation_clip_ids, "no clip spells its profile dimensions in integral notation"
+    dimensions = clip_dimensions(FIXTURES, entries)
+    for clip_id in notation_clip_ids:
+        assert dimensions.get(clip_id) == (64, 64), clip_id

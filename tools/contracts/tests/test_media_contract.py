@@ -1357,3 +1357,25 @@ def test_a_manifest_number_is_judged_on_the_digits_it_carries(index: list[dict],
     assert manifest["capture_order"] == json.loads(
         _read(baseline["id"], MANIFEST_NAME).decode("utf-8")
     )["capture_order"]
+
+    # Exponent notation is the same three integers again, and a profile spelled 64.0 is
+    # the same 64 pixels: the manifest path may not read either one as anything else.
+    for vector_id, notations in (
+        (
+            "media/valid/manifest-exponent-notations",
+            (b'"duration_us":2.66667e5', b'"frame_count":4e0', b'"capture_order":4.2e1'),
+        ),
+        (
+            "media/valid/manifest-integral-dimension-notations",
+            (b'"width":64.0', b'"height":64.0'),
+        ),
+    ):
+        vector = by_id[vector_id]
+        assert {
+            violation.code for violation in validate_media_fixture(FIXTURES, vector, schemas)
+        } == set(), vector_id
+        data = _read(vector["id"], MANIFEST_NAME)
+        for notation in notations:
+            assert notation in data, (vector_id, notation)
+        sidecar = json.loads(_read(vector["id"], CHECKSUMS_NAME).decode("utf-8"))
+        assert sidecar["files"][MANIFEST_NAME]["sha256"] == hashlib.sha256(data).hexdigest()

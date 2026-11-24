@@ -905,6 +905,12 @@ def _requested_span_mismatch(
 #:   the contract as requests whatever the device eventually answers, and each is
 #:   ``RANGE_MULTI_NOT_ALLOWED``. A correctly ordered request is silent: satisfiability
 #:   needs this file's length, which a request does not have.
+#: * **The request a response answers** (its ``.request.headers.json`` sidecar) is read
+#:   by these same two rows and by nothing else: :func:`_evaluate_request_sidecar`
+#:   hands the sidecar to the request row whatever the answer turned out to be, because
+#:   a gate is a fact about the answer. The one exemption is the 416, whose subject *is*
+#:   this specifier — refusing a form §4 refuses is the contract working, so the refused
+#:   form may not be named a second defect there.
 
 
 def _rule_range(context: _HeaderContext, name: str, value: str) -> list[Violation]:
@@ -1225,15 +1231,20 @@ def _evaluate_request_sidecar(
     properties of the *pair*, and a vector that carries its request is asserting that
     pair). The judgment here is exactly the judgment any request of this operation
     meets — the required-request-header walk plus every :data:`HEADER_RULES` entry in
-    the request direction, including the unknown-name refusal — with two precedence
-    rules so the validator never demands the refusal of the very defect:
+    the request direction, including the unknown-name refusal and the request row of the
+    ``Range`` decision table — with two precedence rules so the validator never demands
+    the refusal of the very defect:
 
-    * the sidecar's ``Range`` specifier findings belong to a grant (200/206). A status
-      the §4 gates reach before a range is parsed or served says nothing about the
-      specifier, and an unsupported one is answered by 416 exactly as it should be
-      (this mirrors the deliberate silence of :func:`_requested_span_mismatch`);
-    * ``IF_MATCH_ETAG_DISAGREE`` is a grant-side finding too: 412 is the *required*
-      answer to a mismatched precondition, never a violation of it.
+    * the sidecar's ``Range`` *specifier* findings are silenced when ``status == 416``,
+      the one answer whose subject is that specifier: refusing a suffix or multipart
+      request with 416 is the contract working, and a second code for the same form would
+      fail the device §4 requires. Every other status — the 401/404/409/410/412 gates
+      included — is silent about the range only *as an answer*; the request itself is
+      still a request, and a form §4 never supports is outside the contract whatever the
+      device eventually replies;
+    * the ``Range``-against-the-answer pairing (a full 200 to a supported specifier, and
+      ``IF_MATCH_ETAG_DISAGREE``) belongs to a grant (200/206): 412 is the *required*
+      answer to a mismatched precondition, and a gated refusal is not a grant of anything.
 
     Syntax rules (``If-Match``, the lease id, unknown names) are never excused: they
     judge what the request itself says, whatever the answer turned out to be. A vector
@@ -1259,9 +1270,17 @@ def _evaluate_request_sidecar(
                 )
             )
     grants = isinstance(status, int) and status in (200, 206)
+    # A refusal *about* the range is the one answer whose own subject the specifier is:
+    # at a 416 the request's form is what the device is refusing, so judging it again as a
+    # violation would flag the vector for the defect the 416 exists to name (§4, RFC 9110
+    # §15.5.17). Every other status, including the 401/404/409/410/412 gates, is silent
+    # about the range *as an answer* — and a request is judged on its own, exactly as the
+    # request row of the decision table above says, so a gated answer does not excuse a
+    # specifier no request of this contract may send.
+    refuses_the_range = isinstance(status, int) and status == 416
     for name, value in request_headers.items():
-        if name.lower() == "range":
-            continue  # judged below, against the answer it claims to serve
+        if name.lower() == "range" and refuses_the_range:
+            continue  # the 416 is the answer about this very specifier
         rule = HEADER_RULES.get(name.lower())
         if rule is None:
             found.append(
@@ -1274,22 +1293,14 @@ def _evaluate_request_sidecar(
             continue
         found.extend(rule(request_context, name, value))
     specifier = _lookup_header(request_headers, "Range")
-    if specifier is not None and grants:
+    if specifier is not None and status == 200:
         match = _SINGLE_RANGE.match(specifier)
         start = int(match.group(1)) if match is not None else 0
         end = _as_int(match.group(2)) if match is not None and match.group(2) else None
-        reversed_order = end is not None and end < start
-        if match is None or reversed_order:
-            found.append(
-                Violation(
-                    E.RANGE_MULTI_NOT_ALLOWED,
-                    f"{location}: Range",
-                    f"{specifier!r} is not a single bytes=start-end or bytes=start- "
-                    f"range this contract can serve in ascending order; a grant answers "
-                    f"only the forms §4 supports, and 416 is the answer to this one",
-                )
-            )
-        elif status == 200:
+        # An unsupported form, and an interval that asks for bytes beyond their own end,
+        # are the request row's findings already; comparing a full 200 against a request
+        # no device can serve would name the same act twice.
+        if match is not None and not (end is not None and end < start):
             found.append(
                 Violation(
                     E.RANGE_MULTI_NOT_ALLOWED,
@@ -1513,7 +1524,9 @@ def validate_upload_chunk_body(
       alone (a declared 0 or an over-limit declaration is already the header rule's
       single ``CHUNK_SIZE_INVALID``, and a named-but-unreadable file its own
       ``FIXTURE_FILE_MISSING``);
-    * committed bytes outside ``1..MAX_CHUNK_BYTES`` are ``CHUNK_SIZE_INVALID`` alone;
+    * committed bytes outside ``1..MAX_CHUNK_BYTES`` are ``CHUNK_SIZE_INVALID`` alone —
+      and when ``Content-Length`` declares an equally impossible size, the header rule
+      says it once and this rule keeps silent, so one oversized chunk is one finding;
     * ``Content-Length``, when it declares an in-range chunk size, disagreeing with the
       committed length is ``CONTENT_LENGTH_MISMATCH``; a declaration outside the chunk
       range is the header rule's ``CHUNK_SIZE_INVALID`` alone, whichever side of the pair
@@ -1544,7 +1557,12 @@ def validate_upload_chunk_body(
                 )
             ]
         return []
+    declared_out_of_range = declared is not None and not (
+        MIN_CHUNK_BYTES <= declared <= MAX_CHUNK_BYTES
+    )
     if not MIN_CHUNK_BYTES <= len(body_bytes) <= MAX_CHUNK_BYTES:
+        if declared_out_of_range:
+            return []  # both sides name the same oversized chunk: the header says it once
         return [
             Violation(
                 E.CHUNK_SIZE_INVALID,
@@ -1553,7 +1571,7 @@ def validate_upload_chunk_body(
                 f"{MIN_CHUNK_BYTES}-{MAX_CHUNK_BYTES} byte chunk range",
             )
         ]
-    if declared is not None and not MIN_CHUNK_BYTES <= declared <= MAX_CHUNK_BYTES:
+    if declared_out_of_range:
         return []  # a declaration outside the chunk range is the header rule's one finding
     if declared is not None and declared != len(body_bytes):
         return [
