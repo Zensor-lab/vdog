@@ -321,7 +321,8 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "backend/invalid/derivative-response-200-crop-out-of-bounds-float-notation": ("API_SCHEMA",),
     "backend/valid/derivative-response-200-crop-integral-float-notation": (),
     "backend/invalid/derivative-response-200-crop-out-of-bounds-notation-source": ("API_SCHEMA",),
-    "backend/valid/upload-patch-request-valid": (),
+    # `upload-patch-request-valid` is already gated above with the rest of its operation's
+    # valid vectors; a second row here would be a dict literal silently shadowing the first.
     "backend/invalid/upload-patch-request-wrong-checksum": ("CHUNK_HASH_MISMATCH",),
     "backend/invalid/upload-patch-request-length-mismatch": ("CONTENT_LENGTH_MISMATCH",),
 }
@@ -2329,13 +2330,17 @@ def test_the_body_parsers_read_exact_numbers() -> None:
 
     Pinned at the call sites: a corpus with no fractional notation in it cannot show the
     ``parse_float`` argument being dropped, and dropping it silently turns every integer
-    bound on the manifest path into a bound on binary floats.
+    bound on the manifest path into a bound on binary floats. The four API/media parses are
+    joined by ``clip_dimensions``, because the crop bound a derivative is measured against
+    is read out of a committed manifest too — and a roll-to-integer there is not a refusal
+    but a missing clip, which silently stops that cross-check from running at all.
     """
     import ast
 
     targets = {
         "tools/contracts/api_validate.py": {"validate_api_fixture", "validate_manifest_binding"},
         "tools/contracts/media_validate.py": {"validate_media_fixture", "_walk_index"},
+        "tools/contracts/validate.py": {"clip_dimensions"},
     }
     for name, wanted in targets.items():
         tree = ast.parse((REPO_ROOT / name).read_text(encoding="utf-8"))
