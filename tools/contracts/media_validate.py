@@ -792,7 +792,7 @@ def _validate_manifest(
                     f"{duration_us} exceeds the {MAX_SEGMENT_DURATION_US:,} us segment maximum",
                 )
             )
-        elif records and not walk_stopped and duration_us <= records[-1]["t_us"]:
+        elif records and duration_us <= records[-1]["t_us"]:
             found.append(
                 Violation(
                     E.DURATION_LE_FINAL_T_US,
@@ -811,9 +811,19 @@ def _validate_manifest(
     # walk stopped early (the caller's `walk_stopped`, so a prefix that happens to
     # be exactly as long as `frame_count` cannot pose as the whole index), and the
     # manifest counts a different number of frames than the walk validated (that
-    # disagreement is FRAME_COUNT_MISMATCH's to name). The same two quiet conditions
-    # cover the final-t_us rule above, so no duration rule here ever reads a
-    # truncated walk as though it were the index.
+    # disagreement is FRAME_COUNT_MISMATCH's to name).
+    #
+    # Only this *equality* is quieted by a stopped walk, and the inequality above
+    # deliberately is not. Every record the walk returned passed its bounds,
+    # notation, contiguity, CRC and marker gates, with `t_us` strictly increasing
+    # from zero, so `records[-1]["t_us"]` is a frame time this index demonstrably
+    # contains: `duration_us` not exceeding it is a false statement about the media
+    # end however the un-walked lines read — truncation makes that rule incomplete,
+    # never wrong. A required number, by contrast, must not be derived from a prefix
+    # at all, because §4 never imposed that close time on an index it did not finish.
+    # The inequality also backs the schema's `duration_us` `minimum` suppression
+    # (`_MANIFEST_SUPPRESSED`), so silencing it would leave a sub-zero duration
+    # reported by nobody.
     if (
         record.get("recovered") is True
         and records

@@ -1613,11 +1613,19 @@ def test_a_recovered_segment_states_the_close_time_the_format_fixes(schemas: dic
     assert codes(_recovered_manifest(duration_us=266_667), prefix) == {
         E.DURATION_RECOVERED_MISMATCH
     }
-    # The final-t_us rule above reads that same last frame, and keeps quiet for the same
-    # reason: a truncated walk states no close time at all.
+    # The inequality above keeps its teeth on that same prefix, and must keep them:
+    # every record the walk returned passed its gates, so t_us 133 334 is a frame this
+    # index demonstrably contains, and a duration that does not exceed it is false
+    # however the un-walked lines read. Silencing it there would also leave the
+    # schema's `duration_us` minimum suppressed with nothing left backing it.
     measured_low = {**_baseline_manifest(), "duration_us": 100}
     assert E.DURATION_LE_FINAL_T_US in codes(measured_low, prefix)
-    assert E.DURATION_LE_FINAL_T_US not in codes(measured_low, prefix, stopped=True)
+    assert E.DURATION_LE_FINAL_T_US in codes(measured_low, prefix, stopped=True)
+    # Down to a single walked frame, and down below zero: still named, by this rule and
+    # not by the schema keyword it suppresses.
+    assert E.DURATION_LE_FINAL_T_US in codes(
+        {**_baseline_manifest(), "duration_us": 0}, prefix[:1], stopped=True
+    )
     found = _validate_manifest(
         {**_recovered_manifest(duration_us=1_133_334), "frame_count": len(records)},
         schemas["manifest"],
@@ -1665,11 +1673,12 @@ def test_a_truncated_walk_states_no_close_time_even_when_it_looks_whole(tmp_path
     committed_manifest = json.loads((clip / MANIFEST_NAME).read_bytes())
     assert committed_manifest["frame_count"] == 2 and committed_manifest["duration_us"] == 133_334
 
-    def write(index: bytes) -> None:
+    def write(index: bytes, *, duration_us: int = 999_999) -> None:
         """Write this index with a manifest and checksums that state it honestly."""
         (clip / INDEX_NAME).write_bytes(index)
         manifest = dict(committed_manifest)
-        manifest["duration_us"] = 999_999  # neither the 133 334 §4 fixes nor anything near it
+        # 999 999 is neither the 133 334 §4 fixes nor anything near it.
+        manifest["duration_us"] = duration_us
         manifest["files"] = {
             name: {
                 "bytes": len(blob),
@@ -1718,3 +1727,15 @@ def test_a_truncated_walk_states_no_close_time_even_when_it_looks_whole(tmp_path
     assert [violation.code for violation in found] == [E.DURATION_RECOVERED_MISMATCH], [
         violation.render() for violation in found
     ]
+    # And the inequality does *not* share that quiet, at this corpus level either: the
+    # two records the walk did validate reach t_us 66 667, so a media end that does not
+    # exceed it is false whatever the un-walked line holds — named here at the frame it
+    # equals, and again below zero, where the schema keyword the dedicated rule
+    # suppresses would otherwise leave the member reported by nobody.
+    for low in (66_667, 0):
+        write(whole_index + b'{"broken"\n', duration_us=low)
+        found = validate_media_fixture(tmp_path, entry, schemas)
+        assert [violation.code for violation in found] == [
+            E.FRAME_LINE_MALFORMED,
+            E.DURATION_LE_FINAL_T_US,
+        ], (low, [violation.render() for violation in found])
