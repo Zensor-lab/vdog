@@ -4410,6 +4410,30 @@
       "status": 416
     },
     {
+      "api_error_code": "RANGE_INVALID",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CONTENT_RANGE_INVALID"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-416-no-range-sidecar.headers.json",
+        "device/invalid/clip-file-response-416-no-range-sidecar.json",
+        "device/invalid/clip-file-response-416-no-range-sidecar.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-416-no-range-sidecar",
+      "invariant": "AC-06 range: a 416 refuses a range (RFC 9110 §15.5.17) and a whole-file request ends in 200 — §4's \"No Range returns 200\" reads both ways. This sidecar is a complete conforming request except that it names no specifier at all, and the answer still refuses a window: a 1712-byte file cannot run out of bytes for a request that asked for all of them, so the refusal has no range to be about and the sidecar that carries the pair is the defect",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 416
+    },
+    {
       "api_error_code": null,
       "category": "range",
       "contract": "device-v1",

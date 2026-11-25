@@ -2898,6 +2898,40 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
+        id="clip-file-response-416-no-range-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=416,
+        api_error_code="RANGE_INVALID",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes */{media.baseline_payload_bytes}",
+        },
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": payload_etag,
+        },
+        body=_error_body(
+            "RANGE_INVALID",
+            "Range is not satisfiable",
+            retryable=False,
+            request_id="req-bf17",
+        ),
+        expected="invalid",
+        codes=(CONTENT_RANGE_INVALID,),
+        invariant=(
+            "AC-06 range: a 416 refuses a range (RFC 9110 §15.5.17) and a whole-file "
+            "request ends in 200 — §4's \"No Range returns 200\" reads both ways. This "
+            f"sidecar is a complete conforming request except that it names no specifier "
+            f"at all, and the answer still refuses a window: a {media.baseline_payload_bytes}"
+            "-byte file cannot run out of bytes for a request that asked for all of "
+            "them, so the refusal has no range to be about and the sidecar that carries "
+            "the pair is the defect"
+        ),
+    )
+    out.add(
         id="clip-file-response-206-no-range-sidecar",
         contract="device",
         category="range",

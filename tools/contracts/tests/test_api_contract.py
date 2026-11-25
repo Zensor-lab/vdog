@@ -341,6 +341,7 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     # the in-scan walk skipped, and the golden transcodes that must keep the source
     # ratio they cite — the vectors and clip rows those defects' fixes ship or touch.
     "backend/invalid/upload-patch-response-204-stale-offset": ("UPLOAD_OFFSET_STALE",),
+    "device/invalid/clip-file-response-416-no-range-sidecar": ("CONTENT_RANGE_INVALID",),
     "media/valid/progressive-dri-between-scans": (),
     "media/valid/progressive-comment-between-scans": (),
     "backend/valid/clip-detail-response-200": (),
@@ -2455,13 +2456,14 @@ def test_a_paired_416_refuses_only_a_range_some_request_asked_for(
         assert (
             _found_codes(_sidecar_judgment(416, refusal, {**RESUME, "Range": refused})) == set()
         ), refused
-    # The four committed 416-with-sidecar vectors keep their declared outcomes, and the
+    # The committed 416-sidecar vectors keep their declared outcomes, and the
     # sidecar-less echo vectors keep theirs: the function never runs without a sidecar.
     for vector_id, codes in (
         ("device/valid/clip-file-response-416-suffix-sidecar", set()),
         ("device/valid/clip-file-response-416-beyond-eof-sidecar", set()),
         ("device/invalid/clip-file-response-416-in-bounds-sidecar", {E.CONTENT_RANGE_INVALID}),
         ("device/invalid/clip-file-response-416-clipped-end-sidecar", {E.CONTENT_RANGE_INVALID}),
+        ("device/invalid/clip-file-response-416-no-range-sidecar", {E.CONTENT_RANGE_INVALID}),
         ("device/valid/clip-file-response-416-hyphenless", set()),
         ("device/valid/clip-file-response-416-reversed", set()),
         ("device/valid/clip-file-response-416-multi-range", set()),
@@ -2475,13 +2477,24 @@ def test_every_valid_transcode_keeps_its_source_aspect_ratio(index: list[dict]) 
 
     The golden ``DerivativeRecord`` vectors are the bytes every backend implementation
     copies, so a valid record that turns the 1:1 baseline into a 16:9 output certifies
-    geometry the encoder may not produce however well-formed its JSON is. The source's
+    geometry the encoder may not produce however well-formed its JSON is — and the
+    derivative summary a golden ``StoredClip`` embeds is that record restated, so a
+    summary that drifts from it certifies a lie about the same bytes. The source's
     size is the one the validator itself reads off the cited clip's committed manifest —
     the same ``(device_id, clip_id)`` map the crop bound is measured against — and the
     ratio is compared by cross-multiplication, never by float division.
     """
     dimensions = _clip_dimensions()
+
+    def geometry(where: str, output: dict, source: tuple[int, int]) -> None:
+        width, height = output["width"], output["height"]
+        source_width, source_height = source
+        assert width * source_height == height * source_width, (where, output, source)
+        assert width <= source_width and height <= source_height, (where, output, source)
+
     checked = 0
+    # Pass 1: the records themselves, indexed so pass 2 can check what quotes them.
+    outputs: dict[tuple[str, str, str], dict] = {}
     for entry in index:
         if entry["expected"] != "valid" or entry["schema"] != "DerivativeRecord":
             continue
@@ -2490,13 +2503,26 @@ def test_every_valid_transcode_keeps_its_source_aspect_ratio(index: list[dict]) 
             continue
         source = dimensions.get((body["device_id"], body["clip_id"]))
         assert source is not None, (entry["id"], "cites a clip the corpus does not ship")
-        output = body["output"]
-        width, height = output["width"], output["height"]
-        source_width, source_height = source
-        assert width * source_height == height * source_width, (entry["id"], output, source)
-        assert width <= source_width and height <= source_height, (entry["id"], output, source)
+        geometry(entry["id"], body["output"], source)
+        outputs[(body["device_id"], body["clip_id"], body["derivative_id"])] = body["output"]
         checked += 1
-    assert checked >= 3, f"the golden transcodes are the point: checked {checked}"
+    # Pass 2: every output a valid clip summarizes — same geometry rule against the
+    # clip's own source, plus agreement with the record of the same derivative_id.
+    for entry in index:
+        if entry["expected"] != "valid" or entry["schema"] != "StoredClip":
+            continue
+        body = _body(entry)
+        source = dimensions.get((body["device_id"], body["clip_id"]))
+        assert source is not None, (entry["id"], "cites a clip the corpus does not ship")
+        for summary in body.get("derivatives", []):
+            output = summary.get("output")
+            if output is None:
+                continue
+            geometry(entry["id"], output, source)
+            quoted = outputs.get((body["device_id"], body["clip_id"], summary["derivative_id"]))
+            assert quoted == output, (entry["id"], summary["derivative_id"], output, quoted)
+            checked += 1
+    assert checked >= 4, f"the golden transcodes and their summary are the point: {checked}"
 
 
 def test_a_stored_clip_may_not_carry_a_manifest_of_another_clip(
