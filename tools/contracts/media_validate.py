@@ -823,7 +823,12 @@ def _validate_manifest(
     # at all, because §4 never imposed that close time on an index it did not finish.
     # The inequality also backs the schema's `duration_us` `minimum` suppression
     # (`_MANIFEST_SUPPRESSED`), so silencing it would leave a sub-zero duration
-    # reported by nobody.
+    # reported by nobody. Its one subject-less shape is an index the walk validated
+    # nothing for: with no frames there is no final `t_us` to exceed, so `records`
+    # keeps this rule out and the `minimum` keyword is dropped without a backstop
+    # here. That is the state the rule had before this round, and such a fixture is
+    # still refused twice over — INDEX_EMPTY from the walk, and the `frame_count`
+    # bound above, which no walk state gates.
     if (
         record.get("recovered") is True
         and records
