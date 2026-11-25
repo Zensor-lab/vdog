@@ -337,6 +337,13 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "media/valid/wide-second-device": (),
     "backend/valid/derivative-response-200-wide-second-device": (),
     "backend/invalid/derivative-response-200-crop-out-of-bounds-second-device": ("API_SCHEMA",),
+    # Round 9: the upload acknowledgement that did not advance, the between-scan DRI
+    # the in-scan walk skipped, and the golden transcodes that must keep the source
+    # ratio they cite — the vectors and clip rows those defects' fixes ship or touch.
+    "backend/invalid/upload-patch-response-204-stale-offset": ("UPLOAD_OFFSET_STALE",),
+    "media/valid/progressive-dri-between-scans": (),
+    "media/valid/progressive-comment-between-scans": (),
+    "backend/valid/clip-detail-response-200": (),
 }
 
 
@@ -2355,6 +2362,141 @@ def test_an_empty_request_sidecar_is_a_request_judged_as_one(
     # The same answer with no sidecar file at all keeps its silence: nothing is asserted.
     quiet = {**entry, "files": [name for name in entry["files"] if "request.headers" not in name]}
     assert _violations(quiet, specs, media_schemas) == []
+
+
+# --- Round 9: the acknowledgement that did not advance, and the refusal of a range ---
+#     no request asked for ----------------------------------------------------------------
+
+
+#: The committed upload pair's arithmetic in unit-test form: this request appends
+#: 512 bytes at offset 0, so the accepted 204 owes offset 512 and nothing else.
+UPLOAD_CHUNK = {
+    "Upload-Offset": "0",
+    "Upload-Checksum": f"sha256 {'a' * 64}",
+    "Content-Length": "512",
+}
+
+
+def test_a_204_acknowledges_the_chunk_by_the_offset_it_advanced_to() -> None:
+    """§8 step 2: a 204 after an appended chunk names the offset the append ends at (AC-05).
+
+    With the request sidecar present and its arithmetic readable, the answer's
+    ``Upload-Offset`` has exactly one legal value: request offset plus chunk length.
+    An acknowledgement that still names the request's own offset did not commit the
+    bytes, and a client resuming from it resends them — so the stale pair is refused
+    and the advanced pair is clean. Where another rule owns the pair's defect first,
+    this one stays silent: the arithmetic is checked only on a sidecar its own rules
+    accept and a response offset the response's own rule accepts.
+    """
+    stale = dict(UPLOAD_CHUNK)
+    found = _sidecar_judgment(204, {"Upload-Offset": "0"}, stale, "backend.patch_upload_file")
+    assert _found_codes(found) == {E.UPLOAD_OFFSET_STALE}, [v.render() for v in found]
+    assert [violation.location for violation in found] == [
+        "unit:sidecar: request sidecar: Upload-Offset"
+    ], found
+    # The committed pair's answer: 0 + 512 = 512, the one offset §8 step 2 allows.
+    assert (
+        _found_codes(
+            _sidecar_judgment(204, {"Upload-Offset": "512"}, stale, "backend.patch_upload_file")
+        )
+        == set()
+    )
+    # A malformed or absent member of the pair is the owning rule's, never this pair's
+    # second opinion: sidecar arithmetic is judged only when its owners are silent.
+    for request, codes in (
+        ({**UPLOAD_CHUNK, "Content-Length": "many"}, {E.CONTENT_LENGTH_MISMATCH}),
+        ({**UPLOAD_CHUNK, "Upload-Offset": "-1"}, {E.UPLOAD_OFFSET_INVALID}),
+        ({k: v for k, v in UPLOAD_CHUNK.items() if k != "Content-Length"}, {E.HEADER_MISSING}),
+        ({k: v for k, v in UPLOAD_CHUNK.items() if k != "Upload-Checksum"}, {E.HEADER_MISSING}),
+        ({**UPLOAD_CHUNK, "Upload-Checksum": "md5 nope"}, {E.UPLOAD_CHECKSUM_SYNTAX}),
+    ):
+        found = _sidecar_judgment(204, {"Upload-Offset": "0"}, request, "backend.patch_upload_file")
+        assert _found_codes(found) == codes, (request, codes)
+    # And the same silence for a response offset the response's own rules own: absent
+    # is the required-header walk's, malformed is the offset rule's.
+    assert (
+        _found_codes(_sidecar_judgment(204, {}, stale, "backend.patch_upload_file")) == set()
+    )
+    assert (
+        _found_codes(
+            _sidecar_judgment(204, {"Upload-Offset": "nowhere"}, stale, "backend.patch_upload_file")
+        )
+        == set()
+    )
+    # A 409 pair is a different answer: there the response offset is the authoritative
+    # committed offset and legitimately not request + chunk.
+    assert (
+        _found_codes(_sidecar_judgment(409, {"Upload-Offset": "0"}, stale, "backend.patch_upload_file"))
+        == set()
+    )
+
+
+def test_a_paired_416_refuses_only_a_range_some_request_asked_for(
+    by_id: dict, specs: dict, media_schemas: dict
+) -> None:
+    """§4's "No Range returns 200" reads both ways for the refusal too (AC-04/AC-06).
+
+    A 416 refuses a range (RFC 9110 §15.5.17); a whole-file request ends in 200. The
+    sidecar is the only statement of the question, so a 416 beside a sidecar that names
+    no ``Range`` refuses bytes no request asked about — the mirror of the 206 that
+    grants them. Unsupported spellings a 416 honestly refuses, and every sidecar-less
+    vector's silence, are untouched.
+    """
+    refusal = {"Accept-Ranges": "bytes", "Content-Range": "bytes */1712"}
+    whole_file = {name: value for name, value in RESUME.items() if name != "Range"}
+    found = _sidecar_judgment(416, refusal, whole_file)
+    assert _found_codes(found) == {E.CONTENT_RANGE_INVALID}, _found_codes(found)
+    assert [violation.location for violation in found] == ["unit:sidecar: request sidecar: Range"]
+    # An echo in the answer's own header map cannot stand in for the omitted request.
+    echoed = _sidecar_judgment(416, {**refusal, "Range": "bytes=0-99"}, whole_file)
+    assert _found_codes(echoed) == {E.CONTENT_RANGE_INVALID}, _found_codes(echoed)
+    # The forms a 416 legitimately refuses keep passing, sidecar and all.
+    for refused in ("bytes=-100", "bytes=0-99,200-299", "bytes=10", "bytes=200-100"):
+        assert (
+            _found_codes(_sidecar_judgment(416, refusal, {**RESUME, "Range": refused})) == set()
+        ), refused
+    # The four committed 416-with-sidecar vectors keep their declared outcomes, and the
+    # sidecar-less echo vectors keep theirs: the function never runs without a sidecar.
+    for vector_id, codes in (
+        ("device/valid/clip-file-response-416-suffix-sidecar", set()),
+        ("device/valid/clip-file-response-416-beyond-eof-sidecar", set()),
+        ("device/invalid/clip-file-response-416-in-bounds-sidecar", {E.CONTENT_RANGE_INVALID}),
+        ("device/invalid/clip-file-response-416-clipped-end-sidecar", {E.CONTENT_RANGE_INVALID}),
+        ("device/valid/clip-file-response-416-hyphenless", set()),
+        ("device/valid/clip-file-response-416-reversed", set()),
+        ("device/valid/clip-file-response-416-multi-range", set()),
+        ("device/valid/clip-file-response-416-beyond-eof", set()),
+    ):
+        assert _observed(by_id[vector_id], specs, media_schemas) == codes, vector_id
+
+
+def test_every_valid_transcode_keeps_its_source_aspect_ratio(index: list[dict]) -> None:
+    """backend.md §7.3: a transcode preserves the source ratio and never upscales (AC-05).
+
+    The golden ``DerivativeRecord`` vectors are the bytes every backend implementation
+    copies, so a valid record that turns the 1:1 baseline into a 16:9 output certifies
+    geometry the encoder may not produce however well-formed its JSON is. The source's
+    size is the one the validator itself reads off the cited clip's committed manifest —
+    the same ``(device_id, clip_id)`` map the crop bound is measured against — and the
+    ratio is compared by cross-multiplication, never by float division.
+    """
+    dimensions = _clip_dimensions()
+    checked = 0
+    for entry in index:
+        if entry["expected"] != "valid" or entry["schema"] != "DerivativeRecord":
+            continue
+        body = _body(entry)
+        if body.get("type") != "transcode":
+            continue
+        source = dimensions.get((body["device_id"], body["clip_id"]))
+        assert source is not None, (entry["id"], "cites a clip the corpus does not ship")
+        output = body["output"]
+        width, height = output["width"], output["height"]
+        source_width, source_height = source
+        assert width * source_height == height * source_width, (entry["id"], output, source)
+        assert width <= source_width and height <= source_height, (entry["id"], output, source)
+        checked += 1
+    assert checked >= 3, f"the golden transcodes are the point: checked {checked}"
 
 
 def test_a_stored_clip_may_not_carry_a_manifest_of_another_clip(

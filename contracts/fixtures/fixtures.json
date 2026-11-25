@@ -941,6 +941,29 @@
     },
     {
       "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "UPLOAD_OFFSET_STALE"
+      ],
+      "files": [
+        "backend/invalid/upload-patch-response-204-stale-offset.headers.json",
+        "backend/invalid/upload-patch-response-204-stale-offset.request.headers.json"
+      ],
+      "id": "backend/invalid/upload-patch-response-204-stale-offset",
+      "invariant": "AC-05/AC-06 an acknowledgement that did not advance did not commit the chunk: a 204 beside a request appending 512 bytes at offset 0 must name the offset the append ends at, and one still naming 0 lets a client resume into bytes it already sent (interfaces.md §8 step 2)",
+      "kind": "api",
+      "method": "PATCH",
+      "operation": "backend.patch_upload_file",
+      "operation_id": "patchUploadFile",
+      "path": "/uploads/{id}/files/{name}",
+      "schema": null,
+      "status": 204
+    },
+    {
+      "api_error_code": null,
       "category": "catalog",
       "contract": "backend-v1",
       "direction": "response",
@@ -1981,7 +2004,7 @@
         "backend/valid/derivative-response-200-crop-integral-float-notation.json"
       ],
       "id": "backend/valid/derivative-response-200-crop-integral-float-notation",
-      "invariant": "AC-05/AC-06 a crop measured inside its source is conformant whatever notation its members carry: 0/14/64/36 and 0.0/14.0/64.0/36.0 are the same window, and refusing the second would refuse bytes the schema calls integers",
+      "invariant": "AC-05/AC-06 a crop measured inside its source is conformant whatever notation its members carry: 0/0/64/64 and 0.0/0.0/64.0/64.0 are the same window, and refusing the second would refuse bytes the schema calls integers",
       "kind": "api",
       "method": "GET",
       "operation": "backend.get_derivative",
@@ -3724,10 +3747,11 @@
       "expected": "valid",
       "expected_error_codes": [],
       "files": [
-        "backend/valid/upload-patch-response-204.headers.json"
+        "backend/valid/upload-patch-response-204.headers.json",
+        "backend/valid/upload-patch-response-204.request.headers.json"
       ],
       "id": "backend/valid/upload-patch-response-204",
-      "invariant": "AC-05 accepted chunk returns 204 with the new authoritative Upload-Offset",
+      "invariant": "AC-05 accepted chunk returns 204 with the new authoritative Upload-Offset — paired with the committed request: offset 0 plus this 512-byte chunk is exactly the offset §8 step 2 requires the acknowledgement to name",
       "kind": "api",
       "method": "PATCH",
       "operation": "backend.patch_upload_file",
@@ -8608,6 +8632,22 @@
       ],
       "id": "media/valid/progressive-comment-between-scans",
       "invariant": "AC-02 progressive multi-scan capture: frames encode as progressive JPEGs whose between-scan comments carry marker-like payloads; Pillow decodes them, the SOF and the decoder agree with the manifest profile, and each indexed slice ends exactly at its own first EOI",
+      "kind": "clip"
+    },
+    {
+      "category": "baseline",
+      "contract": "media-v1",
+      "corruption": null,
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "checksums.json",
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/valid/progressive-dri-between-scans",
+      "invariant": "AC-02 progressive multi-scan capture: frames encode as progressive JPEGs whose between-scan restart-interval segment carries marker-like payload bytes; Pillow decodes them, the SOF and the decoder agree with the manifest profile, and each indexed slice ends exactly at its own first EOI",
       "kind": "clip"
     },
     {

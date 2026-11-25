@@ -2,7 +2,7 @@
 
 The published wire contract for the recorder, the backend and the original
 recording format: two OpenAPI 3.1 documents, three JSON Schema 2020-12 documents,
-and 431 committed golden fixtures that say exactly what every accepted and refused
+and 433 committed golden fixtures that say exactly what every accepted and refused
 request and response looks like on the wire. Everything here is machine-checked
 offline by `tools/validate_contracts.py`; nothing in this tree is prose-only.
 
@@ -14,7 +14,7 @@ documents are corrected — and the validator is expected to fail loudly in betw
 
 ## Running the checks
 
-The suite is 223 test functions; `tools/contracts/tests/test_corpus.py` fails if this
+The suite is 228 test functions; `tools/contracts/tests/test_corpus.py` fails if this
 number and the corpus counts quoted below ever drift apart from the tree.
 
 From the repository root, on the qualified interpreter (`uv` fetches CPython 3.12
@@ -51,7 +51,7 @@ uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
 | `media-v1/manifest.schema.json` | `manifest.json` of a finalized segment: identity, profile, clock, duration, count, close reason and the per-file hashes |
 | `media-v1/frame-record.schema.json` | one `frames.jsonl` line: `v`, `seq`, `offset`, `size`, `t_us`, `crc32` and nothing else |
 | `media-v1/active-record.schema.json` | `active.json` of an interrupted segment: the same identity without any completion claim |
-| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 431 vectors |
+| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 433 vectors |
 | `fixtures/media/valid/` | 17 finalized and in-progress segments a healthy recorder writes, including the clock, gap, boundary, notation and recovery shapes |
 | `fixtures/media/invalid/` | 72 single-defect segments: every documented corruption class, one defect each |
 | `fixtures/device/`, `fixtures/backend/` | 342 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
@@ -103,7 +103,7 @@ harness artifact beside a valid clip, never something the recorder writes.
 
 They are different registers and deliberately do not share a namespace.
 
-**Validator diagnostics** (`tools/contracts/errors.py`, 104 codes) name *why the
+**Validator diagnostics** (`tools/contracts/errors.py`, 105 codes) name *why the
 contract or a fixture is wrong* — they appear in the validator report and in
 `fixtures.json` as `expected_error_codes`, and never on the wire. The specs state
 these conditions in prose but assign no identifiers, so this package named them;

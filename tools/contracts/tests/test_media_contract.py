@@ -1487,6 +1487,8 @@ def test_the_first_image_end_offset_reads_every_chain_it_is_handed() -> None:
         b"\xff\xc4\x00\x06\xff\xd9\xff\xd8",  # DHT
         b"\xff\xcc\x00\x05\xff\xd9\x01",  # DAC
         b"\xff\xdc\x00\x06\xff\xd9\x00\x10",  # DNL
+        b"\xff\xdb\x00\x06\xff\xd9\xff\xd8",  # DQT
+        b"\xff\xdd\x00\x04\xff\xd9",  # DRI, interval field laced with EOI bytes
         b"\xff\xda\x00\x08\x01\x01\xff\xd8\x3f\x00",  # the next SOS, header and all
     ):
         frame = b"\xff\xd8\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00\x11\x22" + segment + b"\xff\xd9"
@@ -1555,6 +1557,66 @@ def test_a_comment_between_scans_is_read_by_its_length_not_as_scan_data() -> Non
             first_image_end_offset(lying)
 
 
+def test_a_restart_interval_between_scans_is_read_by_its_length_not_as_scan_data() -> None:
+    """A between-scan DRI laced with marker bytes is structure, not the end of the image (AC-03).
+
+    The generator seeds one DRI segment immediately before the second SOS, and the
+    interval field embeds ``FF D9``/``FF D8`` on purpose: a walk that skipped the
+    in-scan DRI by one byte and read its payload as entropy data would stop at those
+    EOI- and SOI-looking bytes and report the rest of the file as trailing — exactly
+    what a pre-fix walk does with the committed fixture. The honest walk reads the
+    segment by its length (T.81 §§B.2.1/B.2.4.4) and lands exactly at the file's EOI.
+    """
+    from tools.contracts.jpeg import (
+        JpegStructureError,
+        _structural_scan_offsets,
+        decode_size,
+        first_image_end_offset,
+        jpeg_seed,
+        make_progressive_jpeg,
+    )
+
+    frame = make_progressive_jpeg(64, 64, jpeg_seed("clip", "unit", "dri-between-scans"))
+    assert frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9")
+    # The segment really is in the file, and exactly once, before the second SOS.
+    # (Entropy-coded data is byte-stuffed, so ``FF DD`` outside the one segment cannot
+    # occur in scan data and the count below is a statement about the structure.)
+    assert frame.count(b"\xff\xdd\x00\x04") == 1, frame[:32]
+    scans = _structural_scan_offsets(frame)
+    assert len(scans) >= 2, scans
+    assert frame[scans[1] - 6 : scans[1] - 2] == b"\xff\xdd\x00\x04", (
+        "the DRI does not sit immediately before the second SOS"
+    )
+    # The walk still finds every scan: the DRI adds none and hides none.
+    assert all(frame[offset : offset + 2] == b"\xff\xda" for offset in scans), scans
+    assert first_image_end_offset(frame) + 2 == len(frame)
+    assert decode_size(frame) == (64, 64)
+
+    # The same rule on hand-written chains, where every byte is the test's: an honest
+    # in-scan DRI is consumed by its length — whether its interval field is plain or
+    # all EOI- and SOI-looking bytes — the scan continues, and the image still ends at
+    # its own EOI. A truncated or lying length is a chain failure, never a claimed
+    # trailing-byte count.
+    scan = b"\xff\xd8\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00\x11\x22"
+    for field in (b"\x00\x04", b"\xff\xd9", b"\xff\xd8"):
+        honest = scan + b"\xff\xdd\x00\x04" + field + b"\xff\xd9"
+        assert first_image_end_offset(honest) + 2 == len(honest), field
+        assert _structural_scan_offsets(honest) == [2], field
+    second_sos = b"\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00"
+    two_scans = scan + b"\xff\xdd\x00\x04\xff\xd9" + second_sos + b"\x3f\x00" + b"\xff\xd9"
+    assert first_image_end_offset(two_scans) + 2 == len(two_scans)
+    assert _structural_scan_offsets(two_scans) == [2, len(scan) + 6], _structural_scan_offsets(
+        two_scans
+    )
+    for lying in (
+        scan + b"\xff\xdd\x00",  # length field cut in half
+        scan + b"\xff\xdd\x00\x04\xff",  # segment longer than the file that holds it
+        scan + b"\xff\xdd\x00\x01\xff\xd9",  # length below the field that carries it
+    ):
+        with pytest.raises(JpegStructureError):
+            first_image_end_offset(lying)
+
+
 def test_the_committed_progressive_clip_decodes_at_the_manifest_profile(
     index: list[dict],
 ) -> None:
@@ -1571,6 +1633,35 @@ def test_the_committed_progressive_clip_decodes_at_the_manifest_profile(
     payload = _payload_bytes(entry)
     for record in _records(entry):
         frame = payload[record["offset"] : record["offset"] + record["size"]]
+        assert decode_size(frame) == (width, height), (entry["id"], record["seq"])
+        assert sof_dimensions(frame) == (width, height), (entry["id"], record["seq"])
+        assert first_image_end_offset(frame) + 2 == len(frame), (entry["id"], record["seq"])
+
+
+def test_the_committed_progressive_dri_clip_decodes_at_the_manifest_profile(
+    index: list[dict],
+) -> None:
+    """The between-scan-DRI frames are real images at the profile's dimensions (AC-02).
+
+    Each frame carries exactly one ``FF DD 00 04`` segment whose interval field embeds
+    ``FF D9``/``FF D8``: the committed evidence that the in-scan DQT and DRI codes are
+    read by their length (T.81 §§B.2.1/B.2.4.4) rather than stopping the image inside
+    the field, and that Pillow still decodes every indexed slice at the manifest's
+    profile.
+    """
+    from tools.contracts.jpeg import decode_size, first_image_end_offset, sof_dimensions
+
+    entry = next(
+        item
+        for item in media_entries(index, "valid")
+        if item["id"] == "media/valid/progressive-dri-between-scans"
+    )
+    document = json.loads(_read(entry["id"], "manifest.json").decode("utf-8"))
+    width, height = document["profile"]["width"], document["profile"]["height"]
+    payload = _payload_bytes(entry)
+    for record in _records(entry):
+        frame = payload[record["offset"] : record["offset"] + record["size"]]
+        assert frame.count(b"\xff\xdd\x00\x04") == 1, (entry["id"], record["seq"])
         assert decode_size(frame) == (width, height), (entry["id"], record["seq"])
         assert sof_dimensions(frame) == (width, height), (entry["id"], record["seq"])
         assert first_image_end_offset(frame) + 2 == len(frame), (entry["id"], record["seq"])

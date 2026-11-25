@@ -1262,10 +1262,12 @@ def _evaluate_request_sidecar(
     without a sidecar keeps every existing behaviour, because an absent request is
     silence, not a pass — while a sidecar that is *present but empty* is still the
     request this vector claims to have answered, and owes every header §4 requires of
-    one. Two pairing rules complete the answer's side of the pair: a ``416`` may refuse
+    one. Three pairing rules complete the answer's side of the pair: a ``416`` may refuse
     only a specifier its own ``Content-Range: bytes */<total>`` proves the file cannot
-    serve, and a ``206`` grants bytes only for a specifier some request actually sent —
-    §4's "No Range returns 200" reads both ways.
+    serve and that some request actually sent, a ``206`` grants bytes only for a
+    specifier some request actually sent — §4's "No Range returns 200" reads both ways —
+    and an upload ``204`` acknowledges a chunk only by the offset that chunk's append
+    actually advanced to (§8 step 2).
     """
     location = f"{entry['id']}: request sidecar"
     request_context = _HeaderContext(
@@ -1370,23 +1372,71 @@ def _evaluate_request_sidecar(
                         f"start is inside it",
                     )
                 )
-    if isinstance(status, int) and status == 206 and specifier is None:
-        # A 206 is a grant of a window, and the window has to be the one some request
-        # asked for: §4's "No Range returns 200" reads both ways. This function runs
-        # only when a sidecar is present, and the sidecar is then the *only* statement
-        # of the question — an echo of `Range` in the answer's own header map is the
-        # historical spelling for vectors that carry no sidecar at all, and it can
-        # never conjure the request the sidecar itself omits. A grant beside a request
-        # that names no range grants bytes no range request justified.
+    if isinstance(status, int) and status in (206, 416) and specifier is None:
+        # A 206 is a grant of a window and a 416 is a refusal of one: both answers are
+        # about bytes some request has to have asked for. This function runs only when a
+        # sidecar is present, and the sidecar is then the *only* statement of the
+        # question — an echo of `Range` in the answer's own header map is the historical
+        # spelling for vectors that carry no sidecar at all, and it can never conjure the
+        # request the sidecar itself omits. A grant beside a request that names no range
+        # grants bytes no range request justified; a refusal beside one refuses a range no
+        # request asked for, and §4's "No Range returns 200" reads both ways (RFC 9110
+        # §15.5.17 refuses *a range*; a whole-file request ends in 200, never 416).
         found.append(
             Violation(
                 E.CONTENT_RANGE_INVALID,
                 f"{location}: Range",
-                "this 206 grants bytes but neither the request it answers nor the answer "
-                "itself names a Range; §4's \"No Range returns 200\" reads both ways: a 206 "
-                "grants bytes no range request justified",
+                f"this {status} is an answer about a byte window, but neither the request "
+                f"it answers nor the answer itself names a Range; §4's \"No Range returns "
+                f"200\" reads both ways: a 206 grants bytes no range request justified, "
+                f"and a 416 refuses a range no request asked for",
             )
         )
+    if (
+        isinstance(status, int)
+        and status == 204
+        and operation.key == "backend.patch_upload_file"
+    ):
+        # interfaces.md §8 step 2: the 204 after an appended chunk carries the *new*
+        # authoritative Upload-Offset — an accepted chunk of ``Content-Length`` bytes at
+        # request offset N commits through N + length, so with the request sidecar
+        # present and its arithmetic headers readable, the answer's offset has exactly
+        # one legal value. A 204 still naming the request's own offset acknowledged bytes
+        # it never committed, and a client resuming from it resends them. The check stays
+        # silent wherever another rule owns the pair's defect first: an absent sidecar
+        # header is the required-header walk's, a malformed one is _rule_upload_offset /
+        # _rule_content_length / _rule_upload_checksum's, and an absent or malformed
+        # response offset is HEADER_MISSING / UPLOAD_OFFSET_INVALID's. A 409 pair is a
+        # different answer: there the response offset is the server's authoritative
+        # committed offset and legitimately not request + chunk.
+        request_offset = _lookup_header(request_headers, "Upload-Offset")
+        chunk_length = _lookup_header(request_headers, "Content-Length")
+        request_checksum = _lookup_header(request_headers, "Upload-Checksum")
+        answer_offset = _lookup_header(response_headers, "Upload-Offset")
+        if (
+            request_offset is not None
+            and chunk_length is not None
+            and request_checksum is not None
+            and answer_offset is not None
+            and not _rule_upload_offset(request_context, "Upload-Offset", request_offset)
+            and not _rule_content_length(request_context, "Content-Length", chunk_length)
+            and not _rule_upload_checksum(request_context, "Upload-Checksum", request_checksum)
+        ):
+            start = _as_int(request_offset)
+            length = _as_int(chunk_length)
+            committed = _as_int(answer_offset)
+            if committed is not None and 0 <= committed <= UINT53_MAX and committed != start + length:
+                found.append(
+                    Violation(
+                        E.UPLOAD_OFFSET_STALE,
+                        f"{location}: Upload-Offset",
+                        f"this 204 acknowledges the chunk but names offset {committed}, "
+                        f"not {start} + {length} = {start + length}: the accepted "
+                        f"{length}-byte append at offset {start} ends where the answer "
+                        f"does not say it ends (interfaces.md §8 step 2), and a client "
+                        f"resuming from this acknowledgement resends committed bytes",
+                    )
+                )
     if_match = _lookup_header(request_headers, "If-Match")
     if if_match is not None and grants:
         etag = _lookup_header(response_headers, "ETag")

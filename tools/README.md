@@ -192,14 +192,14 @@ checkout.
 
 `tools/contracts/` is the host-side validator for the published wire contract in
 [`contracts/`](../contracts/README.md): the two OpenAPI 3.1 documents, the three
-media JSON Schemas, and the 431 committed golden fixtures. It shares no code with
+media JSON Schemas, and the 433 committed golden fixtures. It shares no code with
 the release tooling above and needs no firmware toolchain.
 
 | Path | Role |
 | --- | --- |
 | `validate_contracts.py` | the documented entry script (thin shim onto `tools.contracts.cli.main`; exit 0 pass / 1 check failed / 2 validator error) |
 | `contracts/bounds.py` | every numeric limit in the contract, in one place (payload, index, frame, manifest, active, body, chunk, page, duration, dimension) |
-| `contracts/errors.py` | the 104 registered validator diagnostics and `Violation` |
+| `contracts/errors.py` | the 105 registered validator diagnostics and `Violation` |
 | `contracts/jpeg.py` | marker-level structure checks plus a real decode through Pillow (encode in the generator, decode in the validator) |
 | `contracts/media_model.py` | canonical serialization of a segment, shared by generator and validator so committed bytes are byte-stable |
 | `contracts/media_validate.py` / `api_validate.py` / `openapi_check.py` | the three check families: media fixtures, API vectors, contract documents |

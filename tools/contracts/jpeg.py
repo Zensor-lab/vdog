@@ -36,21 +36,24 @@ _MARKER_SEGMENT_LENGTH = 2
 #: The codes that, seen after an ``FF`` inside a scan, are structure rather than
 #: entropy-coded data: the stuffed byte, the restart range, and the table, definition
 #: and start-of-scan segments a multi-scan image carries between scans (DHT ``0xC4``,
-#: DAC ``0xCC``, DNL ``0xDC``, SOS ``0xDA``), together with the comment (COM ``0xFE``)
-#: and application (APPn ``0xE0``-``0xEF``) segments an encoder may place at the same
-#: boundaries — all of them read by their length as the scan continues, per T.81
-#: §§B.2.1/B.2.4, so a payload of one that embeds marker-like bytes is never mistaken
-#: for the scan itself. Every other code inside a scan is data — including ``01``,
-#: which is a standalone marker in a header but an un-stuffed byte in entropy data.
-#: This is the scan half of the walk only: :func:`sof_dimensions` stops at the first
-#: SOF and never reads scan data at all.
+#: DAC ``0xCC``, DNL ``0xDC``, SOS ``0xDA``, and the quantization-table and
+#: restart-interval definitions DQT ``0xDB`` and DRI ``0xDD``), together with the
+#: comment (COM ``0xFE``) and application (APPn ``0xE0``-``0xEF``) segments an encoder
+#: may place at the same boundaries — all of them read by their length as the scan
+#: continues, per T.81 §§B.2.1/B.2.4.4, so a payload of one that embeds marker-like
+#: bytes is never mistaken for the scan itself. Every other code inside a scan is
+#: data — including ``01``, which is a standalone marker in a header but an un-stuffed
+#: byte in entropy data. This is the scan half of the walk only: :func:`sof_dimensions`
+#: stops at the first SOF and never reads scan data at all.
 _IN_SCAN_MARKER_CODES: Final[frozenset[int]] = frozenset(
     {
         0x00,
         0xC4,
         0xCC,
-        0xDC,
         0xDA,
+        0xDB,
+        0xDC,
+        0xDD,
         0xFE,
         SOI_MARKER,
         EOI_MARKER,
@@ -120,7 +123,7 @@ def make_jpeg(width: int, height: int, seed: str, *, quality: int = FIXTURE_JPEG
 def make_progressive_jpeg(
     width: int, height: int, seed: str, *, quality: int = FIXTURE_JPEG_QUALITY
 ) -> bytes:
-    """Return one deterministic progressive JPEG whose seed-derived comments sit between scans.
+    """Return one deterministic progressive JPEG with a DRI and comments between its scans.
 
     The same :func:`_synth_image` pixels are saved with ``progressive=True``, and one
     COM segment is then inserted immediately before every structural SOS after the
@@ -128,9 +131,16 @@ def make_progressive_jpeg(
     data can hide anything. The seed-derived COM payload embeds the marker bytes
     ``FF D9`` and ``FF D8``: an in-scan comment is structure read by its length
     (T.81 §§B.2.1/B.2.4), and these are exactly the bytes a walk that mistook it for
-    scan data would stop on. The helper raises instead of shipping a vacuous fixture:
-    fewer than two SOS markers, an insertion that did not land, or a file that does
-    not end exactly at its first EOI are generation failures, not silent passes.
+    scan data would stop on. Exactly one DRI segment, ``FF DD 00 04`` plus a
+    seed-derived two-byte interval field carrying the same ``FF D9``/``FF D8`` lure,
+    then lands immediately before the second SOS: a between-scan restart-interval
+    definition is likewise structure read by its length (T.81 §§B.2.1/B.2.4.4), and an
+    interval larger than any MCU count these fixtures encode means the decoder never
+    expects the restart markers that interval would promise, so the image still decodes
+    to the pixels it would carry without the segment. The helper raises instead of
+    shipping a vacuous fixture: fewer than two SOS markers, an insertion that did not
+    land, or a file that does not end exactly at its first EOI are generation failures,
+    not silent passes.
     """
     stream = io.BytesIO()
     _synth_image(width, height, seed).save(
@@ -151,6 +161,19 @@ def make_progressive_jpeg(
     for offset in _structural_scan_offsets(data)[1:]:
         if data[offset - len(segment) : offset] != segment:
             raise JpegStructureError("a comment segment failed to land before its scan")
+    # T.81 §B.2.4.4: DRI defines the restart interval for the scans that follow and is
+    # a legal between-scan segment read by its four-byte length. The interval field
+    # carries the same EOI-/SOI-looking lure bytes as the comment: a walk that skipped
+    # an in-scan DRI by one byte would read them as entropy data and stop the image
+    # inside the field. Every value here is far above the MCU count of any fixture
+    # scan, so Pillow expects no RST markers and decodes the unchanged pixels.
+    interval = 0xFF00 | (0xD8 + digest[24] % 2)
+    dri = b"\xff\xdd\x00\x04" + interval.to_bytes(_MARKER_SEGMENT_LENGTH, "big")
+    second = _structural_scan_offsets(data)[1]
+    data = data[:second] + dri + data[second:]
+    rescanned = _structural_scan_offsets(data)
+    if data[rescanned[1] - len(dri) : rescanned[1]] != dri:
+        raise JpegStructureError("the restart-interval segment failed to land before its scan")
     if first_image_end_offset(data) + 2 != len(data):
         raise JpegStructureError("the progressive image does not end at its first EOI")
     return data
@@ -206,9 +229,10 @@ def first_image_end_offset(data: bytes) -> int:
     standalone markers (``00``, ``01``, ``D0``-``D7``), variable-length segments read
     by their length field — and then, once a scan (``DA``) has been opened, walks the
     entropy-coded data as a scan: ``FF00`` is a stuffed byte, ``D0``-``D7`` are restart
-    markers, and ``C4``/``CC``/``DC``/``DA`` (DHT, DAC, DNL and the next SOS of a
-    multi-scan image) are the segments a scan may legitimately be interrupted by, read
-    by length as the scan continues. The first ``D9`` (EOI) ends the image. The
+    markers, and ``C4``/``CC``/``DA``/``DB``/``DC``/``DD`` (DHT, DAC, the next SOS, DQT,
+    DNL and DRI of a multi-scan image) are the segments a scan may legitimately be
+    interrupted by, read by length as the scan continues (T.81 §§B.2.1/B.2.4.4). The
+    first ``D9`` (EOI) ends the image. The
     returned offset is that of the ``FF`` starting the two-byte marker, so the first
     image is exactly ``data[: first_image_end_offset(data) + 2]``.
 
@@ -268,8 +292,10 @@ def first_image_end_offset(data: bytes) -> int:
 def _structural_scan_offsets(data: bytes) -> list[int]:
     """Return, in order, the offset of the ``FF`` starting every SOS in the marker chain.
 
-    Walks the chain structurally like :func:`first_image_end_offset` — the in-scan codes
-    consume their segments by length, everything else inside a scan is data — and records
+    Walks the chain structurally like :func:`first_image_end_offset` — the in-scan codes,
+    among them the between-scan DQT (``DB``) and DRI (``DD``) definitions read by their
+    length (T.81 §§B.2.1/B.2.4.4), consume their segments, everything else inside a scan
+    is data — and records
     each SOS whether it opened the first scan or reopened the scan as a multi-scan image
     continued. Reaching EOI ends the walk; a second SOI inside a scan, or any truncated
     marker or segment, raises :class:`JpegStructureError` — this walk reads a generator's

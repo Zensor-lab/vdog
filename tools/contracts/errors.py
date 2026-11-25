@@ -150,6 +150,11 @@ CURSOR_TOO_LONG = "CURSOR_TOO_LONG"
 PAGE_LIMIT_INVALID = "PAGE_LIMIT_INVALID"
 FILE_NAME_NOT_ALLOWED = "FILE_NAME_NOT_ALLOWED"
 UPLOAD_OFFSET_INVALID = "UPLOAD_OFFSET_INVALID"
+# A ``204`` that acknowledged an appended chunk without advancing past it: the answer's
+# ``Upload-Offset`` is not the request offset plus the chunk's ``Content-Length``, so the
+# bytes it just accepted were never committed to the offset it names and a client
+# resuming from that acknowledgement would resend them (interfaces.md §8 step 2).
+UPLOAD_OFFSET_STALE = "UPLOAD_OFFSET_STALE"
 UPLOAD_LENGTH_INVALID = "UPLOAD_LENGTH_INVALID"
 UPLOAD_CHECKSUM_SYNTAX = "UPLOAD_CHECKSUM_SYNTAX"
 CHUNK_SIZE_INVALID = "CHUNK_SIZE_INVALID"
@@ -274,6 +279,7 @@ CODES: frozenset[str] = frozenset(
         PAGE_LIMIT_INVALID,
         FILE_NAME_NOT_ALLOWED,
         UPLOAD_OFFSET_INVALID,
+        UPLOAD_OFFSET_STALE,
         UPLOAD_LENGTH_INVALID,
         UPLOAD_CHECKSUM_SYNTAX,
         CHUNK_SIZE_INVALID,

@@ -123,6 +123,7 @@ from .errors import (
     UPLOAD_CHECKSUM_SYNTAX,
     UPLOAD_LENGTH_INVALID,
     UPLOAD_OFFSET_INVALID,
+    UPLOAD_OFFSET_STALE,
     VERSION_UNSUPPORTED,
 )
 from .jpeg import jpeg_seed
@@ -378,6 +379,32 @@ def _valid_media() -> tuple[MediaFixture, ...]:
                 "whose between-scan comments carry marker-like payloads; Pillow decodes "
                 "them, the SOF and the decoder agree with the manifest profile, and each "
                 "indexed slice ends exactly at its own first EOI"
+            ),
+        ),
+        MediaFixture(
+            id="media/valid/progressive-dri-between-scans",
+            kind="clip",
+            category="baseline",
+            # The baseline's own profile, encoded multi-scan: the same seed-derived
+            # comments sit before every SOS after the first, and exactly one Define
+            # Restart Interval segment lands before the second SOS, its interval field
+            # embedding FF D9 and FF D8. A between-scan DRI is structure read by its
+            # length (T.81 §§B.2.1/B.2.4.4): a walk that skipped it by one byte would
+            # read the interval field as entropy data, mistake those bytes for the end
+            # of the image and report the rest of the file as trailing — this fixture is
+            # the control that proves the in-scan DQT and DRI codes are honored.
+            plan=_plan(
+                "progressive-dri-between-scans",
+                VALID_BASELINE_TIMES,
+                clock=SNTP_CLOCK,
+                capture_order=55,
+                progressive=True,
+            ),
+            invariant=(
+                "AC-02 progressive multi-scan capture: frames encode as progressive JPEGs "
+                "whose between-scan restart-interval segment carries marker-like payload "
+                "bytes; Pillow decodes them, the SOF and the decoder agree with the "
+                "manifest profile, and each indexed slice ends exactly at its own first EOI"
             ),
         ),
         MediaFixture(
@@ -3754,7 +3781,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
                     "type": "transcode",
                     "preset": "h264-vbr-720p",
                     "sha256": _sha("derivative-output"),
-                    "output": {"width": 64, "height": 36},
+                    "output": {"width": 64, "height": 64},
                 }
             ],
         },
@@ -4269,7 +4296,39 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         direction="response",
         status=204,
         headers={"Upload-Offset": str(media.baseline_chunk_bytes)},
-        invariant="AC-05 accepted chunk returns 204 with the new authoritative Upload-Offset",
+        request_headers={
+            "Upload-Offset": "0",
+            "Upload-Checksum": f"sha256 {media.baseline_chunk_sha256}",
+            "Content-Length": str(media.baseline_chunk_bytes),
+        },
+        invariant=(
+            "AC-05 accepted chunk returns 204 with the new authoritative Upload-Offset — "
+            "paired with the committed request: offset 0 plus this "
+            f"{media.baseline_chunk_bytes}-byte chunk is exactly the offset §8 step 2 "
+            "requires the acknowledgement to name"
+        ),
+    )
+    out.add(
+        id="upload-patch-response-204-stale-offset",
+        contract="backend",
+        category="upload",
+        operation="backend.patch_upload_file",
+        direction="response",
+        status=204,
+        headers={"Upload-Offset": "0"},
+        request_headers={
+            "Upload-Offset": "0",
+            "Upload-Checksum": f"sha256 {media.baseline_chunk_sha256}",
+            "Content-Length": str(media.baseline_chunk_bytes),
+        },
+        expected="invalid",
+        codes=(UPLOAD_OFFSET_STALE,),
+        invariant=(
+            "AC-05/AC-06 an acknowledgement that did not advance did not commit the chunk: "
+            f"a 204 beside a request appending {media.baseline_chunk_bytes} bytes at offset "
+            "0 must name the offset the append ends at, and one still naming 0 lets a "
+            "client resume into bytes it already sent (interfaces.md §8 step 2)"
+        ),
     )
     out.add(
         id="upload-patch-response-409-wrong-offset",
@@ -4915,13 +4974,13 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "encoder_version": "libx264-0.165",
             "filter_version": "vdog-eis-1",
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
-            # §7.3: a transcode keeps the window's aspect ratio and never upscales, so
-            # the output is the crop it cites — 64x36 pixels measured inside the 64x64
-            # baseline. The preset id is a frozen label, not a promise of 1280x720.
-            "output": {"width": 64, "height": 36},
+            # §7.3: a transcode preserves the *source's* aspect ratio and never upscales,
+            # so the output of this 1:1 baseline is 1:1 — the whole 64x64 window, at the
+            # source's own size. The preset id is a frozen label, not a promise of 1280x720.
+            "output": {"width": 64, "height": 64},
             # Measured in the source's pixels: this record cites the committed baseline,
-            # whose video is 64x64, so the window has to fit inside 64 rows.
-            "crop": {"x": 0, "y": 14, "width": 64, "height": 36},
+            # whose video is 64x64, so the window is the frame itself.
+            "crop": {"x": 0, "y": 0, "width": 64, "height": 64},
             "original_hashes": {
                 "video.mjpg": media.baseline_payload_sha256,
                 "frames.jsonl": media.baseline_index_sha256,
@@ -5065,11 +5124,11 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "encoder_version": "libx264-0.165",
             "filter_version": "vdog-eis-1",
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
-            "output": {"width": 64, "height": 36},
+            "output": {"width": 64, "height": 64},
             # The baseline's own conformant window, spelled the way a writer that carries
-            # every number as a decimal may spell it: inside 64 rows, so the notation is
-            # the only thing that differs from the conformant record above.
-            "crop": {"x": 0.0, "y": 14.0, "width": 64.0, "height": 36.0},
+            # every number as a decimal may spell it: the full 64 rows of the source, so
+            # the notation is the only thing that differs from the conformant record above.
+            "crop": {"x": 0.0, "y": 0.0, "width": 64.0, "height": 64.0},
             "original_hashes": {
                 "video.mjpg": media.baseline_payload_sha256,
                 "frames.jsonl": media.baseline_index_sha256,
@@ -5078,7 +5137,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         },
         invariant=(
             "AC-05/AC-06 a crop measured inside its source is conformant whatever notation "
-            "its members carry: 0/14/64/36 and 0.0/14.0/64.0/36.0 are the same window, and "
+            "its members carry: 0/0/64/64 and 0.0/0.0/64.0/64.0 are the same window, and "
             "refusing the second would refuse bytes the schema calls integers"
         ),
     )
