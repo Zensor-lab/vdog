@@ -732,6 +732,20 @@ def _rule_if_match(context: _HeaderContext, name: str, value: str) -> list[Viola
 
 def _rule_content_length(context: _HeaderContext, name: str, value: str) -> list[Violation]:
     location = f"{context.location}: {name}"
+    if context.direction == "response" and context.status == 204:
+        # RFC 9110 §8.6 forbids the field itself on a 204, whatever its value: the
+        # separate body-presence check only proves no bytes are present, so the
+        # header is refused here before ``_as_int`` ever reads it. A 204 answer
+        # that names a length — even a correct-looking ``0`` — teaches clients to
+        # expect a body the status can never carry.
+        return [
+            Violation(
+                E.CONTENT_LENGTH_MISMATCH,
+                location,
+                "a 204 answer may not carry the header at all (RFC 9110 §8.6), "
+                f"whatever its value ({value!r})",
+            )
+        ]
     number = _as_int(value)
     if number is None or number < 0:
         return [Violation(E.CONTENT_LENGTH_MISMATCH, location, f"{value!r} is not a byte count")]

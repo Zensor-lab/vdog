@@ -4454,6 +4454,28 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
+        id="upload-patch-response-204-content-length",
+        contract="backend",
+        category="upload",
+        operation="backend.patch_upload_file",
+        direction="response",
+        status=204,
+        headers={"Upload-Offset": str(media.baseline_chunk_bytes), "Content-Length": "0"},
+        request_headers={
+            "Upload-Offset": "0",
+            "Upload-Checksum": f"sha256 {media.baseline_chunk_sha256}",
+            "Content-Length": str(media.baseline_chunk_bytes),
+        },
+        expected="invalid",
+        codes=(CONTENT_LENGTH_MISMATCH,),
+        invariant=(
+            "AC-05 a 204 acknowledgement never carries Content-Length: RFC 9110 §8.6 "
+            "forbids the field itself on a bodyless answer whatever its value, and the "
+            f"Upload-Offset it must keep — the offset this {media.baseline_chunk_bytes}"
+            "-byte append advanced to — is untouched beside the same committed request"
+        ),
+    )
+    out.add(
         id="upload-patch-response-204-stale-offset",
         contract="backend",
         category="upload",

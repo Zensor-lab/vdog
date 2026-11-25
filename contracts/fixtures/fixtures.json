@@ -1012,6 +1012,29 @@
       "direction": "response",
       "expected": "invalid",
       "expected_error_codes": [
+        "CONTENT_LENGTH_MISMATCH"
+      ],
+      "files": [
+        "backend/invalid/upload-patch-response-204-content-length.headers.json",
+        "backend/invalid/upload-patch-response-204-content-length.request.headers.json"
+      ],
+      "id": "backend/invalid/upload-patch-response-204-content-length",
+      "invariant": "AC-05 a 204 acknowledgement never carries Content-Length: RFC 9110 §8.6 forbids the field itself on a bodyless answer whatever its value, and the Upload-Offset it must keep — the offset this 512-byte append advanced to — is untouched beside the same committed request",
+      "kind": "api",
+      "method": "PATCH",
+      "operation": "backend.patch_upload_file",
+      "operation_id": "patchUploadFile",
+      "path": "/uploads/{id}/files/{name}",
+      "schema": null,
+      "status": 204
+    },
+    {
+      "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
         "UPLOAD_OFFSET_STALE"
       ],
       "files": [

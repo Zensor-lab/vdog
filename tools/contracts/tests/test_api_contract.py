@@ -360,6 +360,11 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     # the shared enum plus the live/committed narrowing — refuses it on the success
     # schema and the corpus now ships the refusal.
     "backend/invalid/upload-get-response-200-expired": ("API_SCHEMA",),
+    # Round 12: the bodyless acknowledgement that named a length. RFC 9110 §8.6
+    # forbids `Content-Length` on a 204 itself, so the header rule refuses the field
+    # before any value parses — and the corpus ships the refusal beside the golden
+    # 204 whose `Upload-Offset` stays untouched.
+    "backend/invalid/upload-patch-response-204-content-length": ("CONTENT_LENGTH_MISMATCH",),
 }
 
 
@@ -1041,6 +1046,44 @@ def test_the_content_range_rule_grants_only_on_a_success(
 ) -> None:
     """``bytes */<total>`` promises nothing, so only a 416 may carry it (and total ≥ 1)."""
     assert _header_codes("Content-Range", value, status, extra) == codes, (value, status, extra)
+
+
+@pytest.mark.parametrize(
+    ("value", "status", "extra", "codes", "direction"),
+    [
+        ("0", 204, {"Upload-Offset": "512"}, {E.CONTENT_LENGTH_MISMATCH}, "response"),
+        ("512", 204, {"Upload-Offset": "512"}, {E.CONTENT_LENGTH_MISMATCH}, "response"),
+        ("many", 204, {"Upload-Offset": "512"}, {E.CONTENT_LENGTH_MISMATCH}, "response"),
+        # The refusal is about the status, not the number: the same value is silent
+        # where a body is legitimate, and the PATCH request still owes a conforming
+        # chunk length (interfaces.md §8 step 1).
+        ("0", 200, {}, set(), "response"),
+        ("512", None, {}, set(), "request"),
+    ],
+    ids=[
+        "zero-204",
+        "chunk-length-204",
+        "not-a-number-204",
+        "zero-200",
+        "conforming-request",
+    ],
+)
+def test_the_content_length_rule_refuses_the_field_on_a_204(
+    value: str, status: int | None, extra: dict[str, str], codes: set[str], direction: str
+) -> None:
+    """A 204 describes its result with no bytes, so it never carries ``Content-Length``.
+
+    RFC 9110 §8.6 forbids the field itself on a 204 — the separate body-presence check
+    only proves no bytes ship, so the header is refused whatever its value, and even
+    the honest-looking ``0`` goes.
+    """
+    assert (
+        _header_codes(
+            "Content-Length", value, status, extra, direction=direction,
+            operation="backend.patch_upload_file",
+        )
+        == codes
+    ), (direction, value, status, extra)
 
 
 # --- Round 4: body presence, the request-only ceiling, strict wire JSON, and the
