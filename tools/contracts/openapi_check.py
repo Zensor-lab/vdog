@@ -431,13 +431,15 @@ def _check_operation(
                         "lets a vector carry it without requiring it",
                     )
                 )
+    # Resolved once for both branches below: a document may point its requestBody at a
+    # shared component, and ``required`` means the same thing there as it does inline.
+    body = _resolved_request_body(item, document)
     # The media types :mod:`tools.contracts.api_validate` accepts are the ones this
     # document publishes, per operation and status, so the operation table cannot drift
     # into a second source of truth: a media type added to one side and not the other is
     # a finding here rather than a rule that quietly stops matching anything.
     if operation.request_schema is None:
-        body = _resolve(item.get("requestBody", {}), document)
-        published = set(body.get("content", {})) if isinstance(body, Mapping) else set()
+        published = set(body.get("content", {}))
         if published != set(operation.request_content_types):
             found.append(
                 Violation(
@@ -447,6 +449,12 @@ def _check_operation(
                     f"{sorted(operation.request_content_types)}",
                 )
             )
+        # A body with no named JSON schema has no ``$ref`` binding to check, so the one
+        # thing that pins it to the wire is its own ``required``. The upload chunk is
+        # exactly that body: a PATCH whose ``requestBody`` is optional documents an append
+        # of no bytes at all, which is how a client generator learns to send one.
+        if published and body.get("required") is not True:
+            found.append(Violation(E.SPEC_STRUCTURE_MISSING, f"{where} requestBody", "not required"))
     for status, types in operation.response_content_types.items():
         response = _resolve(responses.get(str(status), {}), document)
         published = set(response.get("content", {})) if isinstance(response, Mapping) else set()
@@ -487,7 +495,6 @@ def _check_operation(
             )
 
     if operation.request_schema is not None:
-        body = item.get("requestBody", {})
         if body.get("required") is not True:
             found.append(Violation(E.SPEC_STRUCTURE_MISSING, f"{where} requestBody", "not required"))
         ref = _json_schema_ref(body, document)
@@ -500,12 +507,15 @@ def _check_operation(
                 )
             )
     for name in operation.required_request_headers:
-        if not _declares_parameter(item, document, name, "header"):
+        declared = _required_request_parameter(item, document, name)
+        if declared != "ok":
             found.append(
                 Violation(
                     E.SPEC_STRUCTURE_MISSING,
                     f"{where} parameters/{name}",
-                    "the spec requires this request header",
+                    "the spec requires this request header"
+                    if declared == "missing"
+                    else "the spec requires this request header, and the document declares it optional",
                 )
             )
     return found
@@ -515,6 +525,22 @@ def _resolve(node: Any, document: Mapping[str, Any]) -> Any:
     if isinstance(node, Mapping) and "$ref" in node:
         return resolve_refs(node, root=document)
     return node
+
+
+def _resolved_request_body(item: Mapping[str, Any], document: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The operation's requestBody object, or an empty one when it cannot be read.
+
+    A requestBody is often a `$ref` to a shared component, and a document whose component
+    is missing is a document with a defect, not a validator crash: following the pointer
+    raises, which would reach the CLI as exit 2 "validator internal error" and leave the
+    very weakness these checks exist to report unreported. An empty body is what the two
+    checks below read as "not required" and "bound to no schema".
+    """
+    try:
+        resolved = _resolve(item.get("requestBody", {}), document)
+    except (KeyError, ValueError):
+        return {}
+    return resolved if isinstance(resolved, Mapping) else {}
 
 
 def _resolved_response(
@@ -548,14 +574,25 @@ def _json_schema_ref(container: Mapping[str, Any], document: Mapping[str, Any]) 
     return ref if isinstance(ref, str) else None
 
 
-def _declares_parameter(
-    item: Mapping[str, Any], document: Mapping[str, Any], name: str, location: str
-) -> bool:
+def _required_request_parameter(
+    item: Mapping[str, Any], document: Mapping[str, Any], name: str
+) -> str:
+    """How one required request header is declared: ``missing``, ``optional`` or ``ok``.
+
+    Matching name and location alone (what the old declaration check did) accepted a
+    parameter the document marked optional, so a whole contract could weaken its
+    `Idempotency-Key`, `Upload-Offset`, `Upload-Checksum` or `Content-Length` to a
+    suggestion and nothing would say so. The three-way answer keeps the two failures
+    distinguishable in the finding: a header that is not declared at all is a different
+    defect from one that is declared and then not required.
+    """
     for parameter in item.get("parameters", []):
         resolved = _resolve(parameter, document)
-        if resolved.get("name") == name and resolved.get("in") == location:
-            return True
-    return False
+        if not isinstance(resolved, Mapping):
+            continue
+        if resolved.get("name") == name and resolved.get("in") == "header":
+            return "ok" if resolved.get("required") is True else "optional"
+    return "missing"
 
 
 def _requires_bearer(document: Mapping[str, Any], operation: Operation) -> bool:

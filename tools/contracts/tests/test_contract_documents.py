@@ -159,6 +159,66 @@ def test_dropping_bearer_security_is_detected(device: dict) -> None:
     assert E.SPEC_SECURITY_MISSING in codes
 
 
+def test_optional_chunk_body_is_detected(backend: dict) -> None:
+    """A binary chunk body the document marks optional is a defect, not a free choice.
+
+    The PATCH has no named JSON schema, so the ``$ref`` binding check never runs for it
+    and ``requestBody.required`` is the only member that says the bytes are mandatory.
+    An optional body documents an append of no bytes at all, and a client generated from
+    it would send exactly that.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["requestBody"]["required"] = False
+    found = check_openapi("backend", weakened)
+    assert E.SPEC_STRUCTURE_MISSING in {violation.code for violation in found}
+    named = [violation for violation in found if E.SPEC_STRUCTURE_MISSING == violation.code]
+    assert any(
+        "PATCH /uploads/{id}/files/{name}" in violation.location
+        and violation.location.endswith("requestBody")
+        for violation in named
+    ), named
+    # OpenAPI's default for an absent ``required`` is false, so the omitted spelling names
+    # the same unrequired body a generated client would honour.
+    omitted = copy.deepcopy(backend)
+    del omitted["paths"]["/uploads/{id}/files/{name}"]["patch"]["requestBody"]["required"]
+    assert E.SPEC_STRUCTURE_MISSING in {violation.code for violation in check_openapi("backend", omitted)}
+
+
+def test_optional_upload_checksum_is_detected(backend: dict) -> None:
+    """A declared-but-optional required header is refused, and unlike an absent one.
+
+    Matching name and location alone accepted this: an optional ``Upload-Checksum`` is a
+    chunk nobody hashed, and the two failures need different words because only one of
+    them is a document that stopped declaring the header at all.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["parameters"]["UploadChecksum"]["required"] = False
+    found = check_openapi("backend", weakened)
+    named = [violation for violation in found if E.SPEC_STRUCTURE_MISSING == violation.code]
+    checksum = [violation for violation in named if "parameters/Upload-Checksum" in violation.location]
+    assert checksum, named
+    assert any("optional" in violation.detail for violation in checksum), checksum
+    # The other half of the distinction: dropping the declaration entirely reports the
+    # absence, and never the "declared but optional" wording.
+    absent = copy.deepcopy(backend)
+    patch = absent["paths"]["/uploads/{id}/files/{name}"]["patch"]
+    patch["parameters"] = [
+        parameter
+        for parameter in patch["parameters"]
+        if parameter.get("$ref") != "#/components/parameters/UploadChecksum"
+    ]
+    absent_found = [
+        violation
+        for violation in check_openapi("backend", absent)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and "parameters/Upload-Checksum" in violation.location
+    ]
+    assert absent_found, named
+    assert all("optional" not in violation.detail for violation in absent_found), absent_found
+
+
 def test_a_response_that_points_at_nothing_is_a_finding_not_a_crash(backend: dict) -> None:
     """Every 401 is a `$ref` to the shared component, so deleting it must be reported.
 

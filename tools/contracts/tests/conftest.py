@@ -239,6 +239,20 @@ def _device_yaml(mutate: Callable[[dict], None]) -> Mutator:
     return run
 
 
+def _edit_backend_yaml(fixtures: Path, mutate: Callable[[dict], None]) -> None:
+    path = fixtures.parent / "backend-v1.yaml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    mutate(document)
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+
+def _backend_yaml(mutate: Callable[[dict], None]) -> Mutator:
+    def run(fixtures: Path) -> None:
+        _edit_backend_yaml(fixtures, mutate)
+
+    return run
+
+
 def _drop_error_schema(fixtures: Path) -> None:
     _edit_device_yaml(fixtures, lambda document: document["components"]["schemas"].pop("Error"))
 
@@ -331,6 +345,25 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
     # interfaces.md assigns.
     ("documents", "SPEC_PARSE_FAILED", _corrupt_device_yaml),
     ("documents", "SPEC_STRUCTURE_MISSING", _drop_error_schema),
+    # A required request input weakened to optional is as much a document defect as a
+    # missing component: the chunk body and the checksum header are the two inputs whose
+    # absence the fixture validator alone would have to refuse.
+    (
+        "documents",
+        "SPEC_STRUCTURE_MISSING",
+        _backend_yaml(
+            lambda d: d["paths"]["/uploads/{id}/files/{name}"]["patch"]["requestBody"].__setitem__(
+                "required", False
+            )
+        ),
+    ),
+    (
+        "documents",
+        "SPEC_STRUCTURE_MISSING",
+        _backend_yaml(
+            lambda d: d["components"]["parameters"]["UploadChecksum"].__setitem__("required", False)
+        ),
+    ),
     ("documents", "SCHEMA_DOCUMENT_INVALID", _drop_frame_schema),
     (
         "documents",
