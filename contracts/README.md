@@ -2,7 +2,7 @@
 
 The published wire contract for the recorder, the backend and the original
 recording format: two OpenAPI 3.1 documents, three JSON Schema 2020-12 documents,
-and 439 committed golden fixtures that say exactly what every accepted and refused
+and 440 committed golden fixtures that say exactly what every accepted and refused
 request and response looks like on the wire. Everything here is machine-checked
 offline by `tools/validate_contracts.py`; nothing in this tree is prose-only.
 
@@ -14,7 +14,7 @@ documents are corrected — and the validator is expected to fail loudly in betw
 
 ## Running the checks
 
-The suite is 233 test functions; `tools/contracts/tests/test_corpus.py` fails if this
+The suite is 244 test functions; `tools/contracts/tests/test_corpus.py` fails if this
 number and the corpus counts quoted below ever drift apart from the tree.
 
 From the repository root, on the qualified interpreter (`uv` fetches CPython 3.12
@@ -51,10 +51,10 @@ uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
 | `media-v1/manifest.schema.json` | `manifest.json` of a finalized segment: identity, profile, clock, duration, count, close reason and the per-file hashes |
 | `media-v1/frame-record.schema.json` | one `frames.jsonl` line: `v`, `seq`, `offset`, `size`, `t_us`, `crc32` and nothing else |
 | `media-v1/active-record.schema.json` | `active.json` of an interrupted segment: the same identity without any completion claim |
-| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 439 vectors |
+| `fixtures/fixtures.json` | the fixture index: kind, contract, operation, direction, status, schema, expected outcome and expected diagnostic codes for all 440 vectors |
 | `fixtures/media/valid/` | 18 finalized and in-progress segments a healthy recorder writes, including the clock, gap, boundary, notation and recovery shapes |
 | `fixtures/media/invalid/` | 72 single-defect segments: every documented corruption class, one defect each |
-| `fixtures/device/`, `fixtures/backend/` | 349 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
+| `fixtures/device/`, `fixtures/backend/` | 350 request/response vectors: every operation, every documented success status, every documented error status, and the malformed variants |
 | `firmware-release-v1.schema.json` | **not part of this package** — the Stage 0.9 release-archive manifest, mirrored by `tools/firmware/contract.py` |
 
 A media fixture is a directory of the real files (`video.mjpg`, `frames.jsonl`,
