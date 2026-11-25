@@ -4903,6 +4903,36 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
+        id="upload-get-response-200-expired",
+        contract="backend",
+        category="upload",
+        operation="backend.get_upload",
+        direction="response",
+        status=200,
+        schema="UploadDetail",
+        # The golden receiving answer with `state` as the single defect: interfaces.md
+        # §8 step 5 gives an expired session a 410 (the valid 410 vector above), so a
+        # 200 that names `expired` describes a session the spec only ever refuses. The
+        # deadline stays — a non-receiving state may carry it — so nothing but the
+        # state can be what the narrowed UploadDetail refuses here.
+        body={
+            "v": API_VERSION,
+            "upload_id": upload_id,
+            "state": "expired",
+            "offsets": {
+                "video.mjpg": media.baseline_chunk_bytes,
+                "frames.jsonl": 0,
+            },
+            "expires_at": "2026-03-05T12:00:00.000Z",
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-05 a GET /uploads/{id} 200 describes a live (receiving) or committed "
+            "(stored) session; an expired session answers 410"
+        ),
+    )
+    out.add(
         id="upload-delete-204",
         contract="backend",
         category="upload",

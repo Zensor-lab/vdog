@@ -11,6 +11,7 @@ OTA envelope still explicitly deferred instead of guessed?
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Final, Mapping
 
@@ -403,7 +404,13 @@ def _check_operation(
                 Violation(E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status}", unreadable)
             )
             continue
-        header_names = {str(key).lower() for key in response.get("headers", {})}
+        declared = response.get("headers", {})
+        if not isinstance(declared, Mapping):
+            # A ``headers`` member that is not an object declares no header at all; the
+            # presence check below names every promised header as missing, which is the
+            # honest verdict and never the crash an ``.items()`` here would raise.
+            declared = {}
+        header_names = {str(key).lower() for key in declared}
         for name in names:
             if name.lower() not in header_names:
                 found.append(
@@ -411,6 +418,30 @@ def _check_operation(
                         E.SPEC_STRUCTURE_MISSING,
                         f"{where} responses/{status} headers/{name}",
                         "the spec requires this header in that response",
+                    )
+                )
+                continue
+            # Presence alone was not enough: OpenAPI's Header Object defaults to
+            # optional, so a document could promise ``Upload-Offset`` on the 204 and
+            # still declare it a suggestion a generated client may drop. The contract
+            # *requires* these headers, so the component behind the name has to say so.
+            header, broken = _resolved_header(declared, name, document)
+            if broken is not None:
+                found.append(
+                    Violation(
+                        E.SPEC_COMPONENT_DRIFT,
+                        f"{where} responses/{status} headers/{name}",
+                        broken,
+                    )
+                )
+                continue
+            if header.get("required") is not True:
+                found.append(
+                    Violation(
+                        E.SPEC_STRUCTURE_MISSING,
+                        f"{where} responses/{status} headers/{name}",
+                        "the spec requires this header in that response, and the "
+                        "document declares it optional",
                     )
                 )
     for status, names in operation.documented_response_headers.items():
@@ -508,8 +539,68 @@ def _check_operation(
                     f"binds {ref!r} instead of {operation.request_schema}",
                 )
             )
+    # Every parameter an operation declares has to be a usable parameter object, and
+    # every `{placeholder}` the path carries — plus every query parameter the spec
+    # pins by name — has to be declared and required. The required-input checks of the
+    # rounds before this one walked only the request headers, so a document could drop
+    # the `device_id` that disambiguates a clip id (interfaces.md §9), delete a path
+    # parameter, or point a `$ref` at a component it never defined, and the gate would
+    # certify it: a generated client would silently lose the disambiguator or fail to
+    # generate the method at all.
+    for entry in item.get("parameters", []):
+        is_reference = isinstance(entry, Mapping) and "$ref" in entry
+        try:
+            resolved = _resolve(entry, document)
+        except _RESOLUTION_FAILURES:
+            resolved = None
+        if (
+            isinstance(resolved, Mapping)
+            and isinstance(resolved.get("name"), str)
+            and isinstance(resolved.get("in"), str)
+        ):
+            continue
+        if is_reference:
+            found.append(
+                Violation(
+                    E.SPEC_COMPONENT_DRIFT,
+                    f"{where} parameters",
+                    f"$ref {entry.get('$ref')!r} names no parameter object the document defines",
+                )
+            )
+        else:
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} parameters",
+                    "an inline parameter carries no string name and in",
+                )
+            )
+    for placeholder in re.findall(r"\{([^}/]+)\}", operation.path):
+        declared = _required_request_parameter(item, document, placeholder, "path")
+        if declared != "ok":
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} parameters/{placeholder}",
+                    "the spec requires this path parameter"
+                    if declared == "missing"
+                    else "the spec requires this path parameter, and the document declares it optional",
+                )
+            )
+    for name in operation.required_query_parameters:
+        declared = _required_request_parameter(item, document, name, "query")
+        if declared != "ok":
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} parameters/{name}",
+                    "the spec requires this query parameter"
+                    if declared == "missing"
+                    else "the spec requires this query parameter, and the document declares it optional",
+                )
+            )
     for name in operation.required_request_headers:
-        declared = _required_request_parameter(item, document, name)
+        declared = _required_request_parameter(item, document, name, "header")
         if declared != "ok":
             found.append(
                 Violation(
@@ -586,30 +677,63 @@ def _json_schema_ref(container: Mapping[str, Any], document: Mapping[str, Any]) 
 
 
 def _required_request_parameter(
-    item: Mapping[str, Any], document: Mapping[str, Any], name: str
+    item: Mapping[str, Any], document: Mapping[str, Any], name: str, location: str
 ) -> str:
-    """How one required request header is declared: ``missing``, ``optional`` or ``ok``.
+    """How one required request parameter is declared: ``missing``, ``optional`` or ``ok``.
 
     Matching name and location alone (what the old declaration check did) accepted a
     parameter the document marked optional, so a whole contract could weaken its
     `Idempotency-Key`, `Upload-Offset`, `Upload-Checksum` or `Content-Length` to a
     suggestion and nothing would say so. The three-way answer keeps the two failures
-    distinguishable in the finding: a header that is not declared at all is a different
-    defect from one that is declared and then not required.
+    distinguishable in the finding: a parameter that is not declared at all is a
+    different defect from one that is declared and then not required. The same question
+    is asked of the ``header``, ``path`` and ``query`` locations — a path placeholder or
+    a spec-pinned query the document leaves optional fails exactly the way an optional
+    `Idempotency-Key` does.
     """
     for parameter in item.get("parameters", []):
         try:
             resolved = _resolve(parameter, document)
         except _RESOLUTION_FAILURES:
-            # A declaration that cannot be read is not a declaration that the header is
-            # required: the check has to fail closed, exactly as it does when the member
-            # is absent, rather than raise past the CLI as exit 2.
+            # A declaration that cannot be read is not a declaration that the parameter
+            # is required: the check has to fail closed, exactly as it does when the
+            # member is absent, rather than raise past the CLI as exit 2. The reference
+            # integrity loop above names the unreadable `$ref` itself.
             continue
         if not isinstance(resolved, Mapping):
             continue
-        if resolved.get("name") == name and resolved.get("in") == "header":
+        if resolved.get("name") == name and resolved.get("in") == location:
             return "ok" if resolved.get("required") is True else "optional"
     return "missing"
+
+
+def _resolved_header(
+    headers: Mapping[str, Any], name: str, document: Mapping[str, Any]
+) -> tuple[Mapping[str, Any], str | None]:
+    """The Header Object a response declares under one name, or why it cannot be read.
+
+    Both contracts spell every required response header as a ``$ref`` to a shared
+    component — the `UploadOffset` behind `Upload-Offset`, the `WwwAuthenticate` behind
+    the 401 challenge — so a document whose component is missing is a document with a
+    defect, not a validator crash: following the pointer raises, which would reach the
+    CLI as exit 2 "validator internal error" and leave the very header this check came
+    to demand unreported. The caller names what it found instead. Header names are
+    matched case-insensitively, as HTTP and the response validator match them.
+    """
+    node: Any = {}
+    for key, value in headers.items():
+        if str(key).lower() == name.lower():
+            node = value
+            break
+    try:
+        resolved = _resolve(node, document)
+    except KeyError as error:
+        return {}, f"$ref names {error}, a component member the document does not define"
+    except _RESOLUTION_FAILURES as error:
+        return {}, f"$ref cannot be followed: {error!r}"
+    if not isinstance(resolved, Mapping):
+        return {}, f"is {type(resolved).__name__}, not a header object"
+    return resolved, None
 
 
 def _requires_bearer(document: Mapping[str, Any], operation: Operation) -> bool:

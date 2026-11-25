@@ -926,11 +926,13 @@ components:
       example: 'Bearer realm="vdog"'
     AcceptRanges:
       description: Byte ranges are supported for immutable stored files.
+      required: true
       schema:
         type: string
         const: bytes
     ETagSha256:
       description: The quoted SHA-256 of the whole file.
+      required: true
       schema:
         type: string
         minLength: 66
@@ -938,6 +940,7 @@ components:
         pattern: '^"[0-9a-f]{64}"$'
     ContentLength:
       description: Exact number of body bytes in this response.
+      required: true
       schema:
         type: integer
         minimum: 0
@@ -945,6 +948,7 @@ components:
       description: >-
         `bytes <first>-<last>/<total>` for the single granted range, or
         `bytes */<total>` on the 416 that refuses an unsatisfiable one.
+      required: true
       schema:
         type: string
         pattern: '^bytes ([0-9]+-[0-9]+|\*)/[0-9]+$'
@@ -952,6 +956,7 @@ components:
       description: >-
         Authoritative committed offset for this file, returned on 204, on the
         offset-conflict 409 and on HEAD.
+      required: true
       schema:
         type: integer
         minimum: 0
@@ -960,6 +965,7 @@ components:
       description: >-
         Declared total length for this file, taken from the validated manifest
         received during initialization.
+      required: true
       schema:
         type: integer
         minimum: 1
@@ -1421,9 +1427,12 @@ components:
         `expires_at` is the documented 24 h inactivity deadline interfaces.md §8
         step 5 promises this response reports: a `receiving` detail must carry it
         non-null, because a client recovering an upload after a restart can only
-        learn when the session stops being accepted from this member. A `stored` or
-        `expired` detail has no live deadline left to report, so it may omit the
-        member or send it as null.
+        learn when the session stops being accepted from this member. A `stored`
+        detail has no live deadline left to report, so it may omit the member or
+        send it as null. This 200 names only a live (`receiving`) or committed
+        (`stored`) session: interfaces.md §8 step 5 gives an expired session a
+        410 instead (corpus `upload-get-response-410-expired`), so `state`
+        narrows the shared enum to the two live answers.
       type: object
       required: [v, upload_id, state, offsets]
       properties:
@@ -1432,7 +1441,9 @@ components:
         upload_id:
           $ref: '#/components/schemas/UploadId'
         state:
-          $ref: '#/components/schemas/UploadState'
+          allOf:
+            - $ref: '#/components/schemas/UploadState'
+            - enum: [receiving, stored]
         offsets:
           $ref: '#/components/schemas/UploadOffsets'
         expires_at:

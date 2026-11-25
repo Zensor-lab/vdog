@@ -661,11 +661,13 @@ components:
       example: 'Bearer realm="vdog"'
     AcceptRanges:
       description: Byte ranges are always supported for immutable clip files.
+      required: true
       schema:
         type: string
         const: bytes
     ETagSha256:
       description: The quoted SHA-256 of the whole file.
+      required: true
       schema:
         type: string
         minLength: 66
@@ -673,6 +675,7 @@ components:
         pattern: '^"[0-9a-f]{64}"$'
     ContentLength:
       description: Exact number of body bytes in this response.
+      required: true
       schema:
         type: integer
         minimum: 0
@@ -680,6 +683,7 @@ components:
       description: >-
         `bytes <first>-<last>/<total>` for the single granted range, or
         `bytes */<total>` on the 416 that refuses an unsatisfiable one.
+      required: true
       schema:
         type: string
         pattern: '^bytes ([0-9]+-[0-9]+|\*)/[0-9]+$'

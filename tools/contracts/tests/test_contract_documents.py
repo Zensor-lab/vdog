@@ -312,6 +312,289 @@ def test_a_response_that_is_not_an_object_is_a_finding_not_a_crash(device: dict)
     assert E.SPEC_COMPONENT_DRIFT in {violation.code for violation in found}
 
 
+# --- Round 11: the expired 200, the optional required headers, the parameter gate ---
+
+
+def test_expired_detail_is_refused_from_the_200_schema(backend: dict) -> None:
+    """A 200 detail names a live or committed session; `expired` belongs to the 410.
+
+    The shared `UploadState` still spells all three states — `expired` is the name the
+    documented refusal carries (interfaces.md §8 step 5, corpus
+    `upload-get-response-410-expired`) — but the success schema of `GET /uploads/{id}`
+    narrows it: a session the spec only ever answers with a 410 may not be described
+    by a 200. The corpus ships the refusal as `backend/invalid/upload-get-response-200-expired`;
+    the two permissive halves below (receiving with its deadline, stored with or
+    without one) guard the narrowing against over-tightening into refusing the very
+    answers the spec requires.
+    """
+    schema = resolve_refs(backend["components"]["schemas"]["UploadDetail"], root=backend)
+    receiving = {
+        "v": 1,
+        "upload_id": "upl_0000000000000000000000000000001",
+        "state": "receiving",
+        "offsets": {"video.mjpg": 512, "frames.jsonl": 0},
+        "expires_at": "2026-03-05T12:00:00.000Z",
+    }
+    assert not schema_error_report(schema, receiving)
+    stored = {**receiving, "state": "stored"}
+    assert not schema_error_report(schema, stored)
+    assert not schema_error_report(
+        schema, {key: value for key, value in stored.items() if key != "expires_at"}
+    )
+    report = schema_error_report(schema, {**receiving, "state": "expired"})
+    assert report, "an expired detail must be refused by the 200 schema"
+    assert any(
+        keyword == "enum" and "expired" in message for _property, keyword, message in report
+    ), report
+
+
+def test_optional_required_response_header_is_detected(backend: dict) -> None:
+    """A response header the spec requires may not be declared optional.
+
+    The loop compared header *names*, so flipping the mandatory `Upload-Offset`
+    component to `required: false` — OpenAPI's Header Object default — left the gate at
+    zero findings while a generated client learned that the offset answer may omit its
+    offset. Every promise of the operation table has to survive the flip: the HEAD 200
+    carries both offset components and the PATCH carries `Upload-Offset` on its 204 and
+    its offset-conflict 409.
+    """
+    assert not check_openapi("backend", backend)
+    expected = {
+        "UploadOffset": (
+            "backend-v1 HEAD /uploads/{id}/files/{name} responses/200 headers/Upload-Offset",
+            "backend-v1 PATCH /uploads/{id}/files/{name} responses/204 headers/Upload-Offset",
+            "backend-v1 PATCH /uploads/{id}/files/{name} responses/409 headers/Upload-Offset",
+        ),
+        "UploadLength": (
+            "backend-v1 HEAD /uploads/{id}/files/{name} responses/200 headers/Upload-Length",
+        ),
+    }
+    for component, subjects in expected.items():
+        for mutate, spelling in (
+            (False, "optional"),
+            (None, "omitted (OpenAPI defaults a header to optional)"),
+        ):
+            weakened = copy.deepcopy(backend)
+            if mutate is None:
+                del weakened["components"]["headers"][component]["required"]
+            else:
+                weakened["components"]["headers"][component]["required"] = mutate
+            found = [
+                violation
+                for violation in check_openapi("backend", weakened)
+                if E.SPEC_STRUCTURE_MISSING == violation.code
+            ]
+            for subject in subjects:
+                named = [violation for violation in found if violation.location.endswith(subject)]
+                assert named, (component, spelling, subject, [v.render() for v in found])
+                assert all("optional" in violation.detail for violation in named), named
+
+
+def test_optional_bearer_challenge_is_detected(backend: dict) -> None:
+    """The review's own probe: an optional `WwwAuthenticate` is refused on every 401.
+
+    A 401 that does not say how to authenticate is not a challenge (RFC 9110 §15.5.2),
+    and the table demands the header on every documented 401 — the name-only comparison
+    accepted the component flipped to `required: false` on all of them at once.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["headers"]["WwwAuthenticate"]["required"] = False
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+    ]
+    assert found, "an optional challenge must be refused"
+    assert all(
+        violation.location.endswith("responses/401 headers/WWW-Authenticate")
+        for violation in found
+    ), [violation.render() for violation in found]
+    assert any("HEAD /uploads/{id}/files/{name}" in violation.location for violation in found), (
+        "the bodyless HEAD refusal declares the challenge inline and must be refused too",
+        [violation.render() for violation in found],
+    )
+
+
+def test_an_unreadable_required_response_header_is_a_finding_not_a_crash(backend: dict) -> None:
+    """A required header whose component vanished is refused, not raised.
+
+    The HEAD 200 declares both offset headers as `$ref`s to shared components; a
+    document missing one used to reach the CLI as exit 2 "validator internal error",
+    leaving the header this check exists to demand unreported.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    del weakened["components"]["headers"]["UploadLength"]
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_COMPONENT_DRIFT == violation.code
+        and violation.location.endswith(
+            "HEAD /uploads/{id}/files/{name} responses/200 headers/Upload-Length"
+        )
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    # An unreadable declaration is never reported as the "declared but optional" defect.
+    assert all("optional" not in violation.detail for violation in found), found
+
+
+def test_optional_device_response_headers_are_detected(device: dict) -> None:
+    """The device file download loses its name just as quietly — every status pays.
+
+    interfaces.md §4 assigns `Accept-Ranges`, `ETag`, `Content-Length` to the 200 and
+    those plus `Content-Range` to the 206; the shared 416 carries no header, so
+    nothing outside the two range answers depends on these components.
+    """
+    assert not check_openapi("device", device)
+    expectations = {
+        "AcceptRanges": ("Accept-Ranges", ("200", "206")),
+        "ETagSha256": ("ETag", ("200", "206")),
+        "ContentLength": ("Content-Length", ("200", "206")),
+        "ContentRange": ("Content-Range", ("206",)),
+    }
+    for component, (header, statuses) in expectations.items():
+        weakened = copy.deepcopy(device)
+        weakened["components"]["headers"][component]["required"] = False
+        found = [
+            violation
+            for violation in check_openapi("device", weakened)
+            if E.SPEC_STRUCTURE_MISSING == violation.code
+        ]
+        for status in statuses:
+            subject = (
+                f"device-v1 GET /clips/{{clip_id}}/files/{{name}} "
+                f"responses/{status} headers/{header}"
+            )
+            named = [violation for violation in found if violation.location.endswith(subject)]
+            assert named, (component, subject, [violation.render() for violation in found])
+            assert all("optional" in violation.detail for violation in named), named
+        if component == "ContentRange":
+            assert all("416" not in violation.location for violation in found), found
+
+
+def test_documented_optional_response_header_stays_optional(device: dict) -> None:
+    """The preview `Cache-Control` is documented-optional and the gate says nothing.
+
+    The checker enforces required-ness only where the operation table demands presence;
+    a header the contract merely documents stays a permitted answer, so neither the
+    shipped spelling (no flag) nor its opposite may raise a finding.
+    """
+    assert not check_openapi("device", device)
+    flagged = copy.deepcopy(device)
+    flagged["components"]["headers"]["CacheControlNoStore"]["required"] = True
+    assert not check_openapi("device", flagged)
+
+
+def test_dropping_a_spec_pinned_query_parameter_is_detected(backend: dict) -> None:
+    """A clip route may not silently lose the `device_id` that disambiguates its id.
+
+    interfaces.md §9 scopes every clip-keyed backend route by `device_id`; the gate
+    walked only `required_request_headers`, so deleting the `DeviceIdQuery` entry from
+    `GET /clips/{clip_id}` passed with zero findings and a generated client lost the
+    disambiguator.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    get = weakened["paths"]["/clips/{clip_id}"]["get"]
+    get["parameters"] = [
+        parameter
+        for parameter in get["parameters"]
+        if parameter.get("$ref") != "#/components/parameters/DeviceIdQuery"
+    ]
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and "GET /clips/{clip_id} parameters/device_id" in violation.location
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    # Absent is its own defect, never the "declared but optional" wording.
+    assert all("optional" not in violation.detail for violation in found), found
+
+
+def test_optional_device_id_query_is_detected(backend: dict) -> None:
+    """Declared-but-optional is refused on every route the spec scopes by `device_id`."""
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["parameters"]["DeviceIdQuery"]["required"] = False
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location.endswith("parameters/device_id")
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    assert all("optional" in violation.detail for violation in found), found
+    # The three clip-scoped routes of interfaces.md §9 all name it.
+    assert len({violation.location.split(" parameters/")[0] for violation in found}) == 3, found
+
+
+def test_a_dangling_parameter_ref_is_a_drift_finding_not_a_crash(backend: dict) -> None:
+    """A parameter `$ref` going nowhere is the document's defect, not exit 2.
+
+    The review pointed the clip-file route's `Range` at
+    `#/components/parameters/RangeMissing` and the gate certified the document: the
+    OpenAPI documents were never scanned for reference integrity at all.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    parameters = weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["parameters"]
+    parameters[:] = [
+        {"$ref": "#/components/parameters/RangeMissing"}
+        if parameter.get("$ref") == "#/components/parameters/Range"
+        else parameter
+        for parameter in parameters
+    ]
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_COMPONENT_DRIFT == violation.code
+        and violation.location == "backend-v1 GET /clips/{clip_id}/files/{name} parameters"
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    assert any("RangeMissing" in violation.detail for violation in found), found
+
+
+def test_dropping_a_path_parameter_is_detected(backend: dict) -> None:
+    """Every `{placeholder}` must keep its required path parameter.
+
+    The document key already proves the route is named `/clips/{clip_id}`; without
+    this rule a document could drop the `ClipIdPath` entry and the gate would call the
+    route complete while a generated client could not fill in the id.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    get = weakened["paths"]["/clips/{clip_id}"]["get"]
+    get["parameters"] = [
+        parameter
+        for parameter in get["parameters"]
+        if parameter.get("$ref") != "#/components/parameters/ClipIdPath"
+    ]
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and "GET /clips/{clip_id} parameters/clip_id" in violation.location
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+
+
+def test_an_inline_parameter_without_a_name_is_a_finding(backend: dict) -> None:
+    """A parameter entry that is not a usable parameter object is refused, either spelling."""
+    assert not check_openapi("backend", backend)
+    for broken in ({"in": "query"}, "not a parameter"):
+        weakened = copy.deepcopy(backend)
+        weakened["paths"]["/clips/{clip_id}"]["get"]["parameters"].append(broken)
+        found = [
+            violation
+            for violation in check_openapi("backend", weakened)
+            if E.SPEC_STRUCTURE_MISSING == violation.code
+            and violation.location == "backend-v1 GET /clips/{clip_id} parameters"
+        ]
+        assert found, (broken, [violation.render() for violation in check_openapi("backend", weakened)])
+
+
 def test_the_error_envelope_is_one_reusable_schema(device: dict, backend: dict) -> None:
     assert not check_shared_error_envelope({"device": device, "backend": backend})
     weakened = copy.deepcopy(backend)

@@ -95,6 +95,11 @@ class Operation:
     success_statuses: tuple[int, ...] = ()
     error_codes: Mapping[int, tuple[str, ...]] = field(default_factory=dict)
     required_request_headers: tuple[str, ...] = ()
+    #: Query parameters the spec requires by name on this operation (interfaces.md §9
+    #: pins ``device_id`` as the disambiguator of every clip-keyed backend route). The
+    #: document gate refuses an operation whose document omits one or declares it
+    #: optional, the same way ``required_request_headers`` guards the request headers.
+    required_query_parameters: tuple[str, ...] = ()
     required_response_headers: Mapping[int, tuple[str, ...]] = field(default_factory=dict)
     #: Headers a response of this status may carry because the contract documents them
     #: without requiring them. A header rule accepts such a header only here, so a
@@ -518,6 +523,7 @@ BACKEND_OPERATIONS: Final[dict[str, Operation]] = {
                 404: ("NOT_FOUND",),
                 410: ("CLIP_GONE",),
             },
+            required_query_parameters=("device_id",),
         ),
         _op(
             "backend.delete_clip",
@@ -534,6 +540,7 @@ BACKEND_OPERATIONS: Final[dict[str, Operation]] = {
                 409: ("CLIP_PROTECTED",),
                 410: ("CLIP_GONE",),
             },
+            required_query_parameters=("device_id",),
         ),
         _op(
             "backend.get_clip_file",
@@ -551,6 +558,7 @@ BACKEND_OPERATIONS: Final[dict[str, Operation]] = {
                 412: ("CONTENT_CHANGED",),
                 416: ("RANGE_INVALID",),
             },
+            required_query_parameters=("device_id",),
             required_response_headers={
                 200: ("Accept-Ranges", "ETag", "Content-Length"),
                 206: ("Accept-Ranges", "Content-Range", "ETag", "Content-Length"),

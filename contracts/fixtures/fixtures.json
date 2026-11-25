@@ -679,6 +679,28 @@
       "direction": "response",
       "expected": "invalid",
       "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "backend/invalid/upload-get-response-200-expired.json"
+      ],
+      "id": "backend/invalid/upload-get-response-200-expired",
+      "invariant": "AC-05 a GET /uploads/{id} 200 describes a live (receiving) or committed (stored) session; an expired session answers 410",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_upload",
+      "operation_id": "getUpload",
+      "path": "/uploads/{id}",
+      "schema": "UploadDetail",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
         "API_SCHEMA_MISSING_FIELD"
       ],
       "files": [

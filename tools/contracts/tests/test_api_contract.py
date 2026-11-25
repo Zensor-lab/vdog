@@ -355,6 +355,11 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "device/valid/status-response-200-mounted-zero": (),
     "device/invalid/status-response-200-unmounted-zero": ("API_SCHEMA",),
     "device/invalid/status-response-200-unmounted-positive": ("API_SCHEMA",),
+    # Round 11: the 200 detail that named an `expired` session. interfaces.md §8 step 5
+    # answers an expired session with a 410, so the narrowed `UploadDetail` state —
+    # the shared enum plus the live/committed narrowing — refuses it on the success
+    # schema and the corpus now ships the refusal.
+    "backend/invalid/upload-get-response-200-expired": ("API_SCHEMA",),
 }
 
 

@@ -364,6 +364,45 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
             lambda d: d["components"]["parameters"]["UploadChecksum"].__setitem__("required", False)
         ),
     ),
+    # Round 11: the three gate gaps the review reproduced — the spec-pinned query
+    # dropped from a clip route, a promised response header flipped to optional, and a
+    # parameter `$ref` pointing at a component the document never defines.
+    (
+        "documents",
+        "SPEC_STRUCTURE_MISSING",
+        _backend_yaml(
+            lambda d: d["paths"]["/clips/{clip_id}"]["get"].__setitem__(
+                "parameters",
+                [
+                    parameter
+                    for parameter in d["paths"]["/clips/{clip_id}"]["get"]["parameters"]
+                    if parameter.get("$ref") != "#/components/parameters/DeviceIdQuery"
+                ],
+            )
+        ),
+    ),
+    (
+        "documents",
+        "SPEC_STRUCTURE_MISSING",
+        _backend_yaml(
+            lambda d: d["components"]["headers"]["UploadOffset"].__setitem__("required", False)
+        ),
+    ),
+    (
+        "documents",
+        "SPEC_COMPONENT_DRIFT",
+        _backend_yaml(
+            lambda d: d["paths"]["/clips/{clip_id}/files/{name}"]["get"].__setitem__(
+                "parameters",
+                [
+                    {"$ref": "#/components/parameters/RangeMissing"}
+                    if parameter.get("$ref") == "#/components/parameters/Range"
+                    else parameter
+                    for parameter in d["paths"]["/clips/{clip_id}/files/{name}"]["get"]["parameters"]
+                ],
+            )
+        ),
+    ),
     ("documents", "SCHEMA_DOCUMENT_INVALID", _drop_frame_schema),
     (
         "documents",
