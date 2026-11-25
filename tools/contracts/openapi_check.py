@@ -451,7 +451,13 @@ def _check_operation(
                 Violation(E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status}", unreadable)
             )
             continue
-        header_names = {str(key).lower() for key in response.get("headers", {})}
+        declared = response.get("headers", {})
+        if not isinstance(declared, Mapping):
+            # Same guard the required loop above applies: a ``headers`` member that is
+            # not an object documents no header, and the presence check below says so
+            # as a finding instead of the iteration raising past the CLI as exit 2.
+            declared = {}
+        header_names = {str(key).lower() for key in declared}
         for name in names:
             if name.lower() not in header_names:
                 found.append(
@@ -547,7 +553,21 @@ def _check_operation(
     # parameter, or point a `$ref` at a component it never defined, and the gate would
     # certify it: a generated client would silently lose the disambiguator or fail to
     # generate the method at all.
-    for entry in item.get("parameters", []):
+    declared_parameters = item.get("parameters", [])
+    if not isinstance(declared_parameters, list):
+        # A `parameters` member that is not a list declares nothing answerable: it is
+        # named as a defect and read as "nothing declared", the same way the headers
+        # guards read a non-object headers member — never as the iteration raising
+        # past the CLI as exit 2 "validator internal error".
+        found.append(
+            Violation(
+                E.SPEC_STRUCTURE_MISSING,
+                f"{where} parameters",
+                f"is {type(declared_parameters).__name__}, not a list of parameter objects",
+            )
+        )
+        declared_parameters = []
+    for entry in declared_parameters:
         is_reference = isinstance(entry, Mapping) and "$ref" in entry
         try:
             resolved = _resolve(entry, document)
@@ -689,9 +709,20 @@ def _required_request_parameter(
     different defect from one that is declared and then not required. The same question
     is asked of the ``header``, ``path`` and ``query`` locations — a path placeholder or
     a spec-pinned query the document leaves optional fails exactly the way an optional
-    `Idempotency-Key` does.
+    `Idempotency-Key` does. Every matching declaration is consulted, not just the first:
+    OpenAPI requires parameter names to be unique per location, and an optional twin
+    hiding behind a required first entry is an ambiguous declaration a generated client
+    may still drop, so one non-required match is enough to answer ``optional``.
     """
-    for parameter in item.get("parameters", []):
+    declared_parameters = item.get("parameters", [])
+    if not isinstance(declared_parameters, list):
+        # The integrity loop above already named the member as a defect; here it simply
+        # declares nothing, so the required parameter reads as missing rather than
+        # raising past the CLI as exit 2.
+        return "missing"
+    matched = False
+    all_required = True
+    for parameter in declared_parameters:
         try:
             resolved = _resolve(parameter, document)
         except _RESOLUTION_FAILURES:
@@ -703,8 +734,12 @@ def _required_request_parameter(
         if not isinstance(resolved, Mapping):
             continue
         if resolved.get("name") == name and resolved.get("in") == location:
-            return "ok" if resolved.get("required") is True else "optional"
-    return "missing"
+            matched = True
+            if resolved.get("required") is not True:
+                all_required = False
+    if not matched:
+        return "missing"
+    return "ok" if all_required else "optional"
 
 
 def _resolved_header(

@@ -595,6 +595,70 @@ def test_an_inline_parameter_without_a_name_is_a_finding(backend: dict) -> None:
         assert found, (broken, [violation.render() for violation in check_openapi("backend", weakened)])
 
 
+def test_a_null_parameters_member_is_a_finding_not_a_crash(backend: dict) -> None:
+    """A `parameters` member that is not a list is named, never raised as exit 2.
+
+    The integrity loop now reads every operation's parameters, so a document that
+    spells the member as `null` used to reach the CLI as "validator internal error" —
+    the module's own design rule says a malformed member is a finding first.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}"]["get"]["parameters"] = None
+    found = check_openapi("backend", weakened)
+    named = [
+        violation
+        for violation in found
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location == "backend-v1 GET /clips/{clip_id} parameters"
+        and "not a list" in violation.detail
+    ]
+    assert named, [violation.render() for violation in found]
+    # The member declares nothing, so the required inputs it hid read as missing too.
+    assert any(
+        E.SPEC_STRUCTURE_MISSING == violation.code
+        and "GET /clips/{clip_id} parameters/device_id" in violation.location
+        for violation in found
+    ), [violation.render() for violation in found]
+
+
+def test_a_null_response_headers_member_is_a_finding_not_a_crash(device: dict) -> None:
+    """A documented-optional response's `headers: null` is refused, not raised."""
+    assert not check_openapi("device", device)
+    weakened = copy.deepcopy(device)
+    weakened["paths"]["/preview"]["get"]["responses"]["200"]["headers"] = None
+    found = [
+        violation
+        for violation in check_openapi("device", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location.endswith("responses/200 headers/Cache-Control")
+    ]
+    assert found, [violation.render() for violation in check_openapi("device", weakened)]
+
+
+def test_an_optional_twin_of_a_required_parameter_is_detected(backend: dict) -> None:
+    """A second, optional declaration may not hide behind the required first one.
+
+    OpenAPI requires names to be unique per location, and the gate enforces no such
+    uniqueness; the old first-match rule returned ``ok`` on the required entry and
+    certified the optional twin a generated client may still drop. Every match has to
+    carry `required: true`.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}"]["get"]["parameters"].append(
+        {"name": "device_id", "in": "query", "required": False, "schema": {"type": "string"}}
+    )
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and "GET /clips/{clip_id} parameters/device_id" in violation.location
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    assert all("optional" in violation.detail for violation in found), found
+
+
 def test_the_error_envelope_is_one_reusable_schema(device: dict, backend: dict) -> None:
     assert not check_shared_error_envelope({"device": device, "backend": backend})
     weakened = copy.deepcopy(backend)
