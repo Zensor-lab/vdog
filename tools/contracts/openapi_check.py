@@ -12,7 +12,7 @@ OTA envelope still explicitly deferred instead of guessed?
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Final, Mapping
 
 from . import errors as E
 from .api_model import Operation, operation_for
@@ -431,8 +431,10 @@ def _check_operation(
                         "lets a vector carry it without requiring it",
                     )
                 )
-    # Resolved once for both branches below: a document may point its requestBody at a
-    # shared component, and ``required`` means the same thing there as it does inline.
+    # Resolved once for both branches below, so a document that points its requestBody at
+    # a shared component is asked the same ``required`` question an inline body is. The
+    # binding check is the narrower half: it reads the ``$ref`` the JSON schema carries
+    # before inlining, so a JSON body has to stay inline as both documents publish it.
     body = _resolved_request_body(item, document)
     # The media types :mod:`tools.contracts.api_validate` accepts are the ones this
     # document publishes, per operation and status, so the operation table cannot drift
@@ -521,6 +523,13 @@ def _check_operation(
     return found
 
 
+#: What :func:`tools.contracts.schema_docs.resolve_refs` raises when a pointer cannot be
+#: followed — the same set ``check_local_refs`` refuses. Reading through one of them is a
+#: document defect for these checks to report, never an exception to let reach the CLI as
+#: exit 2 "validator internal error".
+_RESOLUTION_FAILURES: Final[tuple[type[Exception], ...]] = (ValueError, KeyError, IndexError, TypeError)
+
+
 def _resolve(node: Any, document: Mapping[str, Any]) -> Any:
     if isinstance(node, Mapping) and "$ref" in node:
         return resolve_refs(node, root=document)
@@ -534,11 +543,13 @@ def _resolved_request_body(item: Mapping[str, Any], document: Mapping[str, Any])
     is missing is a document with a defect, not a validator crash: following the pointer
     raises, which would reach the CLI as exit 2 "validator internal error" and leave the
     very weakness these checks exist to report unreported. An empty body is what the two
-    checks below read as "not required" and "bound to no schema".
+    checks below read as "not required" and "bound to no schema". The exception set is the
+    one :func:`tools.contracts.schema_docs.check_local_refs` refuses, so a pointer that
+    walks through a list index or a scalar is a finding too.
     """
     try:
         resolved = _resolve(item.get("requestBody", {}), document)
-    except (KeyError, ValueError):
+    except _RESOLUTION_FAILURES:
         return {}
     return resolved if isinstance(resolved, Mapping) else {}
 
@@ -587,7 +598,13 @@ def _required_request_parameter(
     defect from one that is declared and then not required.
     """
     for parameter in item.get("parameters", []):
-        resolved = _resolve(parameter, document)
+        try:
+            resolved = _resolve(parameter, document)
+        except _RESOLUTION_FAILURES:
+            # A declaration that cannot be read is not a declaration that the header is
+            # required: the check has to fail closed, exactly as it does when the member
+            # is absent, rather than raise past the CLI as exit 2.
+            continue
         if not isinstance(resolved, Mapping):
             continue
         if resolved.get("name") == name and resolved.get("in") == "header":

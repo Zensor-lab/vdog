@@ -29,7 +29,7 @@ from tools.contracts.openapi_check import (
     check_shared_error_envelope,
     load_media_schemas,
 )
-from tools.contracts.schema_docs import load_json, load_yaml
+from tools.contracts.schema_docs import load_json, load_yaml, resolve_refs, schema_error_report
 from tools.contracts.validate import validate_contracts
 
 from conftest import CORPUS_MUTATIONS, REPO_ROOT
@@ -217,6 +217,70 @@ def test_optional_upload_checksum_is_detected(backend: dict) -> None:
     ]
     assert absent_found, named
     assert all("optional" not in violation.detail for violation in absent_found), absent_found
+
+
+def test_an_unreadable_parameter_declaration_is_a_finding_not_a_crash(backend: dict) -> None:
+    """A required header whose `$ref` goes nowhere is refused, not raised.
+
+    The PATCH declares each of its three headers as a `$ref` to a shared component, so a
+    document whose component is missing used to reach the CLI as exit 2 "validator internal
+    error" — the one outcome that leaves the missing header unreported, which is the whole
+    thing this check exists to say.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    del weakened["components"]["parameters"]["UploadChecksum"]
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and "parameters/Upload-Checksum" in violation.location
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+
+
+def test_an_unreadable_request_body_pointer_is_a_finding_not_a_crash(backend: dict) -> None:
+    """A `requestBody` whose pointer misfires is refused too, whatever the way it fails.
+
+    ``resolve_refs`` raises for a missing member, a list index out of range and a scalar it
+    is asked to subscript; all three are documents with a defect, and each has to come back
+    as the finding the body checks already know how to write.
+    """
+    assert not check_openapi("backend", backend)
+    for broken in (
+        {"$ref": "#/components/requestBodies/Absent"},
+        {"$ref": "#/paths/~1uploads~1{id}~1files~1{name}/patch/tags/9"},
+        {"$ref": "#/components/parameters/UploadChecksum/schema/type"},
+    ):
+        weakened = copy.deepcopy(backend)
+        weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["requestBody"] = broken
+        found = [
+            violation
+            for violation in check_openapi("backend", weakened)
+            if E.SPEC_STRUCTURE_MISSING == violation.code
+            and "PATCH /uploads/{id}/files/{name} requestBody" in violation.location
+        ]
+        assert found, broken
+
+
+def test_a_stored_detail_may_still_omit_its_expiry(backend: dict) -> None:
+    """The deadline is required while receiving and remains optional afterwards.
+
+    The corpus pins the refusal half; nothing pinned that a `stored` answer may still arrive
+    without the member, so hoisting `expires_at` into the schema's own `required` — which
+    would refuse every stored and expired detail — would have reddened nothing.
+    """
+    schema = resolve_refs(backend["components"]["schemas"]["UploadDetail"], root=backend)
+    detail = {
+        "v": 1,
+        "upload_id": "upl_0000000000000000000000000000001",
+        "state": "stored",
+        "offsets": {"video.mjpg": 512, "frames.jsonl": 0},
+    }
+    assert not schema_error_report(schema, detail)
+    assert not schema_error_report(schema, {**detail, "expires_at": None})
+    receiving = {**detail, "state": "receiving"}
+    assert schema_error_report(schema, receiving), "a receiving detail without an expiry must be refused"
 
 
 def test_a_response_that_points_at_nothing_is_a_finding_not_a_crash(backend: dict) -> None:
