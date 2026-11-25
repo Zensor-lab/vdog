@@ -36,13 +36,27 @@ _MARKER_SEGMENT_LENGTH = 2
 #: The codes that, seen after an ``FF`` inside a scan, are structure rather than
 #: entropy-coded data: the stuffed byte, the restart range, and the table, definition
 #: and start-of-scan segments a multi-scan image carries between scans (DHT ``0xC4``,
-#: DAC ``0xCC``, DNL ``0xDC``, SOS ``0xDA``), read by their length as the scan
-#: continues. Every other code inside a scan is data — including ``01``, which is a
-#: standalone marker in a header but an un-stuffed byte in entropy data. This is the
-#: scan half of the walk only: :func:`sof_dimensions` stops at the first SOF and never
-#: reads scan data at all.
+#: DAC ``0xCC``, DNL ``0xDC``, SOS ``0xDA``), together with the comment (COM ``0xFE``)
+#: and application (APPn ``0xE0``-``0xEF``) segments an encoder may place at the same
+#: boundaries — all of them read by their length as the scan continues, per T.81
+#: §§B.2.1/B.2.4, so a payload of one that embeds marker-like bytes is never mistaken
+#: for the scan itself. Every other code inside a scan is data — including ``01``,
+#: which is a standalone marker in a header but an un-stuffed byte in entropy data.
+#: This is the scan half of the walk only: :func:`sof_dimensions` stops at the first
+#: SOF and never reads scan data at all.
 _IN_SCAN_MARKER_CODES: Final[frozenset[int]] = frozenset(
-    {0x00, 0xC4, 0xCC, 0xDC, 0xDA, SOI_MARKER, EOI_MARKER, *range(0xD0, 0xD8)}
+    {
+        0x00,
+        0xC4,
+        0xCC,
+        0xDC,
+        0xDA,
+        0xFE,
+        SOI_MARKER,
+        EOI_MARKER,
+        *range(0xD0, 0xD8),
+        *range(0xE0, 0xF0),
+    }
 )
 
 
@@ -55,8 +69,8 @@ def jpeg_seed(*parts: object) -> str:
     return "|".join(str(part) for part in parts)
 
 
-def make_jpeg(width: int, height: int, seed: str, *, quality: int = FIXTURE_JPEG_QUALITY) -> bytes:
-    """Return one deterministic 8-bit grayscale JPEG of ``width`` x ``height``.
+def _synth_image(width: int, height: int, seed: str) -> Image.Image:
+    """Build the deterministic grayscale image every fixture JPEG encodes.
 
     The pixel pattern is derived from ``sha256(seed)`` only: a smooth diagonal
     gradient keeps the file small while four hash-derived rectangles make every
@@ -86,10 +100,60 @@ def make_jpeg(width: int, height: int, seed: str, *, quality: int = FIXTURE_JPEG
             for x in range(corner_x, min(corner_x + block_w, width)):
                 pixels[row + x] = level
 
-    image = Image.frombytes("L", (width, height), bytes(pixels))
+    return Image.frombytes("L", (width, height), bytes(pixels))
+
+
+def make_jpeg(width: int, height: int, seed: str, *, quality: int = FIXTURE_JPEG_QUALITY) -> bytes:
+    """Return one deterministic 8-bit grayscale JPEG of ``width`` x ``height``.
+
+    The pixels come from :func:`_synth_image`, so the same seed, dimensions and
+    quality always encode the same file — the encoder adds no clock, locale or
+    filesystem input of its own.
+    """
     stream = io.BytesIO()
-    image.save(stream, format="JPEG", quality=quality, optimize=True, progressive=False)
+    _synth_image(width, height, seed).save(
+        stream, format="JPEG", quality=quality, optimize=True, progressive=False
+    )
     return stream.getvalue()
+
+
+def make_progressive_jpeg(
+    width: int, height: int, seed: str, *, quality: int = FIXTURE_JPEG_QUALITY
+) -> bytes:
+    """Return one deterministic progressive JPEG whose seed-derived comments sit between scans.
+
+    The same :func:`_synth_image` pixels are saved with ``progressive=True``, and one
+    COM segment is then inserted immediately before every structural SOS after the
+    first, located by a marker-chain walk — never a naive byte search, because scan
+    data can hide anything. The seed-derived COM payload embeds the marker bytes
+    ``FF D9`` and ``FF D8``: an in-scan comment is structure read by its length
+    (T.81 §§B.2.1/B.2.4), and these are exactly the bytes a walk that mistook it for
+    scan data would stop on. The helper raises instead of shipping a vacuous fixture:
+    fewer than two SOS markers, an insertion that did not land, or a file that does
+    not end exactly at its first EOI are generation failures, not silent passes.
+    """
+    stream = io.BytesIO()
+    _synth_image(width, height, seed).save(
+        stream, format="JPEG", quality=quality, optimize=True, progressive=True
+    )
+    data = stream.getvalue()
+    scans = _structural_scan_offsets(data)
+    if len(scans) < 2:
+        raise JpegStructureError(
+            f"progressive synthesis produced {len(scans)} SOS markers; a fixture needs"
+            " at least two scans for a comment to sit between"
+        )
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    comment = b"\xff\xd9" + digest[:12] + b"\xff\xd8" + digest[12:24]
+    segment = b"\xff\xfe" + (len(comment) + _MARKER_SEGMENT_LENGTH).to_bytes(2, "big") + comment
+    for offset in reversed(scans[1:]):
+        data = data[:offset] + segment + data[offset:]
+    for offset in _structural_scan_offsets(data)[1:]:
+        if data[offset - len(segment) : offset] != segment:
+            raise JpegStructureError("a comment segment failed to land before its scan")
+    if first_image_end_offset(data) + 2 != len(data):
+        raise JpegStructureError("the progressive image does not end at its first EOI")
+    return data
 
 
 def sof_dimensions(data: bytes) -> tuple[int, int] | None:
@@ -196,6 +260,65 @@ def first_image_end_offset(data: bytes) -> int:
         if segment_end > end:
             raise JpegStructureError("segment extends past the payload")
         if marker == 0xDA:  # SOS: everything after the header is scan data
+            scanning = True
+        pos = segment_end
+    raise JpegStructureError("marker sequence ends before any EOI")
+
+
+def _structural_scan_offsets(data: bytes) -> list[int]:
+    """Return, in order, the offset of the ``FF`` starting every SOS in the marker chain.
+
+    Walks the chain structurally like :func:`first_image_end_offset` — the in-scan codes
+    consume their segments by length, everything else inside a scan is data — and records
+    each SOS whether it opened the first scan or reopened the scan as a multi-scan image
+    continued. Reaching EOI ends the walk; a second SOI inside a scan, or any truncated
+    marker or segment, raises :class:`JpegStructureError` — this walk reads a generator's
+    own bytes, where a broken chain is a synthesis bug rather than a reported finding.
+    """
+    if not data.startswith(JPEG_SOI):
+        raise JpegStructureError("payload does not start with SOI")
+    pos = 2
+    end = len(data)
+    scanning = False
+    scans: list[int] = []
+    while pos < end:
+        if scanning and data[pos] != 0xFF:
+            pos += 1  # entropy-coded data carries no structure to read
+            continue
+        if data[pos] != 0xFF:
+            raise JpegStructureError(f"expected marker prefix at offset {pos}")
+        marker_start = pos
+        while pos < end and data[pos] == 0xFF:
+            pos += 1  # fill bytes may precede a marker
+        if pos >= end:
+            raise JpegStructureError("truncated marker sequence")
+        marker = data[pos]
+        if scanning and marker not in _IN_SCAN_MARKER_CODES:
+            pos += 1  # entropy-coded data that merely looks like a marker prefix
+            continue
+        if scanning:
+            if marker == 0x00 or 0xD0 <= marker <= 0xD7:
+                pos += 1  # stuffed byte or restart: the scan continues
+                continue
+            if marker == EOI_MARKER:
+                return scans  # the image ends here
+            if marker == SOI_MARKER:
+                raise JpegStructureError("a second SOI interrupted the scan")
+        pos += 1
+        if marker == 0x00 or marker == 0x01 or marker == SOI_MARKER or 0xD0 <= marker <= 0xD7:
+            continue  # standalone markers carry no segment length
+        if marker == EOI_MARKER:
+            return scans  # EOI before any scan: the walk is over
+        if pos + _MARKER_SEGMENT_LENGTH > end:
+            raise JpegStructureError("segment length field truncated")
+        length = int.from_bytes(data[pos : pos + _MARKER_SEGMENT_LENGTH], "big")
+        if length < _MARKER_SEGMENT_LENGTH:
+            raise JpegStructureError(f"invalid segment length {length}")
+        segment_end = pos + length
+        if segment_end > end:
+            raise JpegStructureError("segment extends past the payload")
+        if marker == 0xDA:
+            scans.append(marker_start)
             scanning = True
         pos = segment_end
     raise JpegStructureError("marker sequence ends before any EOI")

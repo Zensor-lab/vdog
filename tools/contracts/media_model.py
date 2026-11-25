@@ -54,10 +54,16 @@ class ClockPlan:
 
 @dataclass(frozen=True)
 class FramePlan:
-    """One retained frame: capture time plus the seed that produces its JPEG."""
+    """One retained frame: capture time plus the seed that produces its JPEG.
+
+    ``progressive`` selects the progressive synthesis of
+    :func:`tools.contracts.jpeg.make_progressive_jpeg` — the same profile numbers,
+    encoded multi-scan with the fixture comments between the scans.
+    """
 
     t_us: int
     jpeg_key: str
+    progressive: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,15 @@ class ClipPlan:
     @property
     def clip_id(self) -> str:
         return f"{self.boot_id}-{self.sequence:08x}"
+
+    @property
+    def progressive(self) -> bool:
+        """Whether this segment's frames encode as progressive JPEGs (all of them or none).
+
+        Derived from the frame plans so the choice has one home: :func:`build_frames`
+        asks each frame, and this is the clip-level view of the same fact.
+        """
+        return any(frame.progressive for frame in self.frames)
 
 
 @dataclass

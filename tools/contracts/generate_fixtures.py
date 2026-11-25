@@ -48,7 +48,7 @@ from .fixture_spec import (
     media_fixtures,
 )
 from .api_model import ALL_OPERATIONS
-from .jpeg import jpeg_seed, make_jpeg
+from .jpeg import jpeg_seed, make_jpeg, make_progressive_jpeg
 from .media_model import (
     BuiltClip,
     ClipPlan,
@@ -770,9 +770,17 @@ def committed_files(fixture: MediaFixture) -> dict[str, bytes]:
 
 
 def build_frames(plan: ClipPlan) -> list[bytes]:
-    """Real JPEG bytes for one segment: deterministic, distinct per frame seed."""
+    """Real JPEG bytes for one segment: deterministic, distinct per frame seed.
+
+    A frame whose plan asks for progressive encoding goes through
+    :func:`tools.contracts.jpeg.make_progressive_jpeg`, which carries the fixture's
+    marker-laced comments between its scans; every other frame keeps the baseline
+    encoder. Both take seed, dimensions and quality only.
+    """
     return [
-        make_jpeg(plan.profile.width, plan.profile.height, frame.jpeg_key)
+        (make_progressive_jpeg if frame.progressive else make_jpeg)(
+            plan.profile.width, plan.profile.height, frame.jpeg_key
+        )
         for frame in plan.frames
     ]
 

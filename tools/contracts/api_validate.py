@@ -1348,31 +1348,36 @@ def _evaluate_request_sidecar(
         # ``Content-Range: bytes */<total>`` names the file's size, so a refusal of a
         # supported, ordered specifier that *fits* inside that total is a refusal the
         # answer's own proof contradicts — bytes the file holds, refused as though it
-        # did not hold them. Without a `*/<total>` there is nothing to check against,
-        # and the header's own rules own its absence or shape.
+        # did not hold them. A specified end past the representation's end is clamped
+        # to it (§14.1.2), not made unsatisfiable: whatever ``end`` says, a start the
+        # file holds names a window the 206 path already grants as
+        # ``start..file_bytes-1``, so the 416's own total proves this refusal wrong.
+        # Without a `*/<total>` there is nothing to check against, and the header's own
+        # rules own its absence or shape.
         start, end = ordered_specifier
         declared = _lookup_header(response_headers, "Content-Range")
         total = _STAR_CONTENT_RANGE.match(declared) if declared is not None else None
         if total is not None:
             file_bytes = int(total.group(1))
-            if start < file_bytes and (end is None or end < file_bytes):
+            if start < file_bytes:
                 found.append(
                     Violation(
                         E.CONTENT_RANGE_INVALID,
                         f"{location}: Range",
-                        f"{specifier!r} asks for bytes the {file_bytes}-byte file holds; a 416 "
-                        f"refuses only a range its bytes */{file_bytes} proves unsatisfiable, "
-                        f"and this specifier is inside it",
+                        f"{specifier!r} starts at a byte the {file_bytes}-byte file holds, and "
+                        f"RFC 9110 §14.1.2 clamps any end past it: a 416 refuses only a range "
+                        f"its bytes */{file_bytes} proves unsatisfiable, and this specifier's "
+                        f"start is inside it",
                     )
                 )
-    if isinstance(status, int) and status == 206 and specifier is None and (
-        _lookup_header(response_headers, "Range") is None
-    ):
+    if isinstance(status, int) and status == 206 and specifier is None:
         # A 206 is a grant of a window, and the window has to be the one some request
-        # asked for: §4's "No Range returns 200" reads both ways. The sidecar is the
-        # precise statement of the question and the vector's own header map the
-        # historical echo — neither present means this answer grants bytes no range
-        # request justified.
+        # asked for: §4's "No Range returns 200" reads both ways. This function runs
+        # only when a sidecar is present, and the sidecar is then the *only* statement
+        # of the question — an echo of `Range` in the answer's own header map is the
+        # historical spelling for vectors that carry no sidecar at all, and it can
+        # never conjure the request the sidecar itself omits. A grant beside a request
+        # that names no range grants bytes no range request justified.
         found.append(
             Violation(
                 E.CONTENT_RANGE_INVALID,

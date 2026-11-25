@@ -1421,7 +1421,10 @@ def test_the_first_image_end_offset_reads_the_image_the_slice_holds() -> None:
     assert first_image_end_offset(with_table) + 2 == len(with_table)
     # An un-stuffed FF xx inside entropy data is data: mistaking it for a segment would
     # end the walk at a marker the decoder never saw, and name bytes that are reachable.
-    assert first_image_end_offset(prefix + b"\xff\xe0" + b"\xff\xd9") + 2 == len(prefix) + 4
+    # COM and APPn became structure the moment the walk had to honor a multi-scan
+    # image's between-scan segments (T.81 §§B.2.1/B.2.4); what stays data here is a
+    # code no T.81 segment definition gives a length field.
+    assert first_image_end_offset(prefix + b"\xff\xf1" + b"\xff\xd9") + 2 == len(prefix) + 4
     for broken in (
         b"not a jpeg",  # no SOI at all
         prefix,  # a scan that never ends
@@ -1511,6 +1514,66 @@ def test_every_committed_slice_is_exactly_one_image(index: list[dict]) -> None:
         for record in _records(entry):
             frame = payload[record["offset"] : record["offset"] + record["size"]]
             assert first_image_end_offset(frame) + 2 == len(frame), (entry["id"], record["seq"])
+
+
+def test_a_comment_between_scans_is_read_by_its_length_not_as_scan_data() -> None:
+    """A between-scan COM laced with marker bytes is structure, not the end of the image (AC-03).
+
+    The generator seeds a COM segment before every SOS after the first, and the comment
+    payload embeds ``FF D9`` and ``FF D8`` on purpose: a walk that skipped the in-scan
+    COM by one byte and read its payload as entropy data would stop at the comment's own
+    EOI-looking bytes and report the rest of the file as trailing. The honest walk reads
+    the comment by its length (T.81 §§B.2.1/B.2.4) and lands exactly at the file's EOI.
+    """
+    from tools.contracts.jpeg import (
+        JpegStructureError,
+        decode_size,
+        first_image_end_offset,
+        jpeg_seed,
+        make_progressive_jpeg,
+    )
+
+    frame = make_progressive_jpeg(64, 64, jpeg_seed("clip", "unit", "comment-between-scans"))
+    assert frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9")
+    # The lure bytes really are inside the file, beyond the two boundary markers.
+    assert b"\xff\xd9" in frame[2:-2] and b"\xff\xd8" in frame[2:-2], frame[:32]
+    assert first_image_end_offset(frame) + 2 == len(frame)
+    assert decode_size(frame) == (64, 64)
+
+    # The same rule on a hand-written chain, where every byte is the test's: an honest
+    # in-scan COM is consumed by its length — even one whose payload is all EOI- and
+    # SOI-looking bytes — and the image still ends at its own EOI. A lying length is a
+    # chain failure, never a claimed trailing-byte count.
+    scan = b"\xff\xd8\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00\x11\x22"
+    honest = scan + b"\xff\xfe\x00\x06\xff\xd9\xff\xd8" + b"\xff\xd9"
+    assert first_image_end_offset(honest) + 2 == len(honest)
+    for lying in (
+        scan + b"\xff\xfe\x00\x01\xff\xd9",  # length below the field that carries it
+        scan + b"\xff\xfe\x04\x00\xff\xd9",  # segment longer than the file that holds it
+    ):
+        with pytest.raises(JpegStructureError):
+            first_image_end_offset(lying)
+
+
+def test_the_committed_progressive_clip_decodes_at_the_manifest_profile(
+    index: list[dict],
+) -> None:
+    """The between-scan-comment frames are real images at the profile's dimensions (AC-02)."""
+    from tools.contracts.jpeg import decode_size, first_image_end_offset, sof_dimensions
+
+    entry = next(
+        item
+        for item in media_entries(index, "valid")
+        if item["id"] == "media/valid/progressive-comment-between-scans"
+    )
+    document = json.loads(_read(entry["id"], "manifest.json").decode("utf-8"))
+    width, height = document["profile"]["width"], document["profile"]["height"]
+    payload = _payload_bytes(entry)
+    for record in _records(entry):
+        frame = payload[record["offset"] : record["offset"] + record["size"]]
+        assert decode_size(frame) == (width, height), (entry["id"], record["seq"])
+        assert sof_dimensions(frame) == (width, height), (entry["id"], record["seq"])
+        assert first_image_end_offset(frame) + 2 == len(frame), (entry["id"], record["seq"])
 
 
 def test_a_record_whose_slice_holds_two_images_is_refused(index: list[dict], schemas: dict) -> None:

@@ -2294,8 +2294,12 @@ def test_a_416_refuses_only_a_range_its_own_total_proves_unsatisfiable() -> None
         assert _found_codes(
             _sidecar_judgment(416, refusal, {**RESUME, "Range": refused})
         ) == set(), refused
-    # The forms it may not refuse: both supported spellings of a window inside the file.
-    for served in ("bytes=0-31", "bytes=100-", "bytes=1711-1711"):
+    # The forms it may not refuse: every supported spelling of a window whose start the
+    # file holds. An end past the last byte is clamped to it (RFC 9110 §14.1.2), not
+    # made unsatisfiable — bytes=1711-1712 and bytes=1711-1722 are both the grant
+    # 1711-1711/1712, and the byte just past the end starts inside the file like any
+    # other, so refusing either contradicts the refusal's own bytes */1712.
+    for served in ("bytes=0-31", "bytes=100-", "bytes=1711-1711", "bytes=1711-1712", "bytes=1711-1722"):
         found = _sidecar_judgment(416, refusal, {**RESUME, "Range": served})
         assert _found_codes(found) == {E.CONTENT_RANGE_INVALID}, served
         assert [violation.location for violation in found] == [
@@ -2307,10 +2311,6 @@ def test_a_416_refuses_only_a_range_its_own_total_proves_unsatisfiable() -> None
         assert _found_codes(
             _sidecar_judgment(416, headers, {**RESUME, "Range": "bytes=0-31"})
         ) == set(), headers
-    # The boundary the rule is written at: the byte just past the end is unsatisfiable.
-    assert _found_codes(
-        _sidecar_judgment(416, refusal, {**RESUME, "Range": "bytes=1711-1712"})
-    ) == set()
 
 
 def test_a_206_grants_only_a_window_some_request_asked_for() -> None:
@@ -2320,11 +2320,13 @@ def test_a_206_grants_only_a_window_some_request_asked_for() -> None:
     found = _sidecar_judgment(206, _GRANT_HEADERS, whole_file)
     assert _found_codes(found) == {E.CONTENT_RANGE_INVALID}, _found_codes(found)
     assert [violation.location for violation in found] == ["unit:sidecar: request sidecar: Range"]
-    # The answer's own echo of the specifier states the pair too, and is the historical
-    # spelling the 416-reversed control already ships.
-    assert _found_codes(
-        _sidecar_judgment(206, {**_GRANT_HEADERS, "Range": "bytes=0-99"}, whole_file)
-    ) == set()
+    # An echo in the answer's own header map cannot stand in for the request: a present
+    # sidecar is the only statement of what was asked, and it names no window here. The
+    # echo remains the historical spelling for vectors that ship no sidecar at all —
+    # those never reach this rule.
+    found = _sidecar_judgment(206, {**_GRANT_HEADERS, "Range": "bytes=0-99"}, whole_file)
+    assert _found_codes(found) == {E.CONTENT_RANGE_INVALID}, _found_codes(found)
+    assert [violation.location for violation in found] == ["unit:sidecar: request sidecar: Range"]
     # A specifier the sidecar carries leaves the rule alone, whatever its window.
     assert _found_codes(_sidecar_judgment(206, _GRANT_HEADERS, RESUME)) == set()
     # A whole-file answer grants no window, so a Range-less request is exactly its pair.

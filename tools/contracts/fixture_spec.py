@@ -163,10 +163,12 @@ def _sha(name: str) -> str:
     return hashlib.sha256(f"vdog-fixture|{name}".encode("utf-8")).hexdigest()
 
 
-def _frames(base: str, times: Sequence[int]) -> tuple[FramePlan, ...]:
-    """Frame plans whose JPEG bytes depend only on ``base`` and the frame number."""
+def _frames(
+    base: str, times: Sequence[int], *, progressive: bool = False
+) -> tuple[FramePlan, ...]:
+    """Frame plans whose JPEG bytes depend only on ``base``, the frame number and the encoding."""
     return tuple(
-        FramePlan(t_us=t_us, jpeg_key=jpeg_seed("clip", base, index))
+        FramePlan(t_us=t_us, jpeg_key=jpeg_seed("clip", base, index), progressive=progressive)
         for index, t_us in enumerate(times)
     )
 
@@ -187,6 +189,7 @@ def _plan(
     width: int = FIXTURE_FRAME_WIDTH,
     height: int = FIXTURE_FRAME_HEIGHT,
     device_id: str = DEVICE_ID,
+    progressive: bool = False,
 ) -> ClipPlan:
     """Build one deterministic segment plan; ``duration_us`` defaults to one frame past the last."""
     if not times:
@@ -206,7 +209,7 @@ def _plan(
         ),
         clock=clock,
         start_boot_us=1_000_000,
-        frames=_frames(name, times),
+        frames=_frames(name, times, progressive=progressive),
         duration_us=duration_us if duration_us is not None else times[-1] + NOMINAL_FRAME_PERIOD_US,
         close_reason=close_reason,
         recovered=recovered,
@@ -351,6 +354,30 @@ def _valid_media() -> tuple[MediaFixture, ...]:
                 "profile: clip_id is scoped by device_id, so this wide capture and the "
                 "baseline's 64x64 coexist, and a derivative's crop is measured against the "
                 "pixels of the device it cites"
+            ),
+        ),
+        MediaFixture(
+            id="media/valid/progressive-comment-between-scans",
+            kind="clip",
+            category="baseline",
+            # The baseline's own profile, encoded multi-scan: a seed-derived comment sits
+            # before every SOS after the first, its payload embedding FF D9 and FF D8. A
+            # walk that read such a comment as entropy data rather than by its length
+            # (T.81 §§B.2.1/B.2.4) would end the image inside the comment and report the
+            # bytes after it as trailing — this fixture is the control that proves the
+            # in-scan COM and APPn codes are honored.
+            plan=_plan(
+                "progressive-comment-between-scans",
+                VALID_BASELINE_TIMES,
+                clock=SNTP_CLOCK,
+                capture_order=54,
+                progressive=True,
+            ),
+            invariant=(
+                "AC-02 progressive multi-scan capture: frames encode as progressive JPEGs "
+                "whose between-scan comments carry marker-like payloads; Pillow decodes "
+                "them, the SOF and the decoder agree with the manifest profile, and each "
+                "indexed slice ends exactly at its own first EOI"
             ),
         ),
         MediaFixture(
@@ -2808,6 +2835,42 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
+        id="clip-file-response-416-clipped-end-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=416,
+        api_error_code="RANGE_INVALID",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes */{media.baseline_payload_bytes}",
+        },
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": payload_etag,
+            "Range": f"bytes={media.baseline_payload_bytes - 1}-1722",
+        },
+        body=_error_body(
+            "RANGE_INVALID",
+            "Range is not satisfiable",
+            retryable=False,
+            request_id="req-bf16",
+        ),
+        expected="invalid",
+        codes=(CONTENT_RANGE_INVALID,),
+        invariant=(
+            "AC-06 range: RFC 9110 §14.1.2 clamps a specified end past the "
+            "representation's end instead of making the range unsatisfiable, so bytes="
+            f"{media.baseline_payload_bytes - 1}-1722 of a "
+            f"{media.baseline_payload_bytes}-byte file is the window "
+            f"{media.baseline_payload_bytes - 1}-{media.baseline_payload_bytes - 1}/"
+            f"{media.baseline_payload_bytes} — the start is a byte the file holds "
+            "whatever the end claims, and a 416 refuses only a range its own bytes */"
+            f"{media.baseline_payload_bytes} proves unsatisfiable"
+        ),
+    )
+    out.add(
         id="clip-file-response-206-no-range-sidecar",
         contract="device",
         category="range",
@@ -2830,6 +2893,65 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "AC-06 range: a 206 grants a window, and neither the sidecar it answers nor "
             "its own header map names a Range — §4's \"No Range returns 200\" reads both "
             "ways: this answer grants bytes no range request justified"
+        ),
+    )
+    out.add(
+        id="clip-file-response-206-range-echo-sidecar",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Range": "bytes=0-99",
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes 0-99/{media.baseline_payload_bytes}",
+            "ETag": payload_etag,
+            "Content-Length": "100",
+        },
+        request_headers={
+            "X-Clip-Lease": lease_id,
+            "If-Match": payload_etag,
+        },
+        expected="invalid",
+        codes=(CONTENT_RANGE_INVALID,),
+        invariant=(
+            "AC-06 range: a present sidecar is the only statement of the request this 206 "
+            "answers, and it carries no Range — the echo in the answer's own header map "
+            "is the historical spelling for vectors that ship no sidecar at all and can "
+            "never conjure the request the explicit one omits; §4's \"No Range returns "
+            "200\" reads both ways, and a grant beside a request that names no window "
+            "grants bytes no range request justified"
+        ),
+    )
+    out.add(
+        id="clip-file-response-206-clipped-end",
+        contract="device",
+        category="range",
+        operation="device.get_clip_file",
+        direction="response",
+        status=206,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": (
+                f"bytes {media.baseline_payload_bytes - 1}-{media.baseline_payload_bytes - 1}"
+                f"/{media.baseline_payload_bytes}"
+            ),
+            "ETag": payload_etag,
+            "Content-Length": "1",
+        },
+        request_headers={
+            "If-Match": payload_etag,
+            "Range": f"bytes={media.baseline_payload_bytes - 1}-1722",
+            "X-Clip-Lease": lease_id,
+        },
+        invariant=(
+            "AC-04/AC-06 the paired grant for bytes="
+            f"{media.baseline_payload_bytes - 1}-1722: RFC 9110 §14.1.2 clamps the "
+            f"specified end to the file's last byte, so the window served is exactly "
+            f"bytes {media.baseline_payload_bytes - 1}-{media.baseline_payload_bytes - 1}/"
+            f"{media.baseline_payload_bytes} — one byte, Content-Length to match, and the "
+            "resume sidecar beside it in full"
         ),
     )
     out.add(
@@ -3632,7 +3754,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
                     "type": "transcode",
                     "preset": "h264-vbr-720p",
                     "sha256": _sha("derivative-output"),
-                    "output": {"width": 1280, "height": 720},
+                    "output": {"width": 64, "height": 36},
                 }
             ],
         },
@@ -4793,7 +4915,10 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "encoder_version": "libx264-0.165",
             "filter_version": "vdog-eis-1",
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
-            "output": {"width": 1280, "height": 720},
+            # §7.3: a transcode keeps the window's aspect ratio and never upscales, so
+            # the output is the crop it cites — 64x36 pixels measured inside the 64x64
+            # baseline. The preset id is a frozen label, not a promise of 1280x720.
+            "output": {"width": 64, "height": 36},
             # Measured in the source's pixels: this record cites the committed baseline,
             # whose video is 64x64, so the window has to fit inside 64 rows.
             "crop": {"x": 0, "y": 14, "width": 64, "height": 36},
@@ -4868,7 +4993,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "encoder_version": "libx264-0.165",
             "filter_version": "vdog-eis-1",
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
-            "output": {"width": 1280, "height": 720},
+            "output": {"width": 64, "height": 36},
             "crop": {"x": 0, "y": 60, "width": 64, "height": 36},
             "original_hashes": {
                 "video.mjpg": media.baseline_payload_sha256,
@@ -4903,7 +5028,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "encoder_version": "libx264-0.165",
             "filter_version": "vdog-eis-1",
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
-            "output": {"width": 1280, "height": 720},
+            "output": {"width": 64, "height": 36},
             # 120.0 is the integer 120 to ``type: integer``: a bounds check that only
             # reads plain ``int`` instances would skip this row of pixels entirely.
             "crop": {"x": 0, "y": 120.0, "width": 64, "height": 36},
@@ -4940,7 +5065,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "encoder_version": "libx264-0.165",
             "filter_version": "vdog-eis-1",
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
-            "output": {"width": 1280, "height": 720},
+            "output": {"width": 64, "height": 36},
             # The baseline's own conformant window, spelled the way a writer that carries
             # every number as a decimal may spell it: inside 64 rows, so the notation is
             # the only thing that differs from the conformant record above.
@@ -4979,7 +5104,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "encoder_version": "libx264-0.165",
             "filter_version": "vdog-eis-1",
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
-            "output": {"width": 1280, "height": 720},
+            "output": {"width": 64, "height": 36},
             "crop": {"x": 0, "y": 60, "width": 64, "height": 36},
             # The hashes of the clip this record cites, not the baseline's: a derivative
             # certifies the two files of the segment it was cut from, and a record naming
@@ -5024,7 +5149,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "encoder_version": "libx264-0.165",
             "filter_version": "vdog-eis-1",
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
-            "output": {"width": 1280, "height": 720},
+            "output": {"width": 64, "height": 64},
             "crop": {"x": 16, "y": 16, "width": 64, "height": 64},
             "original_hashes": {
                 "video.mjpg": media.wide_second_device_payload_sha256,
@@ -5062,7 +5187,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "encoder_version": "libx264-0.165",
             "filter_version": "vdog-eis-1",
             "params": {"crf": 23, "gop_frames": 30, "duplicate_policy": "frame_duplication"},
-            "output": {"width": 1280, "height": 720},
+            "output": {"width": 64, "height": 64},
             "crop": {"x": 16, "y": 16, "width": 64, "height": 64},
             "original_hashes": {
                 "video.mjpg": media.baseline_payload_sha256,
@@ -5099,7 +5224,7 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "encoder_version": "libx264-0.165",
             "filter_version": "vdog-eis-1",
             "params": {},
-            "output": {"width": 1280, "height": 720},
+            "output": {"width": 64, "height": 36},
             "crop": {"x": 0, "y": 0, "width": 64, "height": 36},
             "original_hashes": {
                 "video.mjpg": media.baseline_payload_sha256.upper(),

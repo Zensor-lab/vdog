@@ -4139,6 +4139,29 @@
       "direction": "response",
       "expected": "invalid",
       "expected_error_codes": [
+        "CONTENT_RANGE_INVALID"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-206-range-echo-sidecar.headers.json",
+        "device/invalid/clip-file-response-206-range-echo-sidecar.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-206-range-echo-sidecar",
+      "invariant": "AC-06 range: a present sidecar is the only statement of the request this 206 answers, and it carries no Range — the echo in the answer's own header map is the historical spelling for vectors that ship no sidecar at all and can never conjure the request the explicit one omits; §4's \"No Range returns 200\" reads both ways, and a grant beside a request that names no window grants bytes no range request justified",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
+      "api_error_code": null,
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
         "RANGE_MULTI_NOT_ALLOWED"
       ],
       "files": [
@@ -4313,6 +4336,30 @@
       "path": "/clips/{clip_id}/files/{name}",
       "schema": null,
       "status": 412
+    },
+    {
+      "api_error_code": "RANGE_INVALID",
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CONTENT_RANGE_INVALID"
+      ],
+      "files": [
+        "device/invalid/clip-file-response-416-clipped-end-sidecar.headers.json",
+        "device/invalid/clip-file-response-416-clipped-end-sidecar.json",
+        "device/invalid/clip-file-response-416-clipped-end-sidecar.request.headers.json"
+      ],
+      "id": "device/invalid/clip-file-response-416-clipped-end-sidecar",
+      "invariant": "AC-06 range: RFC 9110 §14.1.2 clamps a specified end past the representation's end instead of making the range unsatisfiable, so bytes=1711-1722 of a 1712-byte file is the window 1711-1711/1712 — the start is a byte the file holds whatever the end claims, and a 416 refuses only a range its own bytes */1712 proves unsatisfiable",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 416
     },
     {
       "api_error_code": "RANGE_INVALID",
@@ -5186,6 +5233,27 @@
       ],
       "id": "device/valid/clip-file-response-206",
       "invariant": "AC-04 single-range response: Content-Range names the granted slice of the real committed file, ETag unchanged, Content-Length equals the slice",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_clip_file",
+      "operation_id": "getClipFile",
+      "path": "/clips/{clip_id}/files/{name}",
+      "schema": null,
+      "status": 206
+    },
+    {
+      "api_error_code": null,
+      "category": "range",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/clip-file-response-206-clipped-end.headers.json",
+        "device/valid/clip-file-response-206-clipped-end.request.headers.json"
+      ],
+      "id": "device/valid/clip-file-response-206-clipped-end",
+      "invariant": "AC-04/AC-06 the paired grant for bytes=1711-1722: RFC 9110 §14.1.2 clamps the specified end to the file's last byte, so the window served is exactly bytes 1711-1711/1712 — one byte, Content-Length to match, and the resume sidecar beside it in full",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_clip_file",
@@ -8524,6 +8592,22 @@
       ],
       "id": "media/valid/manifest-integral-notations",
       "invariant": "AC-02/AC-06 manifest notation: duration_us 266667.0, frame_count 4.0 and capture_order 42.0 are the same three integers the baseline writes plainly — the manifest path parses exact numbers, so an integral spelling validates on the manifest's own terms and the checksums still certify the shipped bytes",
+      "kind": "clip"
+    },
+    {
+      "category": "baseline",
+      "contract": "media-v1",
+      "corruption": null,
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "checksums.json",
+        "frames.jsonl",
+        "manifest.json",
+        "video.mjpg"
+      ],
+      "id": "media/valid/progressive-comment-between-scans",
+      "invariant": "AC-02 progressive multi-scan capture: frames encode as progressive JPEGs whose between-scan comments carry marker-like payloads; Pillow decodes them, the SOF and the decoder agree with the manifest profile, and each indexed slice ends exactly at its own first EOI",
       "kind": "clip"
     },
     {
