@@ -345,6 +345,16 @@ AC_VECTORS: dict[str, tuple[str, ...]] = {
     "media/valid/progressive-dri-between-scans": (),
     "media/valid/progressive-comment-between-scans": (),
     "backend/valid/clip-detail-response-200": (),
+    # Round 10: the receiving detail that could hide its 24 h deadline and the unmounted
+    # card that could report capacity — the four refusals those two schemas now write,
+    # plus the all-zero `storage_full` answer that proves a measured zero on a mounted
+    # card stays legal. The permissive half (a `stored` detail may omit the expiry) is
+    # pinned at document level, not by a vector of its own.
+    "backend/invalid/upload-get-response-200-missing-expiry": ("API_SCHEMA_MISSING_FIELD",),
+    "backend/invalid/upload-get-response-200-null-expiry": ("API_SCHEMA",),
+    "device/valid/status-response-200-mounted-zero": (),
+    "device/invalid/status-response-200-unmounted-zero": ("API_SCHEMA",),
+    "device/invalid/status-response-200-unmounted-positive": ("API_SCHEMA",),
 }
 
 
