@@ -1062,7 +1062,11 @@ components:
           $ref: '#/components/schemas/UInt53'
     StorageStatus:
       description: >-
-        Totals are zero only for a measured zero and null when unmounted.
+        Totals are zero only for a measured zero and null when unmounted, per
+        interfaces.md §4: a card that is not mounted has no capacity to measure, so
+        every total of an unmounted status is null — a number there, zero included,
+        would let a reader mistake an absent card for an empty or a full one. On a
+        mounted card, zero is a real measurement and stays legal.
         `retained_duration_s` sums valid unprotected recorded durations.
       type: object
       required: [mounted, total_bytes, free_bytes, rolling_bytes, protected_bytes, retained_duration_s]
@@ -1084,6 +1088,24 @@ components:
         retained_duration_s:
           type: ['integer', 'null']
           minimum: 0
+      allOf:
+        - if:
+            required: [mounted]
+            properties:
+              mounted:
+                const: false
+          then:
+            properties:
+              total_bytes:
+                type: 'null'
+              free_bytes:
+                type: 'null'
+              rolling_bytes:
+                type: 'null'
+              protected_bytes:
+                type: 'null'
+              retained_duration_s:
+                type: 'null'
     PowerStatus:
       description: >-
         Null when not measurable. Voltage never implies a battery percentage and

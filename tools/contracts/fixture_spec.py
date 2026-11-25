@@ -1681,6 +1681,117 @@ def device_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
         ),
     )
     out.add(
+        id="status-response-200-mounted-zero",
+        contract="device",
+        category="status",
+        operation="device.get_status",
+        direction="response",
+        status=200,
+        schema="StatusResponse",
+        body={
+            "v": API_VERSION,
+            "device_id": DEVICE_ID,
+            "boot_id": boot_id("status-mounted-zero"),
+            "state": "storage_full",
+            "fault_code": "NO_EVICTABLE_SPACE",
+            "uptime_ms": 5_000,
+            "recording": {"clip_id": None, "frames": 0, "dropped_frames": 0},
+            # Every total is the number a mounted card really measured, and zero is
+            # what a full, nothing-retained card measures: the contract must keep
+            # accepting it, or null becomes the only spelling a reader may send.
+            "storage": {
+                "mounted": True,
+                "total_bytes": 0,
+                "free_bytes": 0,
+                "rolling_bytes": 0,
+                "protected_bytes": 0,
+                "retained_duration_s": 0,
+            },
+            "power": {"battery_mv": None, "external_power": None},
+            "network": {"mode": "off", "connected": False},
+            "settings_revision": 1,
+        },
+        invariant=(
+            "AC-04 measured zero on a mounted card is legitimate data: null names an "
+            "unmounted card, not an empty one"
+        ),
+    )
+    out.add(
+        id="status-response-200-unmounted-zero",
+        contract="device",
+        category="status",
+        operation="device.get_status",
+        direction="response",
+        status=200,
+        schema="StatusResponse",
+        body={
+            "v": API_VERSION,
+            "device_id": DEVICE_ID,
+            "boot_id": boot_id("status-unmounted-zero"),
+            "state": "storage_fault",
+            "fault_code": "NO_CARD",
+            "uptime_ms": 5_000,
+            "recording": {"clip_id": None, "frames": 0, "dropped_frames": 0},
+            # The golden unmounted answer with two totals rewritten as measured zero:
+            # an absent card was never measured, and a reader cannot tell this from
+            # a card that is genuinely empty.
+            "storage": {
+                "mounted": False,
+                "total_bytes": 0,
+                "free_bytes": 0,
+                "rolling_bytes": None,
+                "protected_bytes": None,
+                "retained_duration_s": None,
+            },
+            "power": {"battery_mv": None, "external_power": None},
+            "network": {"mode": "off", "connected": False},
+            "settings_revision": 2,
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-04 unmounted storage may not claim measured zero: totals are null when "
+            "there is no card to measure"
+        ),
+    )
+    out.add(
+        id="status-response-200-unmounted-positive",
+        contract="device",
+        category="status",
+        operation="device.get_status",
+        direction="response",
+        status=200,
+        schema="StatusResponse",
+        body={
+            "v": API_VERSION,
+            "device_id": DEVICE_ID,
+            "boot_id": boot_id("status-unmounted-positive"),
+            "state": "storage_fault",
+            "fault_code": "NO_CARD",
+            "uptime_ms": 5_000,
+            "recording": {"clip_id": None, "frames": 0, "dropped_frames": 0},
+            # Capacity a card that is not mounted cannot have: the same numbers the
+            # mounted golden answer reports, presented beside mounted: false.
+            "storage": {
+                "mounted": False,
+                "total_bytes": 29_157_488_640,
+                "free_bytes": 21_474_836_480,
+                "rolling_bytes": None,
+                "protected_bytes": None,
+                "retained_duration_s": None,
+            },
+            "power": {"battery_mv": None, "external_power": None},
+            "network": {"mode": "off", "connected": False},
+            "settings_revision": 3,
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-04 unmounted storage may not report capacity: a reader would take the "
+            "absent card for a full or nearly-full one"
+        ),
+    )
+    out.add(
         id="status-response-200-bad-state",
         contract="device",
         category="status",
@@ -4736,6 +4847,60 @@ def backend_fixtures(media: "MediaCorpus") -> tuple[ApiFixture, ...]:
             "expires_at": "2026-03-05T12:00:00.000Z",
         },
         invariant="AC-05 GET /uploads/{id} reports state, offsets and the expiry",
+    )
+    out.add(
+        id="upload-get-response-200-missing-expiry",
+        contract="backend",
+        category="upload",
+        operation="backend.get_upload",
+        direction="response",
+        status=200,
+        schema="UploadDetail",
+        # The golden receiving answer with the deadline member dropped: a client that
+        # restarts mid-upload has no other way to learn when the session stops being
+        # accepted, so the omission is a contract violation, not a nicety.
+        body={
+            "v": API_VERSION,
+            "upload_id": upload_id,
+            "state": "receiving",
+            "offsets": {
+                "video.mjpg": media.baseline_chunk_bytes,
+                "frames.jsonl": 0,
+            },
+        },
+        expected="invalid",
+        codes=(API_SCHEMA_MISSING_FIELD,),
+        invariant=(
+            "AC-05 a receiving GET /uploads/{id} detail must report the 24 h inactivity "
+            "expiry; omitting expires_at is refused"
+        ),
+    )
+    out.add(
+        id="upload-get-response-200-null-expiry",
+        contract="backend",
+        category="upload",
+        operation="backend.get_upload",
+        direction="response",
+        status=200,
+        schema="UploadDetail",
+        # Null says the same thing as omission while looking like an answer, which is
+        # why both spellings ship: the receiving state has a live deadline to name.
+        body={
+            "v": API_VERSION,
+            "upload_id": upload_id,
+            "state": "receiving",
+            "offsets": {
+                "video.mjpg": media.baseline_chunk_bytes,
+                "frames.jsonl": 0,
+            },
+            "expires_at": None,
+        },
+        expected="invalid",
+        codes=(API_SCHEMA,),
+        invariant=(
+            "AC-05 a receiving GET /uploads/{id} detail's expiry may not be null: only a "
+            "stored or expired detail has no live deadline"
+        ),
     )
     out.add(
         id="upload-delete-204",

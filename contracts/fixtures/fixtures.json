@@ -674,6 +674,50 @@
     },
     {
       "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA_MISSING_FIELD"
+      ],
+      "files": [
+        "backend/invalid/upload-get-response-200-missing-expiry.json"
+      ],
+      "id": "backend/invalid/upload-get-response-200-missing-expiry",
+      "invariant": "AC-05 a receiving GET /uploads/{id} detail must report the 24 h inactivity expiry; omitting expires_at is refused",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_upload",
+      "operation_id": "getUpload",
+      "path": "/uploads/{id}",
+      "schema": "UploadDetail",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "upload",
+      "contract": "backend-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "backend/invalid/upload-get-response-200-null-expiry.json"
+      ],
+      "id": "backend/invalid/upload-get-response-200-null-expiry",
+      "invariant": "AC-05 a receiving GET /uploads/{id} detail's expiry may not be null: only a stored or expired detail has no live deadline",
+      "kind": "api",
+      "method": "GET",
+      "operation": "backend.get_upload",
+      "operation_id": "getUpload",
+      "path": "/uploads/{id}",
+      "schema": "UploadDetail",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
       "category": "boundary",
       "contract": "backend-v1",
       "direction": "response",
@@ -5123,6 +5167,50 @@
     },
     {
       "api_error_code": null,
+      "category": "status",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "device/invalid/status-response-200-unmounted-positive.json"
+      ],
+      "id": "device/invalid/status-response-200-unmounted-positive",
+      "invariant": "AC-04 unmounted storage may not report capacity: a reader would take the absent card for a full or nearly-full one",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_status",
+      "operation_id": "getStatus",
+      "path": "/status",
+      "schema": "StatusResponse",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "status",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "API_SCHEMA"
+      ],
+      "files": [
+        "device/invalid/status-response-200-unmounted-zero.json"
+      ],
+      "id": "device/invalid/status-response-200-unmounted-zero",
+      "invariant": "AC-04 unmounted storage may not claim measured zero: totals are null when there is no card to measure",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_status",
+      "operation_id": "getStatus",
+      "path": "/status",
+      "schema": "StatusResponse",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
       "category": "time",
       "contract": "device-v1",
       "direction": "request",
@@ -6954,6 +7042,26 @@
       ],
       "id": "device/valid/status-response-200-camera_fault",
       "invariant": "AC-04 status state camera_fault with fault_code CAMERA_INIT",
+      "kind": "api",
+      "method": "GET",
+      "operation": "device.get_status",
+      "operation_id": "getStatus",
+      "path": "/status",
+      "schema": "StatusResponse",
+      "status": 200
+    },
+    {
+      "api_error_code": null,
+      "category": "status",
+      "contract": "device-v1",
+      "direction": "response",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "device/valid/status-response-200-mounted-zero.json"
+      ],
+      "id": "device/valid/status-response-200-mounted-zero",
+      "invariant": "AC-04 measured zero on a mounted card is legitimate data: null names an unmounted card, not an empty one",
       "kind": "api",
       "method": "GET",
       "operation": "device.get_status",

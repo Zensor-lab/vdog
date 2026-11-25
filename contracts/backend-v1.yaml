@@ -1418,9 +1418,12 @@ components:
           const: stored
     UploadDetail:
       description: >-
-        `expires_at` names the documented 24 h inactivity deadline; the spec
-        requires expiry to be reported but names no field, so it is optional
-        (contracts/README.md).
+        `expires_at` is the documented 24 h inactivity deadline interfaces.md §8
+        step 5 promises this response reports: a `receiving` detail must carry it
+        non-null, because a client recovering an upload after a restart can only
+        learn when the session stops being accepted from this member. A `stored` or
+        `expired` detail has no live deadline left to report, so it may omit the
+        member or send it as null.
       type: object
       required: [v, upload_id, state, offsets]
       properties:
@@ -1438,6 +1441,17 @@ components:
           minLength: 24
           maxLength: 24
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+      allOf:
+        - if:
+            required: [state]
+            properties:
+              state:
+                const: receiving
+          then:
+            required: [expires_at]
+            properties:
+              expires_at:
+                type: string
     BackendEventRequest:
       type: object
       additionalProperties: false
