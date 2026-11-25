@@ -443,8 +443,9 @@ def test_optional_device_response_headers_are_detected(device: dict) -> None:
     """The device file download loses its name just as quietly — every status pays.
 
     interfaces.md §4 assigns `Accept-Ranges`, `ETag`, `Content-Length` to the 200 and
-    those plus `Content-Range` to the 206; the shared 416 carries no header, so
-    nothing outside the two range answers depends on these components.
+    those plus `Content-Range` to the 206; the shared 416 carries only its optional
+    unsatisfied `Content-Range` — a separate component — so nothing outside the two
+    range answers depends on these components.
     """
     assert not check_openapi("device", device)
     expectations = {
@@ -470,7 +471,49 @@ def test_optional_device_response_headers_are_detected(device: dict) -> None:
             assert named, (component, subject, [violation.render() for violation in found])
             assert all("optional" in violation.detail for violation in named), named
         if component == "ContentRange":
+            # The 416's optional `Content-Range` rides `ContentRangeUnsatisfied`, a
+            # component apart from the granted one: flipping the granted half's
+            # required flag may not reach the refusal, which proves the two spellings
+            # are modelled apart.
             assert all("416" not in violation.location for violation in found), found
+
+
+def test_granted_and_unsatisfied_content_range_are_modelled_apart(
+    device: dict, backend: dict
+) -> None:
+    """A granted window and an unsatisfied refusal are different fields (RFC 9110 §14.4).
+
+    The 206 answers `bytes <first>-<last>/<total>` and nothing else — the `*/` form
+    promises no bytes and belongs to the refusal alone. The shared 416 may answer
+    `bytes */<total>` to report the current representation's length and may omit the
+    header entirely, so its declaration carries no `required` flag. Each spelling is
+    its own component, and the documents stay silent under the full gate either way.
+    """
+    from tools.contracts.schema_docs import DRAFT202012_VALIDATOR
+
+    download_routes = {
+        "device": [("/clips/{clip_id}/files/{name}", "get")],
+        "backend": [("/clips/{clip_id}/files/{name}", "get"), ("/derivatives/{id}/file", "get")],
+    }
+    for contract, document in (("device", device), ("backend", backend)):
+        assert not check_openapi(contract, document)
+        for path, method in download_routes[contract]:
+            operation = document["paths"][path][method]
+            granted = resolve_refs(
+                operation["responses"]["206"]["headers"]["Content-Range"], root=document
+            )
+            assert granted["required"] is True, (contract, path, method)
+            assert DRAFT202012_VALIDATOR(granted["schema"]).is_valid("bytes 0-1023/1712")
+            assert not DRAFT202012_VALIDATOR(granted["schema"]).is_valid("bytes */1712")
+            refusal = resolve_refs(operation["responses"]["416"], root=document)
+            unsatisfied = refusal["headers"]["Content-Range"]
+            assert "required" not in unsatisfied, (
+                "the 416 may refuse without the header, so it must stay at OpenAPI's "
+                "optional default",
+                unsatisfied,
+            )
+            assert DRAFT202012_VALIDATOR(unsatisfied["schema"]).is_valid("bytes */1712")
+            assert not DRAFT202012_VALIDATOR(unsatisfied["schema"]).is_valid("bytes 0-1023/1712")
 
 
 def test_documented_optional_response_header_stays_optional(device: dict) -> None:

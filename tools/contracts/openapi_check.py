@@ -53,7 +53,8 @@ _EXPECTED_HEADER_SCHEMAS: Mapping[str, Mapping[str, Any]] = {
         "minLength": 66,
         "maxLength": 66,
     },
-    "ContentRange": {"type": "string", "pattern": "^bytes ([0-9]+-[0-9]+|\\*)/[0-9]+$"},
+    "ContentRange": {"type": "string", "pattern": "^bytes [0-9]+-[0-9]+/[0-9]+$"},
+    "ContentRangeUnsatisfied": {"type": "string", "pattern": "^bytes \\*/[0-9]+$"},
     "WwwAuthenticate": {
         "type": "string",
         "pattern": '^Bearer( realm="[^"]{1,100}")?$'

@@ -946,12 +946,18 @@ components:
         minimum: 0
     ContentRange:
       description: >-
-        `bytes <first>-<last>/<total>` for the single granted range, or
-        `bytes */<total>` on the 416 that refuses an unsatisfiable one.
+        `bytes <first>-<last>/<total>` for the single granted range.
       required: true
       schema:
         type: string
-        pattern: '^bytes ([0-9]+-[0-9]+|\*)/[0-9]+$'
+        pattern: '^bytes [0-9]+-[0-9]+/[0-9]+$'
+    ContentRangeUnsatisfied:
+      description: >-
+        `bytes */<total>` on the 416 that reports the current representation
+        length (RFC 9110 §14.4, §15.5.17).
+      schema:
+        type: string
+        pattern: '^bytes \*/[0-9]+$'
     UploadOffset:
       description: >-
         Authoritative committed offset for this file, returned on 204, on the
@@ -1018,6 +1024,9 @@ components:
             $ref: '#/components/schemas/Error'
     RangeNotSatisfiable:
       description: Invalid byte range; only a single range is supported.
+      headers:
+        Content-Range:
+          $ref: '#/components/headers/ContentRangeUnsatisfied'
       content:
         application/json:
           schema:
