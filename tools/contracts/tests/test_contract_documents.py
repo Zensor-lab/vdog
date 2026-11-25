@@ -237,20 +237,26 @@ def test_an_unreadable_parameter_declaration_is_a_finding_not_a_crash(backend: d
         and "parameters/Upload-Checksum" in violation.location
     ]
     assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    # An unreadable declaration is the absent case, never the "declared but optional" one.
+    assert all("optional" not in violation.detail for violation in found), found
 
 
 def test_an_unreadable_request_body_pointer_is_a_finding_not_a_crash(backend: dict) -> None:
     """A `requestBody` whose pointer misfires is refused too, whatever the way it fails.
 
-    ``resolve_refs`` raises for a missing member, a list index out of range and a scalar it
-    is asked to subscript; all three are documents with a defect, and each has to come back
-    as the finding the body checks already know how to write.
+    ``resolve_refs`` raises for a missing member, a list index out of range, a scalar it is
+    asked to subscript and a pointer that is not a local one; the body check also has to
+    survive a pointer that lands on a value that is not an object. All five are documents
+    with a defect, and each has to come back as the finding the body checks already know
+    how to write rather than as the CLI's exit 2 "validator internal error".
     """
     assert not check_openapi("backend", backend)
     for broken in (
         {"$ref": "#/components/requestBodies/Absent"},
         {"$ref": "#/paths/~1uploads~1{id}~1files~1{name}/patch/tags/9"},
         {"$ref": "#/components/parameters/UploadChecksum/schema/type"},
+        {"$ref": "#/components/parameters/UploadChecksum/schema/type/deeper"},
+        {"$ref": "https://example.invalid/body"},
     ):
         weakened = copy.deepcopy(backend)
         weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["requestBody"] = broken
