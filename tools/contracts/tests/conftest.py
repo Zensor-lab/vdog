@@ -403,6 +403,32 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
             )
         ),
     ),
+    # Round 12: the two duplicate declarations the review slipped past the gate —
+    # a required integer twin of the clip route's `device_id` query, and a lowercase
+    # `upload-offset` beside the required `Upload-Offset` on the upload HEAD's 200.
+    (
+        "documents",
+        "SPEC_STRUCTURE_MISSING",
+        _backend_yaml(
+            lambda d: d["paths"]["/clips/{clip_id}"]["get"]["parameters"].append(
+                {
+                    "name": "device_id",
+                    "in": "query",
+                    "required": True,
+                    "schema": {"type": "integer"},
+                }
+            )
+        ),
+    ),
+    (
+        "documents",
+        "SPEC_STRUCTURE_MISSING",
+        _backend_yaml(
+            lambda d: d["paths"]["/uploads/{id}/files/{name}"]["head"]["responses"]["200"][
+                "headers"
+            ].__setitem__("upload-offset", {"schema": {"type": "string"}})
+        ),
+    ),
     ("documents", "SCHEMA_DOCUMENT_INVALID", _drop_frame_schema),
     (
         "documents",

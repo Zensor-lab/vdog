@@ -398,6 +398,40 @@ def _check_operation(
                     f"binds {ref!r} instead of {schema_name}",
                 )
             )
+    # HTTP field names are case-insensitive (RFC 9110 §5.1), so a response that
+    # declares `Upload-Offset` beside `upload-offset` declares one header twice —
+    # an ambiguous document a generated client may satisfy with either schema. The
+    # duplicate has to be refused *before* the required-ness loops below interpret
+    # the flags, because `_resolved_header` reads only the first spelling and the
+    # second member would otherwise never be read at all. This speaks for every
+    # response the operation carries, not only the ones the table names.
+    for status_key, node in responses.items():
+        try:
+            resolved_response = _resolve(node, document)
+        except _RESOLUTION_FAILURES:
+            # An unreadable response is named by the loops above and below; this
+            # one simply cannot read a header map out of it.
+            continue
+        if not isinstance(resolved_response, Mapping):
+            continue
+        declared_headers = resolved_response.get("headers")
+        if not isinstance(declared_headers, Mapping):
+            continue
+        spellings: dict[str, list[str]] = {}
+        for key in declared_headers:
+            spellings.setdefault(str(key).lower(), []).append(str(key))
+        for collisions in spellings.values():
+            if len(collisions) < 2:
+                continue
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} responses/{status_key} headers/{collisions[0]}",
+                    f"declares the header {collisions[0]!r} {len(collisions)} times "
+                    f"as {', '.join(collisions)}: field names are case-insensitive, "
+                    "so this is one header declared twice",
+                )
+            )
     for status, names in operation.required_response_headers.items():
         response, unreadable = _resolved_response(responses, status, document)
         if unreadable is not None:
@@ -568,6 +602,7 @@ def _check_operation(
             )
         )
         declared_parameters = []
+    parameter_identities: dict[tuple[str, str], list[str]] = {}
     for entry in declared_parameters:
         is_reference = isinstance(entry, Mapping) and "$ref" in entry
         try:
@@ -579,6 +614,20 @@ def _check_operation(
             and isinstance(resolved.get("name"), str)
             and isinstance(resolved.get("in"), str)
         ):
+            # OpenAPI's Operation Object requires parameter names to be unique per
+            # location, so the first member of an identity is the declaration and
+            # every additional member is a document the gate may not certify.
+            # Header field names match case-insensitively (RFC 9110 §5.1) while
+            # path and query names are exact, so the identity reads `name` verbatim
+            # there and lowercased for a header.
+            location_kind = resolved["in"].lower()
+            declared_name = resolved["name"]
+            identity_name = (
+                declared_name
+                if location_kind in ("path", "query")
+                else declared_name.lower()
+            )
+            parameter_identities.setdefault((location_kind, identity_name), []).append(declared_name)
             continue
         if is_reference:
             found.append(
@@ -594,6 +643,23 @@ def _check_operation(
                     E.SPEC_STRUCTURE_MISSING,
                     f"{where} parameters",
                     "an inline parameter carries no string name and in",
+                )
+            )
+    for (identity_location, identity_name), declared_names in parameter_identities.items():
+        if len(declared_names) < 2:
+            continue
+        # Read from the list before any required interpretation: every additional
+        # member of one identity is refused whatever its ``required`` flag says,
+        # because a twin a generated client may read instead of the declaration is
+        # a defect whether or not both members happen to be required today.
+        for duplicate_name in declared_names[1:]:
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} parameters/{duplicate_name}",
+                    f"duplicate declaration: {len(declared_names)} parameters share the "
+                    f"identity in={identity_location} name={identity_name}, and the "
+                    "Operation Object permits one declaration per name and location",
                 )
             )
     for placeholder in re.findall(r"\{([^}/]+)\}", operation.path):

@@ -599,6 +599,75 @@ def test_a_dangling_parameter_ref_is_a_drift_finding_not_a_crash(backend: dict) 
     assert any("RangeMissing" in violation.detail for violation in found), found
 
 
+def test_duplicate_parameter_declaration_is_detected(backend: dict) -> None:
+    """One name per location is an Operation Object rule, not a suggestion.
+
+    The review appended a second, required integer `device_id` query to
+    `GET /clips/{clip_id}` and a lowercase `idempotency-key` twin to the upload
+    initialisation's required `Idempotency-Key` header, and the gate certified both
+    documents: `_required_request_parameter` asks whether *every* match is required,
+    so a twin passes whenever both members happen to be. The duplicate read comes
+    from the parameter list itself, before any required interpretation, and a header
+    twin colliding under HTTP's case-insensitive names is found just the same.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}"]["get"]["parameters"].append(
+        {"name": "device_id", "in": "query", "required": True, "schema": {"type": "integer"}}
+    )
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location.endswith("parameters/device_id")
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    assert all("duplicate" in violation.detail for violation in found), found
+    # Required twins are refused by the list itself, never the "declared but
+    # optional" wording the required-ness walk reserves for optional members.
+    assert all("optional" not in violation.detail for violation in found), found
+
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/uploads"]["post"]["parameters"].append(
+        {"name": "idempotency-key", "in": "header", "required": True, "schema": {"type": "string"}}
+    )
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location.endswith("parameters/idempotency-key")
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    assert all("duplicate" in violation.detail for violation in found), found
+
+
+def test_duplicate_response_header_is_detected(backend: dict) -> None:
+    """A response may not declare one header twice under two spellings.
+
+    Header names are case-insensitive (RFC 9110 §5.1), so a lowercase
+    `upload-offset` beside the required `Upload-Offset` `$ref` on the upload HEAD's
+    200 is one header declared twice — and `_resolved_header` reads only the first
+    spelling, so the second member was never read at all. The refusal comes from the
+    header map itself, raised while the shared component still carries its
+    `required: true` flag.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    headers = weakened["paths"]["/uploads/{id}/files/{name}"]["head"]["responses"]["200"]["headers"]
+    headers["upload-offset"] = {"schema": {"type": "string"}}
+    assert weakened["components"]["headers"]["UploadOffset"]["required"] is True
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location.endswith(
+            "HEAD /uploads/{id}/files/{name} responses/200 headers/Upload-Offset"
+        )
+    ]
+    assert len(found) == 1, [violation.render() for violation in found]
+    assert "upload-offset" in found[0].detail and "Upload-Offset" in found[0].detail, found[0]
+
+
 def test_dropping_a_path_parameter_is_detected(backend: dict) -> None:
     """Every `{placeholder}` must keep its required path parameter.
 
@@ -692,11 +761,16 @@ def test_an_optional_twin_of_a_required_parameter_is_detected(backend: dict) -> 
     weakened["paths"]["/clips/{clip_id}"]["get"]["parameters"].append(
         {"name": "device_id", "in": "query", "required": False, "schema": {"type": "string"}}
     )
+    # The list gate refuses this twin as a duplicate declaration whatever its
+    # ``required`` flag says (pinned by test_duplicate_parameter_declaration_is_detected);
+    # the finding *here* is the required-ness walk's own, which still has to name the
+    # optional twin even with the duplicate finding beside it.
     found = [
         violation
         for violation in check_openapi("backend", weakened)
         if E.SPEC_STRUCTURE_MISSING == violation.code
         and "GET /clips/{clip_id} parameters/device_id" in violation.location
+        and "duplicate declaration" not in violation.detail
     ]
     assert found, [violation.render() for violation in check_openapi("backend", weakened)]
     assert all("optional" in violation.detail for violation in found), found
