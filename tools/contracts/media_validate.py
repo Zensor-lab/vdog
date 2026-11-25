@@ -326,6 +326,7 @@ def validate_media_fixture(
                 payload=payload,
                 index=index,
                 records=walk.records,
+                walk_stopped=walk.stopped,
             )
         )
 
@@ -766,6 +767,7 @@ def _validate_manifest(
     payload: bytes,
     index: bytes,
     records: Sequence[dict[str, Any]],
+    walk_stopped: bool = False,
 ) -> list[Violation]:
     """Manifest cross-field rules from media-format.md §2 and §4."""
     found: list[Violation] = validate_manifest_fields(record)
@@ -790,7 +792,7 @@ def _validate_manifest(
                     f"{duration_us} exceeds the {MAX_SEGMENT_DURATION_US:,} us segment maximum",
                 )
             )
-        elif records and duration_us <= records[-1]["t_us"]:
+        elif records and not walk_stopped and duration_us <= records[-1]["t_us"]:
             found.append(
                 Violation(
                     E.DURATION_LE_FINAL_T_US,
@@ -804,15 +806,20 @@ def _validate_manifest(
     # close time is measured and not derivable from the index, so this equality
     # is the recovered kind's alone; it reads the records only after the full
     # index walk has judged them, and stays silent when any value it would
-    # compute with is one the checks above have already refused — including a
-    # walk that stopped early, whose records are a prefix rather than the index
-    # the manifest counts (that disagreement is FRAME_COUNT_MISMATCH's to name).
-    claimed_frames = record.get("frame_count")
+    # compute with is one the checks above have already refused. Two facts make
+    # records[-1] not the index's last frame, and both keep this rule quiet: the
+    # walk stopped early (the caller's `walk_stopped`, so a prefix that happens to
+    # be exactly as long as `frame_count` cannot pose as the whole index), and the
+    # manifest counts a different number of frames than the walk validated (that
+    # disagreement is FRAME_COUNT_MISMATCH's to name). The same two quiet conditions
+    # cover the final-t_us rule above, so no duration rule here ever reads a
+    # truncated walk as though it were the index.
     if (
         record.get("recovered") is True
         and records
+        and not walk_stopped
         and _is_int(duration_us)
-        and not (_is_int(claimed_frames) and int(claimed_frames) != len(records))
+        and not (_is_int(frame_count) and int(frame_count) != len(records))
     ):
         profile = record.get("profile")
         final_t_us = records[-1].get("t_us")

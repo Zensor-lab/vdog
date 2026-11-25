@@ -1556,10 +1556,13 @@ def test_a_recovered_segment_states_the_close_time_the_format_fixes(schemas: dic
     # The baseline's own honest close: final t_us 200000 plus the 66667 us 15 fps period.
     records = [{"t_us": 200_000}]
 
-    def codes(record: dict, at: list[dict], *, claim: int | None = None) -> set[str]:
+    def codes(
+        record: dict, at: list[dict], *, claim: int | None = None, stopped: bool = False
+    ) -> set[str]:
         # The walk judged an index of exactly this length; the manifest counts it, so
         # the recovered rule has a whole index to read. `claim` overrides the count to
-        # the shape a truncated walk would leave behind.
+        # the shape a manifest that miscounts would leave behind, and `stopped` hands
+        # down what the caller knows and this rule cannot infer: that the walk gave up.
         record = {**record, "frame_count": len(at) if claim is None else claim}
         found = _validate_manifest(
             record,
@@ -1567,6 +1570,7 @@ def test_a_recovered_segment_states_the_close_time_the_format_fixes(schemas: dic
             payload=files[PAYLOAD_NAME],
             index=files[INDEX_NAME],
             records=at,
+            walk_stopped=stopped,
         )
         return {violation.code for violation in found}
 
@@ -1601,6 +1605,19 @@ def test_a_recovered_segment_states_the_close_time_the_format_fixes(schemas: dic
     prefix = [{"t_us": 0}, {"t_us": 66_667}, {"t_us": 133_334}]  # manifest counts 4
     assert codes(_recovered_manifest(duration_us=266_667), prefix, claim=4) == set()
     assert codes(_recovered_manifest(duration_us=200_001), prefix) == set()
+    # And a prefix that *looks* whole — the manifest counts exactly the records the walk
+    # returned — is still not the index. Only the caller knows the walk gave up, so the
+    # fact is handed down rather than inferred, and without it this close time would be
+    # read off a frame the index never closed on.
+    assert codes(_recovered_manifest(duration_us=266_667), prefix, stopped=True) == set()
+    assert codes(_recovered_manifest(duration_us=266_667), prefix) == {
+        E.DURATION_RECOVERED_MISMATCH
+    }
+    # The final-t_us rule above reads that same last frame, and keeps quiet for the same
+    # reason: a truncated walk states no close time at all.
+    measured_low = {**_baseline_manifest(), "duration_us": 100}
+    assert E.DURATION_LE_FINAL_T_US in codes(measured_low, prefix)
+    assert E.DURATION_LE_FINAL_T_US not in codes(measured_low, prefix, stopped=True)
     found = _validate_manifest(
         {**_recovered_manifest(duration_us=1_133_334), "frame_count": len(records)},
         schemas["manifest"],
@@ -1625,3 +1642,79 @@ def test_the_committed_recovered_vector_states_a_close_no_recovery_measured(
     final_t_us = _records(entry)[-1]["t_us"]
     assert manifest["duration_us"] == 1_133_334
     assert final_t_us + 66_667 == 133_334  # what §4 fixes, and what this manifest does not say
+
+
+def test_a_truncated_walk_states_no_close_time_even_when_it_looks_whole(tmp_path, schemas) -> None:
+    """A prefix exactly as long as ``frame_count`` is still a prefix, and only the caller knows (AC-03).
+
+    ``media/valid/recovered-prefix`` closes honestly at 133 334 us over two records. One
+    appended unusable index line makes the walk stop after those same two records — the
+    count comparison cannot see the truncation, because the manifest counts exactly what
+    the walk validated — so the fact that keeps both duration rules off a frame the index
+    never closed on has to be handed down from the walk itself. Without it this manifest
+    is refused for a close time §4 never had to state.
+    """
+    import shutil
+
+    source = FIXTURES / "media" / "valid" / "recovered-prefix"
+    clip = tmp_path / "media" / "invalid" / "truncated-walk-recovered"
+    clip.mkdir(parents=True)
+    for name in (MANIFEST_NAME, INDEX_NAME, PAYLOAD_NAME, CHECKSUMS_NAME):
+        shutil.copy(source / name, clip / name)
+    whole_index = (clip / INDEX_NAME).read_bytes()
+    committed_manifest = json.loads((clip / MANIFEST_NAME).read_bytes())
+    assert committed_manifest["frame_count"] == 2 and committed_manifest["duration_us"] == 133_334
+
+    def write(index: bytes) -> None:
+        """Write this index with a manifest and checksums that state it honestly."""
+        (clip / INDEX_NAME).write_bytes(index)
+        manifest = dict(committed_manifest)
+        manifest["duration_us"] = 999_999  # neither the 133 334 §4 fixes nor anything near it
+        manifest["files"] = {
+            name: {
+                "bytes": len(blob),
+                "sha256": hashlib.sha256(blob).hexdigest(),
+            }
+            for name, blob in (
+                (INDEX_NAME, index),
+                (PAYLOAD_NAME, (clip / PAYLOAD_NAME).read_bytes()),
+            )
+        }
+        manifest_bytes = (json.dumps(manifest) + "\n").encode("utf-8")
+        (clip / MANIFEST_NAME).write_bytes(manifest_bytes)
+        digests = {
+            "v": 1,
+            "files": {
+                name: {"bytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
+                for name, blob in (
+                    (MANIFEST_NAME, manifest_bytes),
+                    (INDEX_NAME, index),
+                    (PAYLOAD_NAME, (clip / PAYLOAD_NAME).read_bytes()),
+                )
+            },
+        }
+        (clip / CHECKSUMS_NAME).write_bytes((json.dumps(digests) + "\n").encode("utf-8"))
+
+    entry = {
+        "id": "media/invalid/truncated-walk-recovered",
+        "kind": "clip",
+        "contract": "media-v1",
+        "expected": "invalid",
+        "files": [MANIFEST_NAME, INDEX_NAME, PAYLOAD_NAME, CHECKSUMS_NAME],
+    }
+
+    # One unusable line after the two records: the walk stops with exactly the two
+    # records the manifest counts, so nothing here can see the truncation but the walk.
+    write(whole_index + b'{"broken"\n')
+    found = validate_media_fixture(tmp_path, entry, schemas)
+    assert [violation.code for violation in found] == [E.FRAME_LINE_MALFORMED], [
+        violation.render() for violation in found
+    ]
+    assert found[0].location.endswith("line 3")
+    # The control: the same manifest over a whole index is refused for exactly the close
+    # time it states, so it is the stopped walk — not the number — being trusted above.
+    write(whole_index)
+    found = validate_media_fixture(tmp_path, entry, schemas)
+    assert [violation.code for violation in found] == [E.DURATION_RECOVERED_MISMATCH], [
+        violation.render() for violation in found
+    ]

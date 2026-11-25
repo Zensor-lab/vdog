@@ -101,7 +101,7 @@ def _request_headers(entry: dict) -> dict:
 
 
 @lru_cache(maxsize=1)
-def _clip_dimensions() -> dict[str, tuple[int, int]]:
+def _clip_dimensions() -> dict[tuple[str, str], tuple[int, int]]:
     """The committed clip sizes a derivative crop is measured against.
 
     The published validator builds this map from the corpus before walking it, and a
