@@ -618,15 +618,11 @@ def _check_operation(
             # location, so the first member of an identity is the declaration and
             # every additional member is a document the gate may not certify.
             # Header field names match case-insensitively (RFC 9110 §5.1) while
-            # path and query names are exact, so the identity reads `name` verbatim
-            # there and lowercased for a header.
+            # path and query names are exact, so the identity lowercases only for
+            # `header` and reads `name` verbatim everywhere else.
             location_kind = resolved["in"].lower()
             declared_name = resolved["name"]
-            identity_name = (
-                declared_name
-                if location_kind in ("path", "query")
-                else declared_name.lower()
-            )
+            identity_name = declared_name.lower() if location_kind == "header" else declared_name
             parameter_identities.setdefault((location_kind, identity_name), []).append(declared_name)
             continue
         if is_reference:
