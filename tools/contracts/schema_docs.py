@@ -12,6 +12,7 @@ import decimal
 import json
 import re
 from collections import deque
+from collections.abc import Hashable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, Mapping
@@ -135,9 +136,74 @@ def load_json(path: Path) -> Any:
     return json.loads(raw.decode("utf-8"))
 
 
+def _construct_mapping_without_duplicate_keys(
+    loader: yaml.SafeConstructor, node: yaml.nodes.MappingNode, deep: bool = False
+) -> dict[Any, Any]:
+    """Build a plain mapping, refusing a key the node already declares.
+
+    :func:`yaml.safe_load` keeps the *last* of two literal keys, so a document
+    that spells ``Upload-Offset:`` twice hands its readers one entry and every
+    downstream duplicate-spelling gate sees nothing. The refusal therefore has
+    to happen here, while both keys are still on the parse tree.
+    """
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        if key_node.tag == "tag:yaml.org,2002:merge":
+            # A ``<<`` key contributes the aliased map, not a literal key of its
+            # own: merge it in as the safe constructor does, but never submit the
+            # merge itself to the duplicate check below.
+            merged = loader.construct_object(value_node, deep=True)
+            for source in merged if isinstance(merged, list) else [merged]:
+                if isinstance(source, Mapping):
+                    for merged_key, merged_value in source.items():
+                        mapping.setdefault(merged_key, merged_value)
+            continue
+        key = loader.construct_object(key_node, deep=True)
+        if not isinstance(key, Hashable):
+            # Same refusal the stock safe constructor raises: an unhashable key
+            # cannot become a mapping member, and it dies as a ``YAMLError``
+            # like every other load failure — never a bare ``TypeError``.
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found unhashable key",
+                key_node.start_mark,
+            )
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+class _DuplicateKeyRejectingSafeLoader(yaml.SafeLoader):
+    """The safe loader, refusing an explicit duplicate mapping key at parse time.
+
+    SafeLoader only — nothing here resolves arbitrary Python tags — and the sole
+    change is the default-mapping constructor above, so a committed document
+    that spells one key twice is a parse failure the validator reports as
+    ``SPEC_PARSE_FAILED`` rather than a silently halved mapping.
+    """
+
+
+_DuplicateKeyRejectingSafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_without_duplicate_keys
+)
+
+
 def load_yaml(path: Path) -> Any:
-    """Parse a committed YAML document with the safe loader only."""
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    """Parse a committed YAML document with the safe loader only.
+
+    The loader is :class:`_DuplicateKeyRejectingSafeLoader`, so a duplicate
+    explicit mapping key raises a ``yaml.YAMLError`` here — the caller in
+    ``validate.py`` turns any load failure into a ``SPEC_PARSE_FAILED`` naming
+    the file — instead of the later keys quietly overwriting the earlier ones.
+    """
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=_DuplicateKeyRejectingSafeLoader)
 
 
 def canonical(document: Any) -> Any:

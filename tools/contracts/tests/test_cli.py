@@ -192,6 +192,85 @@ def test_cli_exits_one_when_an_openapi_root_is_not_a_mapping(
     assert "validator internal error" not in output
 
 
+def test_cli_exits_one_on_a_dangling_download_206_ref(tmp_path: Path, monkeypatch, capsys) -> None:
+    """Round 14 finding 1: a dangling download 206 is a finding, never exit 2.
+
+    The media-type comparison followed the operation table's promised statuses
+    through an unguarded response read, so pointing the committed inline 206 of
+    `GET /clips/{clip_id}/files/{name}` at a nonexistent component raised
+    ``KeyError`` out of the whole report and the CLI printed "validator internal
+    error" with exit 2. The all-response scan already names the unreadable node;
+    the CLI owes the user that finding at exit 1 instead.
+    """
+    broken = tmp_path / "contracts"
+    shutil.copytree(REPO_ROOT / "contracts", broken)
+    target = broken / "backend-v1.yaml"
+    data = target.read_text(encoding="utf-8")
+    start = data.index("  /clips/{clip_id}/files/{name}:\n    get:\n")
+    block = "        '206':\n          description: Requested single byte range.\n"
+    at = data.index(block, start)
+    end = data.index("        '401':\n", at)
+    target.write_text(
+        data[:at]
+        + "        '206':\n          $ref: '#/components/responses/NoSuchPartial'\n"
+        + data[end:],
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "RESULT: FAIL" in output
+    assert "SPEC_COMPONENT_DRIFT" in output
+    assert "GET /clips/{clip_id}/files/{name}" in output
+    assert "responses/206" in output
+    assert "validator internal error" not in output
+
+
+def test_cli_exits_one_when_a_response_header_key_is_declared_twice(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Round 14 finding 3: a duplicate literal key dies at the parser, exit 1.
+
+    ``yaml.safe_load`` kept only the last of the two literal ``Upload-Offset:``
+    entries, so a second same-spelling entry in the upload HEAD's 200 headers
+    — invisible to every check that reads a loaded mapping — certified with
+    zero findings. The loader refuses the collision on the parse tree, and
+    ``validate_contracts`` turns that into ``SPEC_PARSE_FAILED`` naming the
+    file, never an exit-2 internal error.
+    """
+    broken = tmp_path / "contracts"
+    shutil.copytree(REPO_ROOT / "contracts", broken)
+    target = broken / "backend-v1.yaml"
+    data = target.read_text(encoding="utf-8")
+    needle = (
+        "          headers:\n"
+        "            Upload-Offset:\n"
+        "              $ref: '#/components/headers/UploadOffset'\n"
+        "            Upload-Length:\n"
+    )
+    duplicate = (
+        "          headers:\n"
+        "            Upload-Offset:\n"
+        "              $ref: '#/components/headers/UploadOffset'\n"
+        "            Upload-Offset:\n"
+        "              $ref: '#/components/headers/UploadOffset'\n"
+        "            Upload-Length:\n"
+    )
+    assert data.count(needle) == 1, "the headUploadFile 200 headers block moved"
+    target.write_text(data.replace(needle, duplicate), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "RESULT: FAIL" in output
+    assert "SPEC_PARSE_FAILED" in output
+    assert "backend-v1.yaml" in output
+    assert "validator internal error" not in output
+
+
 def test_the_documented_entry_script_runs_as_a_process() -> None:
     """The shim is what the validation ledger names, so it must work standalone."""
     completed = subprocess.run(

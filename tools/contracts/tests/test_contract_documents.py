@@ -1044,6 +1044,194 @@ def test_malformed_response_member_shapes_are_read_or_named(backend: dict) -> No
     ]
 
 
+# --- Round 14: the guarded media-type read, the declared header map, the parse-time key ---
+
+
+def test_a_dangling_download_206_ref_is_named_not_raised(backend: dict) -> None:
+    """Round 14 finding 1: the media-type loop is a guarded response read.
+
+    The download operation's table entry promises `application/octet-stream` on
+    the 206, so the media-type comparison used to follow that status' pointer
+    unguarded: repointing the committed inline 206 at a component the document
+    never defined raised ``KeyError`` past the report, and the CLI called the
+    whole run a "validator internal error" with exit 2. The all-response scan
+    already names the unreadable node at the status where it sits; the loop has
+    to reuse that guarded resolution and skip the comparison once it failed —
+    and the report may not state the surviving finding twice.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"] = {
+        "$ref": "#/components/responses/NoSuchPartial"
+    }
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_COMPONENT_DRIFT == violation.code
+        and violation.location.endswith("GET /clips/{clip_id}/files/{name} responses/206")
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    assert any("NoSuchPartial" in violation.detail for violation in found), found
+    triples = [
+        (violation.code, violation.location, violation.detail)
+        for violation in check_openapi("backend", weakened)
+    ]
+    assert len(triples) == len(set(triples)), "one finding may not be stated twice"
+
+
+def _shared_404_operations(document: dict) -> list[str]:
+    """Every ``METHOD /path`` whose document node points at the shared NotFound."""
+    operations: list[str] = []
+    for path, item in document["paths"].items():
+        for method, operation in item.items():
+            if not isinstance(operation, dict):
+                continue
+            responses = operation.get("responses")
+            if not isinstance(responses, dict):
+                continue
+            node = responses.get("404")
+            if isinstance(node, dict) and node.get("$ref") == "#/components/responses/NotFound":
+                operations.append(f"{method.upper()} {path}")
+    return operations
+
+
+def test_a_declared_response_headers_member_must_be_a_map(backend: dict) -> None:
+    """Round 14 finding 2: a declared ``headers`` member is shape-checked always.
+
+    The shared backend 404 declares no mandatory header, so the required-ness
+    and documented loops never read its header map, and the all-response scan —
+    which alone reads every response — silently accepted a member that is not a
+    map at all: a `headers: []` on `components.responses.NotFound` produced
+    zero findings from the checker and the full gate alike. OpenAPI's Response
+    Object defines ``headers`` as a Map, so the scan refuses any other declared
+    shape at the response, naming the actual type, on every operation carrying
+    the status. Two round-13 pins survive the refusal untouched: a `$ref`
+    Mapping member declares no names and stays silent when it resolves, and a
+    dangling ref hiding inside a list keeps its own component drift.
+    """
+    assert not check_openapi("backend", backend)
+    for malformed, spelling in (([], "list"), (5, "int")):
+        weakened = copy.deepcopy(backend)
+        weakened["components"]["responses"]["NotFound"]["headers"] = malformed
+        report = check_openapi("backend", weakened)
+        violations = [
+            violation
+            for violation in report
+            if E.SPEC_STRUCTURE_MISSING == violation.code
+            and violation.location.endswith(" responses/404 headers")
+        ]
+        assert violations, [violation.render() for violation in report]
+        assert all(spelling in violation.detail for violation in violations), violations
+        located = {violation.location for violation in violations}
+        expected = {
+            f"backend-v1 {operation} responses/404 headers"
+            for operation in _shared_404_operations(backend)
+        }
+        assert expected <= located, sorted(expected - located)
+        assert "backend-v1 GET /clips/{clip_id} responses/404 headers" in located
+        # The refused member is the only 404-headers finding the run reports:
+        # the shape refusal names the member, and nothing else starts reading
+        # a map the document never declared as one.
+        assert located == expected, sorted(located ^ expected)
+
+    # Pin (round 13): a `$ref` headers member is a Mapping that declares no
+    # names — resolvable, it stays totally silent, exactly as before the
+    # shape check existed.
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["responses"]["NotFound"]["headers"] = {
+        "$ref": "#/components/headers/ContentLength"
+    }
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+    # Pin (round 13): the non-map member stays refused *and* a dangling ref
+    # inside it keeps its own drift at the response, never swallowed by the
+    # shape finding beside it.
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["responses"]["NotFound"]["headers"] = [
+        {"$ref": "#/components/headers/AbsentOne"}
+    ]
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_COMPONENT_DRIFT == violation.code
+        and violation.location.endswith("GET /clips/{clip_id} responses/404")
+        and "AbsentOne" in violation.detail
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+
+
+def test_load_yaml_refuses_an_explicit_duplicate_mapping_key(tmp_path: Path) -> None:
+    """Round 14 finding 3: the duplicate key dies in the loader, not after it.
+
+    ``yaml.safe_load`` keeps only the last of two literal ``Upload-Offset:``
+    keys, so a second same-spelling entry vanished before the round-12
+    duplicate-spelling gate ever ran and the full validator certified the
+    document. The loader now walks the parse tree and refuses the collision
+    while both keys still exist on it, which ``validate_contracts`` reports as
+    a ``SPEC_PARSE_FAILED`` naming the file — never a crash, and never silence.
+    """
+    import yaml
+
+    prefix = (
+        "openapi: 3.1.0\n"
+        "info:\n"
+        "  title: duplicate-key probe\n"
+        "  version: '1'\n"
+        "paths:\n"
+        "  /uploads/{id}/files/{name}:\n"
+        "    head:\n"
+        "      operationId: headUploadFile\n"
+        "      responses:\n"
+        "        '200':\n"
+        "          description: Authoritative offsets.\n"
+        "          headers:\n"
+    )
+    path = tmp_path / "duplicate-offset.yaml"
+
+    path.write_text(
+        prefix
+        + "            Upload-Offset:\n"
+        + "              $ref: '#/components/headers/UploadOffset'\n"
+        + "            Upload-Offset:\n"
+        + "              $ref: '#/components/headers/UploadOffsetTwin'\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(yaml.YAMLError) as raised:
+        load_yaml(path)
+    assert "Upload-Offset" in str(raised.value), str(raised.value)
+
+    # The refusal is about duplicate *keys*, not the round-12 gate's
+    # case-folded names: the distinct-spelling twin is a legal document that
+    # the header-spelling scan, not the parser, refuses.
+    path.write_text(
+        prefix
+        + "            Upload-Offset:\n"
+        + "              $ref: '#/components/headers/UploadOffset'\n"
+        + "            upload-offset:\n"
+        + "              $ref: '#/components/headers/UploadOffsetTwin'\n",
+        encoding="utf-8",
+    )
+    loaded = load_yaml(path)
+    declared = loaded["paths"]["/uploads/{id}/files/{name}"]["head"]["responses"]["200"]["headers"]
+    assert set(declared) == {"Upload-Offset", "upload-offset"}
+
+    # A key that could never become a mapping member dies the same
+    # ``YAMLError`` way as every other load failure — a ``ConstructorError``
+    # naming the node, never a bare ``TypeError`` from dict assignment.
+    path.write_text(prefix + "            ? [a, b]\n            : value\n", encoding="utf-8")
+    with pytest.raises(yaml.YAMLError) as raised:
+        load_yaml(path)
+    assert "unhashable key" in str(raised.value), str(raised.value)
+
+    # The committed documents contain no duplicate keys: the stricter loader
+    # still reads both of them whole.
+    for file_name in ("device-v1.yaml", "backend-v1.yaml"):
+        document = load_yaml(CONTRACTS / file_name)
+        assert isinstance(document, dict) and document, file_name
+
+
 def test_the_error_envelope_is_one_reusable_schema(device: dict, backend: dict) -> None:
     assert not check_shared_error_envelope({"device": device, "backend": backend})
     weakened = copy.deepcopy(backend)

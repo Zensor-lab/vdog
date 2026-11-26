@@ -257,6 +257,45 @@ def _drop_error_schema(fixtures: Path) -> None:
     _edit_device_yaml(fixtures, lambda document: document["components"]["schemas"].pop("Error"))
 
 
+def _backend_yaml_text(mutate: Callable[[str], str]) -> Mutator:
+    """Rewrite the backend document's raw *text*, as an editor would.
+
+    ``safe_dump`` cannot express two literal keys under one spelling, so the
+    duplicate-key loader refusal is scenario-tested on the text the loader reads.
+    """
+
+    def run(fixtures: Path) -> None:
+        path = fixtures.parent / "backend-v1.yaml"
+        path.write_text(mutate(path.read_text(encoding="utf-8")), encoding="utf-8")
+
+    return run
+
+
+def _duplicate_upload_offset_key(text: str) -> str:
+    """A second literal ``Upload-Offset:`` ahead of the upload HEAD's original one.
+
+    Same spelling and same ``$ref``, so every check that reads a *loaded* mapping
+    sees one entry; only the parse tree still holds the collision, which is what
+    the duplicate-key-refusing loader has to refuse.
+    """
+    needle = (
+        "          headers:\n"
+        "            Upload-Offset:\n"
+        "              $ref: '#/components/headers/UploadOffset'\n"
+        "            Upload-Length:\n"
+    )
+    duplicate = (
+        "          headers:\n"
+        "            Upload-Offset:\n"
+        "              $ref: '#/components/headers/UploadOffset'\n"
+        "            Upload-Offset:\n"
+        "              $ref: '#/components/headers/UploadOffset'\n"
+        "            Upload-Length:\n"
+    )
+    assert text.count(needle) == 1, "the headUploadFile 200 headers block moved"
+    return text.replace(needle, duplicate)
+
+
 CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
     # The corpus itself: a vector, its file or its index record is wrong.
     (
@@ -453,6 +492,32 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
                 "Content-Length", {"description": "x", "schema": {"type": "integer"}}
             )
         ),
+    ),
+    # Round 14: the three checker/loader notes the review reproduced — the media-type
+    # loop crashing the CLI on a dangling download 206 (exit 2 where the scan's
+    # component drift is the honest finding), a `headers: []` on the shared 404
+    # passing with zero findings, and a second literal `Upload-Offset:` key vanishing
+    # inside the loader before any duplicate gate could see it.
+    (
+        "documents",
+        "SPEC_COMPONENT_DRIFT",
+        _backend_yaml(
+            lambda d: d["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"].__setitem__(
+                "206", {"$ref": "#/components/responses/NoSuchPartial"}
+            )
+        ),
+    ),
+    (
+        "documents",
+        "SPEC_STRUCTURE_MISSING",
+        _backend_yaml(
+            lambda d: d["components"]["responses"]["NotFound"].__setitem__("headers", [])
+        ),
+    ),
+    (
+        "documents",
+        "SPEC_PARSE_FAILED",
+        _backend_yaml_text(_duplicate_upload_offset_key),
     ),
     ("documents", "SCHEMA_DOCUMENT_INVALID", _drop_frame_schema),
     (

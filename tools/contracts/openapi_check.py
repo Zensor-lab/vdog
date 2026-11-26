@@ -463,6 +463,21 @@ def _check_operation(
             # the helpers do not deep-resolve an inline response node — so it is
             # named at the response, never left unread and unnamed.
             if declared_headers is not None:
+                if not isinstance(declared_headers, Mapping):
+                    # OpenAPI's Response Object defines `headers` as a Map, so a
+                    # declared member of any other shape is a document defect
+                    # whatever the status carries — including one with no
+                    # mandatory headers, where no presence loop below would ever
+                    # notice. Name it the way the non-list `parameters` member is
+                    # named, and still follow the references below: a dangling
+                    # `$ref` hiding inside the list keeps its own drift finding.
+                    found.append(
+                        Violation(
+                            E.SPEC_STRUCTURE_MISSING,
+                            f"{where} responses/{status_key} headers",
+                            f"is {type(declared_headers).__name__}, not a map of declared header names",
+                        )
+                    )
                 try:
                     resolve_refs(declared_headers, root=document)
                 except KeyError as error:
@@ -607,8 +622,16 @@ def _check_operation(
         if published and body.get("required") is not True:
             found.append(Violation(E.SPEC_STRUCTURE_MISSING, f"{where} requestBody", "not required"))
     for status, types in operation.response_content_types.items():
-        response = _resolve(responses.get(str(status), {}), document)
-        published = set(response.get("content", {})) if isinstance(response, Mapping) else set()
+        # Guarded, like every other response read: a response whose pointer
+        # cannot be followed is named at `{where} responses/{status}` by the
+        # all-response scan above, which owns that diagnostic. This loop simply
+        # cannot compare the media types of a node it cannot read, and skipping
+        # is never the KeyError reaching the CLI as exit 2 "validator internal
+        # error" that an unguarded `_resolve` here made a dangling download 206.
+        response, unreadable = _resolved_response(responses, status, document)
+        if unreadable is not None:
+            continue
+        published = set(response.get("content", {}))
         if published != set(types):
             found.append(
                 Violation(
