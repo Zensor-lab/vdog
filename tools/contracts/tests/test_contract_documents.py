@@ -1039,12 +1039,9 @@ def test_malformed_response_member_shapes_are_read_or_named(backend: dict) -> No
         "description": "gone",
         "headers": {"$ref": "#/components/headers/ContentLength"},
     }
-    found = [
-        violation
-        for violation in check_openapi("backend", weakened)
-        if "headers/$ref" in violation.location
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
     ]
-    assert not found, [violation.render() for violation in check_openapi("backend", weakened)]
 
 
 def test_the_error_envelope_is_one_reusable_schema(device: dict, backend: dict) -> None:
