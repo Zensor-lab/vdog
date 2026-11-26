@@ -147,16 +147,31 @@ def _construct_mapping_without_duplicate_keys(
     to happen here, while both keys are still on the parse tree.
     """
     mapping: dict[Any, Any] = {}
+    # Only the node's *own* explicit keys are duplicate candidates: a key the
+    # node also declares while a ``<<`` source contributes it is YAML's
+    # documented override, not a collision, and PyYAML lets the explicit
+    # member win whatever the textual order.
+    explicit: set[Any] = set()
     for key_node, value_node in node.value:
         if key_node.tag == "tag:yaml.org,2002:merge":
             # A ``<<`` key contributes the aliased map, not a literal key of its
-            # own: merge it in as the safe constructor does, but never submit the
-            # merge itself to the duplicate check below.
+            # own: merge it in as the safe constructor does (first source wins
+            # among merges, explicit assignment beats all of them), but never
+            # submit the merge itself to the duplicate check below.
             merged = loader.construct_object(value_node, deep=True)
             for source in merged if isinstance(merged, list) else [merged]:
-                if isinstance(source, Mapping):
-                    for merged_key, merged_value in source.items():
-                        mapping.setdefault(merged_key, merged_value)
+                if not isinstance(source, Mapping):
+                    # The same refusal ``BaseConstructor.flatten_mapping``
+                    # raises: a merge that names a scalar is a document defect,
+                    # not a member to drop on the floor.
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        f"expected a mapping for merging, but found {type(source).__name__}",
+                        key_node.start_mark,
+                    )
+                for merged_key, merged_value in source.items():
+                    mapping.setdefault(merged_key, merged_value)
             continue
         key = loader.construct_object(key_node, deep=True)
         if not isinstance(key, Hashable):
@@ -169,13 +184,14 @@ def _construct_mapping_without_duplicate_keys(
                 "found unhashable key",
                 key_node.start_mark,
             )
-        if key in mapping:
+        if key in explicit:
             raise yaml.constructor.ConstructorError(
                 None,
                 None,
                 f"found duplicate key {key!r}",
                 key_node.start_mark,
             )
+        explicit.add(key)
         mapping[key] = loader.construct_object(value_node, deep=deep)
     return mapping
 

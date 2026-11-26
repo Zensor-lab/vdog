@@ -14,7 +14,7 @@ documents are corrected — and the validator is expected to fail loudly in betw
 
 ## Running the checks
 
-The suite is 261 test functions; `tools/contracts/tests/test_corpus.py` fails if this
+The suite is 263 test functions; `tools/contracts/tests/test_corpus.py` fails if this
 number and the corpus counts quoted below ever drift apart from the tree.
 
 From the repository root, on the qualified interpreter (`uv` fetches CPython 3.12

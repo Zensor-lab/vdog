@@ -622,14 +622,19 @@ def _check_operation(
         if published and body.get("required") is not True:
             found.append(Violation(E.SPEC_STRUCTURE_MISSING, f"{where} requestBody", "not required"))
     for status, types in operation.response_content_types.items():
-        # Guarded, like every other response read: a response whose pointer
-        # cannot be followed is named at `{where} responses/{status}` by the
-        # all-response scan above, which owns that diagnostic. This loop simply
-        # cannot compare the media types of a node it cannot read, and skipping
-        # is never the KeyError reaching the CLI as exit 2 "validator internal
-        # error" that an unguarded `_resolve` here made a dangling download 206.
-        response, unreadable = _resolved_response(responses, status, document)
-        if unreadable is not None:
+        # Read through the response's own pointer hop only: the comparison
+        # consults the ``content`` *keys*, and a media type name carries no
+        # reference, so a nested pointer the document cannot resolve — a header
+        # component that vanished — must not swallow this diagnostic beside the
+        # drift it coexists with. A node whose own pointer cannot be followed is
+        # named at `{where} responses/{status}` by the all-response scan above,
+        # which owns that diagnostic; this loop skips it rather than let the
+        # failed pointer raise past the CLI as exit 2 "validator internal
+        # error" the way the unguarded `_resolve` here once did. A status the
+        # table names but the document lacks still compares, as ever: the
+        # missing status reads as an empty mapping and earns its mismatch.
+        response = _shallow_response(responses.get(str(status), {}), document)
+        if response is None:
             continue
         published = set(response.get("content", {}))
         if published != set(types):

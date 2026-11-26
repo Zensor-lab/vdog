@@ -1162,6 +1162,80 @@ def test_a_declared_response_headers_member_must_be_a_map(backend: dict) -> None
     assert found, [violation.render() for violation in check_openapi("backend", weakened)]
 
 
+def test_a_broken_header_ref_does_not_swallow_the_media_type_mismatch(backend: dict) -> None:
+    """Round 14 rework: one broken pointer never silences a coexisting finding.
+
+    The media-type comparison reads only the ``content`` *keys*, and a media
+    type name carries no reference — yet the round-14 guarded read reached for
+    the full resolution, so a response whose own pointer resolves fine while a
+    *header* component inside it vanished lost its ``publishes …, the operation
+    table carries …`` diagnostic beside the component drift it coexists with.
+    The loop therefore reads through the response's own pointer hop only. Both
+    shapes — an inline table-listed status and one pointing at a shared
+    component — have to earn the drift naming the dangling header *and* the
+    content mismatch, at every status the operation table carries types for.
+    """
+    assert not check_openapi("backend", backend)
+    where = "backend-v1 GET /clips/{clip_id}/files/{name} responses/206"
+    binary = {"schema": {"type": "string", "format": "binary"}}
+
+    # (a) Inline table-listed status: dangling header ref inside the map, and
+    # the published media type flipped away from the operation table's.
+    weakened = copy.deepcopy(backend)
+    download = weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"]
+    download["headers"] = [{"$ref": "#/components/headers/AbsentOne"}]
+    download["content"] = {"text/plain": binary}
+    report = check_openapi("backend", weakened)
+    drift = [
+        violation
+        for violation in report
+        if E.SPEC_COMPONENT_DRIFT == violation.code
+        and violation.location == where
+        and "AbsentOne" in violation.detail
+    ]
+    mismatch = [
+        violation
+        for violation in report
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location == f"{where} content"
+        and "text/plain" in violation.detail
+        and "application/octet-stream" in violation.detail
+    ]
+    assert drift, [violation.render() for violation in report]
+    assert mismatch, [violation.render() for violation in report]
+
+    # (b) The same status pointing at a shared component: the component's own
+    # pointer resolves, only a header inside it dangles — the full read fails
+    # and the media comparison must run anyway off the one-hop node.
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["responses"]["Partial206"] = {
+        "description": "Requested single byte range.",
+        "headers": [{"$ref": "#/components/headers/AbsentOne"}],
+        "content": {"text/plain": binary},
+    }
+    weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"] = {
+        "$ref": "#/components/responses/Partial206"
+    }
+    report = check_openapi("backend", weakened)
+    drift = [
+        violation
+        for violation in report
+        if E.SPEC_COMPONENT_DRIFT == violation.code
+        and violation.location == where
+        and "AbsentOne" in violation.detail
+    ]
+    mismatch = [
+        violation
+        for violation in report
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location == f"{where} content"
+        and "text/plain" in violation.detail
+        and "application/octet-stream" in violation.detail
+    ]
+    assert drift, [violation.render() for violation in report]
+    assert mismatch, [violation.render() for violation in report]
+
+
 def test_load_yaml_refuses_an_explicit_duplicate_mapping_key(tmp_path: Path) -> None:
     """Round 14 finding 3: the duplicate key dies in the loader, not after it.
 
@@ -1230,6 +1304,49 @@ def test_load_yaml_refuses_an_explicit_duplicate_mapping_key(tmp_path: Path) -> 
     for file_name in ("device-v1.yaml", "backend-v1.yaml"):
         document = load_yaml(CONTRACTS / file_name)
         assert isinstance(document, dict) and document, file_name
+
+
+def test_load_yaml_keeps_the_safe_loader_merge_semantics(tmp_path: Path) -> None:
+    """Round 14 rework: the duplicate guard sees explicit keys only.
+
+    A base map merged through ``<<`` that also sits as an explicit key on the
+    node is YAML's documented override, not a collision, and PyYAML lets the
+    explicit member win in *either* textual order — a guard that consults the
+    merged mapping would reject the legal document as a whole-file
+    ``SPEC_PARSE_FAILED``. Only two explicit spellings of one key are a
+    duplicate, and a ``<<`` that names something other than a mapping is the
+    refusal the stock constructor raises, never a silently dropped member.
+    """
+    import yaml
+
+    path = tmp_path / "merge.yaml"
+    base = "base: &base\n  x: merged\n  y: merged\n"
+
+    # The explicit key beats the merged one, before or after the merge key.
+    for document_text in (
+        base + "target:\n  <<: *base\n  y: explicit\n",
+        base + "target:\n  y: explicit\n  <<: *base\n",
+    ):
+        path.write_text(document_text, encoding="utf-8")
+        loaded = load_yaml(path)
+        assert loaded["target"] == {"x": "merged", "y": "explicit"}, document_text
+
+    # Two explicit spellings of one key still die, merge present or not.
+    path.write_text(
+        base + "target:\n  <<: *base\n  y: one\n  y: two\n", encoding="utf-8"
+    )
+    with pytest.raises(yaml.YAMLError) as raised:
+        load_yaml(path)
+    assert "found duplicate key 'y'" in str(raised.value), str(raised.value)
+
+    # A merge source that is not a mapping is refused the way
+    # ``BaseConstructor.flatten_mapping`` refuses it.
+    path.write_text(
+        "scalar: &scalar not-a-mapping\ntarget:\n  <<: *scalar\n", encoding="utf-8"
+    )
+    with pytest.raises(yaml.YAMLError) as raised:
+        load_yaml(path)
+    assert "expected a mapping for merging" in str(raised.value), str(raised.value)
 
 
 def test_the_error_envelope_is_one_reusable_schema(device: dict, backend: dict) -> None:
