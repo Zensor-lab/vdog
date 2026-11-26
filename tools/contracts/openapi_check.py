@@ -379,12 +379,27 @@ def _check_operation(
             )
 
     for status, schema_name in operation.response_schemas.items():
-        response, unreadable = _resolved_response(responses, status, document)
+        _, unreadable = _resolved_response(responses, status, document)
         if unreadable is not None:
             found.append(
                 Violation(E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status}", unreadable)
             )
             continue
+        # Both reads below go through the shallow alias-chained node, the way
+        # the envelope loop already reads: the full read above is the
+        # readability gate, but on a `$ref`'d shared component it inlines the
+        # component wholesale and the schema `$ref` the binding question asks
+        # about is gone from the result — an operation pointing at a reusable
+        # ``components.responses`` member was charged a false ``binds None``.
+        # The chain owes no error branch: whenever the full read certified the
+        # node readable, every ``None`` path of the chain — non-string or
+        # non-local pointer, un-followable hop, non-Mapping target, repeated
+        # ref or cycle — is a shape the guarded full read refuses too, so the
+        # all-response scan has already named the drift this hop hides;
+        # skipping cannot silently certify a binding the scan did not see.
+        response = _alias_chained_reference(responses.get(str(status), {}), document)
+        if response is None:
+            continue  # likewise: the scan names the hop this chain could not follow
         content, content_issue = _media_type_map(response)
         if content_issue is not None:
             # A declared ``content`` member that is not a media-type map answers
@@ -432,7 +447,7 @@ def _check_operation(
         if unreadable is not None:
             # The all-response scan below owns that SPEC_COMPONENT_DRIFT.
             continue
-        response = _alias_chained_response(responses.get(str(status), {}), document)
+        response = _alias_chained_reference(responses.get(str(status), {}), document)
         if response is None:
             continue  # likewise: the scan names the hop this chain could not follow
         content, content_issue = _media_type_map(response)
@@ -487,7 +502,7 @@ def _check_operation(
     # second member would otherwise never be read at all.
     for status_key, node in responses.items():
         resolved_response, unreadable = _resolved_response_node(node, document)
-        shallow = _shallow_response(node, document)
+        shallow = _shallow_reference(node, document)
         if shallow is None and unreadable is None:
             shallow = resolved_response
         if shallow is None:
@@ -737,7 +752,7 @@ def _check_operation(
         # report a mismatch against types the document does publish. A status
         # the table names but the document lacks still compares, as ever: the
         # missing status reads as an empty mapping and earns its mismatch.
-        response = _alias_chained_response(responses.get(str(status), {}), document)
+        response = _alias_chained_reference(responses.get(str(status), {}), document)
         if response is None:
             continue
         content, content_issue = _media_type_map(response)
@@ -827,7 +842,21 @@ def _check_operation(
                 Violation(E.SPEC_STRUCTURE_MISSING, f"{where} requestBody content", body_issue)
             )
         else:
-            ref = _json_schema_ref(body, document)
+            # The binding read goes through the shallow alias-chained node: a
+            # requestBody declared once in ``components.requestBodies`` and
+            # referenced from here arrives from the full read with its schema
+            # `$ref` inlined away, and the operation would be charged a false
+            # `binds None` for a reference the document does carry. A response
+            # chain that cannot be followed is the all-response scan's drift
+            # and its loops skip; a requestBody has no such readability gate
+            # to `continue` to, so an un-followable chain falls back to the
+            # full-read `body`, which keeps today's honest `binds None
+            # instead of …` verdict for a dangling component. The `required`
+            # read and the publish comparison above stay on `body`: keys and
+            # `required` survive full inlining whatever node the member reads
+            # through.
+            chained = _alias_chained_reference(item.get("requestBody", {}), document)
+            ref = _json_schema_ref(body if chained is None else chained, document)
             if ref != f"#/components/schemas/{operation.request_schema}":
                 found.append(
                     Violation(
@@ -1011,16 +1040,20 @@ def _resolved_response(
     return _resolved_response_node(responses.get(str(status), {}), document)
 
 
-def _shallow_response(node: Any, document: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """The response object one pointer hop away, with nested `$ref`s left alone.
+def _shallow_reference(node: Any, document: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The object one pointer hop away from a declared node, nested `$ref`s intact.
 
     :func:`_resolved_response_node` reads a response the way the table loops do:
     ``resolve_refs`` inlines every nested reference, so when a *header's* component
     is what vanished, that read fails at the response and the member carrying the
-    bad pointer is never named. Following the response's own pointer one hop
-    without recursing keeps each declared header a node the header read can
-    resolve on its own. A node that is not a readable object at this depth answers
-    ``None`` and the caller reports it at the response.
+    bad pointer is never named. Following the node's own pointer one hop without
+    recursing keeps each declared member a node the reader can resolve on its own.
+    This serves any node carrying ``$ref`` — a response, the way the header read
+    uses it, or a requestBody, the way the binding read does — because the
+    guarded hop is the same. A node that is not a readable object at this depth
+    answers ``None``: the response-side chain callers skip (the all-response
+    scan owns that drift) and the requestBody binding read falls back to its
+    full read.
     """
     if not isinstance(node, Mapping):
         return None
@@ -1034,16 +1067,24 @@ def _shallow_response(node: Any, document: Mapping[str, Any]) -> Mapping[str, An
     target: Any = document
     try:
         for segment in reference[2:].split("/"):
-            target = target[segment.replace("~1", "/").replace("~0", "~")]
+            key = segment.replace("~1", "/").replace("~0", "~")
+            # Mirror :func:`tools.contracts.schema_docs._pointer` exactly, list
+            # indices included: ``resolve_refs`` — the full read the gate ran —
+            # walks a list segment by integer, so a pointer through a list has
+            # to hop here too, or a node the gate certified readable ends up a
+            # failed chain and a skipped read instead of the named shape it is.
+            # A bad index raises ``ValueError``/``IndexError``, both in the
+            # guarded set, where the full read refuses it identically.
+            target = target[int(key)] if isinstance(target, list) else target[key]
     except _RESOLUTION_FAILURES:
         return None
     return target if isinstance(target, Mapping) else None
 
 
-def _alias_chained_response(node: Any, document: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """The one-hop response node with `$ref` alias components walked through.
+def _alias_chained_reference(node: Any, document: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The one-hop node with `$ref` alias components walked through.
 
-    :func:`_shallow_response` stops at a component that is itself a ``$ref`` —
+    :func:`_shallow_reference` stops at a component that is itself a ``$ref`` —
     an alias carrying no ``content`` of its own — so a media-type or binding
     read taken there sees an empty document and reports a mismatch the document
     never made. Keep taking guarded hops while the hop carries a ``$ref``,
@@ -1053,16 +1094,17 @@ def _alias_chained_response(node: Any, document: Mapping[str, Any]) -> Mapping[s
     (the full read the readability gate ran) replaces a ``$ref`` node wholesale
     whatever siblings it carries, so stopping at a `$ref`-with-siblings alias
     would diverge from the very read that certified the node readable. The
-    all-response scan owns the drift a failed chain hides; callers skip.
+    all-response scan owns the drift a failed chain hides; response callers
+    skip, and the requestBody binding read falls back to its full read.
     """
-    response = _shallow_response(node, document)
+    response = _shallow_reference(node, document)
     followed: set[str] = set()
     while response is not None and "$ref" in response:
         reference = response["$ref"]
         if not isinstance(reference, str) or reference in followed:
             return None
         followed.add(reference)
-        response = _shallow_response(response, document)
+        response = _shallow_reference(response, document)
     return response
 
 
@@ -1077,11 +1119,25 @@ def _media_type_map(container: Mapping[str, Any]) -> tuple[Mapping[str, Any], st
     "validator internal error" for a document that is simply malformed. The
     caller names the defect once for the node it owns, in the wording the
     other member-shape refusals use.
+
+    The member's own shape is only half the question: every read above this
+    one consults the media-type *keys*, so an entry whose value is not an
+    object — ``null``, a number, a string, a list — was invisible, and a
+    malformed binary entry was certified. The first such entry in document
+    order is refused the same way. An empty entry ``{}`` stays a legal Media
+    Type Object: OpenAPI 3.1 makes every member optional, and that is the
+    legal spelling for content that declares nothing beyond its media type.
     """
     content = container.get("content", {})
-    if isinstance(content, Mapping):
-        return content, None
-    return {}, f"is {type(content).__name__}, not a media-type map"
+    if not isinstance(content, Mapping):
+        return {}, f"is {type(content).__name__}, not a media-type map"
+    for name, entry in content.items():
+        if not isinstance(entry, Mapping):
+            return (
+                {},
+                f"media type {name!r} is {type(entry).__name__}, not a media-type object",
+            )
+    return content, None
 
 
 def _resolved_response_node(

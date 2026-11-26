@@ -1648,6 +1648,403 @@ def test_a_scalar_content_member_is_named_once_and_never_crashes(backend: dict) 
     assert required, [violation.render() for violation in report]
 
 
+def test_a_null_media_type_entry_in_a_response_is_named_once(device: dict, backend: dict) -> None:
+    """Round 16 item 1: a media-type entry that is not an object earns a finding.
+
+    Every read behind ``_media_type_map`` consults the media-type *keys*, so a
+    binary entry replaced with ``null`` — the review's device download 206 —
+    was invisible, and the document certified a member that is no kind of
+    Media Type Object. The helper now refuses the first non-Mapping entry in
+    document order; for a table-listed status the binding loop and the
+    media-type loop name the identical triple and the dedup keeps exactly one
+    statement, with no ``the operation table carries`` mismatch piling on. The
+    backend download mirror shares the probe.
+    """
+    assert not check_openapi("device", device)
+    assert not check_openapi("backend", backend)
+    for contract, document in (("device", device), ("backend", backend)):
+        weakened = copy.deepcopy(document)
+        weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"]["content"][
+            "application/octet-stream"
+        ] = None
+        report = check_openapi(contract, weakened)
+        where = (
+            f"{contract}-v1 GET /clips/{{clip_id}}/files/{{name}} responses/206 content"
+        )
+        shape = [violation for violation in report if violation.location == where]
+        assert len(shape) == 1, [violation.render() for violation in report]
+        assert E.SPEC_STRUCTURE_MISSING == shape[0].code
+        assert shape[0].detail == (
+            "media type 'application/octet-stream' is NoneType, not a media-type object"
+        )
+        assert not [
+            violation
+            for violation in report
+            if "the operation table carries" in violation.detail
+        ], [violation.render() for violation in report]
+
+
+def test_a_scalar_media_type_entry_in_a_request_body_is_named_once(backend: dict) -> None:
+    """Round 16 item 1, request side: the entry refusal reaches both body kinds.
+
+    The review's backend PATCH chunk — ``application/octet-stream`` replaced
+    with ``5`` — was certified as silently as the response escape, because no
+    read ever touched the entry's value. The member is now named once per
+    body: the raw-chunk PATCH keeps its independent ``not required`` statement
+    when the body also declares itself optional (round-15 case (d) at entry
+    level), and the bound JSON body's shape refusal replaces the misleading
+    ``binds None instead of …`` (round-15 case (c) at entry level).
+    """
+    assert not check_openapi("backend", backend)
+
+    # (a) The raw-chunk PATCH: the member finding, plus the body's own
+    # `required` verdict — the requestBody owns that question whatever shape
+    # the member carries.
+    where = "backend-v1 PATCH /uploads/{id}/files/{name}"
+    weakened = copy.deepcopy(backend)
+    patch_body = weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["requestBody"]
+    patch_body["content"]["application/octet-stream"] = 5
+    patch_body["required"] = False
+    report = check_openapi("backend", weakened)
+    shape = [
+        violation
+        for violation in report
+        if violation.location == f"{where} requestBody content"
+    ]
+    assert len(shape) == 1, [violation.render() for violation in report]
+    assert E.SPEC_STRUCTURE_MISSING == shape[0].code
+    assert shape[0].detail == (
+        "media type 'application/octet-stream' is int, not a media-type object"
+    )
+    required = [
+        violation
+        for violation in report
+        if violation.location == f"{where} requestBody" and violation.detail == "not required"
+    ]
+    assert required, [violation.render() for violation in report]
+
+    # (b) The bound JSON body: the member is named once, and no `binds None`
+    # — nor any other binding statement — piles on beside a refusal that
+    # never let a read reach the schema. `required` stays true, so it stays
+    # silent.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/uploads"]["post"]["requestBody"]["content"]["application/json"] = 5
+    report = check_openapi("backend", weakened)
+    shape = [
+        violation
+        for violation in report
+        if violation.location == "backend-v1 POST /uploads requestBody content"
+    ]
+    assert len(shape) == 1, [violation.render() for violation in report]
+    assert shape[0].detail == "media type 'application/json' is int, not a media-type object"
+    assert not [
+        violation for violation in report if "instead of CreateUploadRequest" in violation.detail
+    ], [violation.render() for violation in report]
+    assert not [
+        violation
+        for violation in report
+        if violation.location == "backend-v1 POST /uploads requestBody"
+    ], [violation.render() for violation in report]
+
+
+def test_an_empty_media_type_object_certifies_on_both_sides(device: dict, backend: dict) -> None:
+    """Round 16 item 1: `{}` stays the legal spelling for bare content.
+
+    OpenAPI 3.1 makes every Media Type Object member optional, so an entry
+    that declares nothing beyond its own media type — the natural spelling for
+    a binary body — must pass the new entry gate on both sides: the device
+    download's 206 answer and the backend upload chunk's request member alike
+    certify with zero findings.
+    """
+    weakened = copy.deepcopy(device)
+    weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"]["content"][
+        "application/octet-stream"
+    ] = {}
+    assert not check_openapi("device", weakened), [
+        violation.render() for violation in check_openapi("device", weakened)
+    ]
+
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["requestBody"]["content"][
+        "application/octet-stream"
+    ] = {}
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+
+def test_a_reusable_json_response_component_binds_like_its_inline_equivalent(
+    backend: dict,
+) -> None:
+    """Round 16 item 2: a `$ref`'d success response binds as its inline twin does.
+
+    The full read the table loops ran inlines a shared component wholesale, so
+    the schema `$ref` the binding question asks about was gone and an
+    operation pointing at ``components.responses`` was charged a false
+    ``binds None instead of StoredClip`` (the review's F2a). The media-type
+    and binding reads now go through the shallow alias-chained node — the same
+    read the envelope loop already used — so the clip-detail 200 moved verbatim
+    into a shared component certifies clean, across a pure-`$ref` alias hop and
+    a `$ref`-with-siblings hop as well.
+    """
+    assert not check_openapi("backend", backend)
+
+    def reused(operation_node: dict) -> dict:
+        weakened = copy.deepcopy(backend)
+        clip200 = weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"]
+        weakened["components"]["responses"]["ClipDetailOK"] = copy.deepcopy(clip200)
+        weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"] = operation_node
+        return weakened
+
+    # Direct reference to the shared component.
+    weakened = reused({"$ref": "#/components/responses/ClipDetailOK"})
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+    # Pure-`$ref` alias hop: the alias carries no ``content`` of its own, so
+    # stopping there would read the binding off an empty document.
+    weakened = reused({"$ref": "#/components/responses/ClipDetailAlias"})
+    weakened["components"]["responses"]["ClipDetailAlias"] = {
+        "$ref": "#/components/responses/ClipDetailOK"
+    }
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+    # `$ref`-with-siblings hop: resolve_refs (the full read the gate ran)
+    # replaces the node wholesale whatever decorators ride along, so the
+    # chain may not stop here either.
+    weakened = reused({"$ref": "#/components/responses/ClipDetailSibling"})
+    weakened["components"]["responses"]["ClipDetailSibling"] = {
+        "$ref": "#/components/responses/ClipDetailOK",
+        "description": "decorated alias hop",
+    }
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+
+def test_a_reusable_request_body_component_binds_like_its_inline_equivalent(
+    backend: dict,
+) -> None:
+    """Round 16 item 2: a `$ref`'d requestBody binds as its inline twin does.
+
+    The upload-init body moved verbatim into ``components.requestBodies`` was
+    charged the review's false ``binds None instead of CreateUploadRequest``
+    (F2b) for the same inlining reason as the response side. The binding read
+    now goes through the shallow alias-chained node — an un-followable chain
+    falls back to the full read, which keeps the honest ``binds None`` — so
+    the shared component certifies clean, alias hop included.
+    """
+    assert not check_openapi("backend", backend)
+
+    def reused(operation_node: dict) -> dict:
+        weakened = copy.deepcopy(backend)
+        init_body = weakened["paths"]["/uploads"]["post"]["requestBody"]
+        weakened["components"].setdefault("requestBodies", {})["CreateUploadBody"] = (
+            copy.deepcopy(init_body)
+        )
+        weakened["paths"]["/uploads"]["post"]["requestBody"] = operation_node
+        return weakened
+
+    # Direct reference to the shared component.
+    weakened = reused({"$ref": "#/components/requestBodies/CreateUploadBody"})
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+    # Pure-`$ref` alias hop in front of the shared body.
+    weakened = reused({"$ref": "#/components/requestBodies/CreateUploadBodyAlias"})
+    weakened["components"]["requestBodies"]["CreateUploadBodyAlias"] = {
+        "$ref": "#/components/requestBodies/CreateUploadBody"
+    }
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+
+def test_a_list_indexed_pointer_hop_still_asks_the_binding_question(backend: dict) -> None:
+    """Round 16 review finding: the guarded hop mirrors ``_pointer``, lists included.
+
+    ``resolve_refs`` — the full read the readability gate runs — walks a list
+    segment by integer (:func:`tools.contracts.schema_docs._pointer`), so the
+    shallow hop the binding reads take must follow one too. A
+    ``#/paths/~1uploads/post/parameters/0``-style response reference lands on a
+    readable node the gate certifies; had the chain refused the list segment
+    where the full read did not, the loop's skip would have silently certified
+    a status the pre-fix read named ``binds None instead of StoredClip``. A
+    bad index is a finding, never an exception: both the out-of-range and the
+    non-integer spellings collapse to the drift wording the guarded full read
+    uses for an un-followable pointer.
+    """
+    assert not check_openapi("backend", backend)
+    where = "backend-v1 GET /clips/{clip_id} responses/200"
+
+    # A hop through a list lands on a readable node: the binding question is
+    # asked of it — `binds None`, the verdict the full read gave before this
+    # round, not silence.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"] = {
+        "$ref": "#/paths/~1uploads/post/parameters/0"
+    }
+    report = check_openapi("backend", weakened)
+    binds = [violation for violation in report if violation.location == where]
+    assert len(binds) == 1, [violation.render() for violation in report]
+    assert binds[0].detail == "binds None instead of StoredClip"
+
+    # Out-of-range and non-integer indices are un-followable by the full read
+    # too, so the binding loop's gate names the drift (the all-response scan
+    # emits the identical triple and the dedup keeps one) — findings, and
+    # never the exception reaching the CLI as exit 2.
+    for segment, reason in (
+        ("9", "IndexError('list index out of range')"),
+        ("x", 'ValueError("invalid literal for int() with base 10: \'x\'")'),
+    ):
+        weakened = copy.deepcopy(backend)
+        weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"] = {
+            "$ref": f"#/paths/~1uploads/post/parameters/{segment}"
+        }
+        report = check_openapi("backend", weakened)
+        drift = [
+            violation
+            for violation in report
+            if violation.location == where and violation.code == E.SPEC_COMPONENT_DRIFT
+        ]
+        assert len(drift) == 1, [violation.render() for violation in report]
+        assert drift[0].detail == f"$ref cannot be followed: {reason}"
+
+
+def test_a_reused_component_binding_the_wrong_schema_still_bites(backend: dict) -> None:
+    """Round 16 tests 5: the shallow reads keep the binding check non-vacuous.
+
+    Under the full read every reuse looked alike — ``binds None`` whether the
+    component bound the wrong schema, a dangling one, or none. The chained
+    reads must name the pointer the document actually carries: the shared
+    ``Error`` envelope where ``StoredClip``/``CreateUploadRequest`` is due,
+    the dangling schema through the readability gate that refuses the node
+    (one drift statement naming the missing member, no ``binds`` piled on),
+    and — unchanged from before this round — the collapsed full read for a
+    requestBody whose own `$ref` cannot be followed, which keeps its honest
+    ``not required`` + ``binds None`` pair.
+    """
+    assert not check_openapi("backend", backend)
+
+    # (a) A reused 200 binding the Error envelope: the statement names the
+    # wrong pointer, where the pre-fix read said only `binds None`.
+    weakened = copy.deepcopy(backend)
+    clip200 = weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"]
+    clip200["content"]["application/json"]["schema"]["$ref"] = "#/components/schemas/Error"
+    weakened["components"]["responses"]["ClipDetailOK"] = clip200
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"] = {
+        "$ref": "#/components/responses/ClipDetailOK"
+    }
+    report = check_openapi("backend", weakened)
+    binds = [
+        violation
+        for violation in report
+        if violation.location == "backend-v1 GET /clips/{clip_id} responses/200"
+        and "instead of StoredClip" in violation.detail
+    ]
+    assert len(binds) == 1, [violation.render() for violation in report]
+    assert binds[0].detail == "binds '#/components/schemas/Error' instead of StoredClip"
+    assert not [
+        violation for violation in report if violation.detail == "binds None instead of StoredClip"
+    ], [violation.render() for violation in report]
+
+    # (b) A reused request body binding the Error envelope: same bite.
+    weakened = copy.deepcopy(backend)
+    init_body = weakened["paths"]["/uploads"]["post"]["requestBody"]
+    init_body["content"]["application/json"]["schema"]["$ref"] = "#/components/schemas/Error"
+    weakened["components"].setdefault("requestBodies", {})["CreateUploadBody"] = init_body
+    weakened["paths"]["/uploads"]["post"]["requestBody"] = {
+        "$ref": "#/components/requestBodies/CreateUploadBody"
+    }
+    report = check_openapi("backend", weakened)
+    binds = [
+        violation
+        for violation in report
+        if violation.location == "backend-v1 POST /uploads requestBody"
+        and "instead of CreateUploadRequest" in violation.detail
+    ]
+    assert len(binds) == 1, [violation.render() for violation in report]
+    assert binds[0].detail == "binds '#/components/schemas/Error' instead of CreateUploadRequest"
+
+    # (c) A reused 200 whose schema `$ref` dangles: the guarded full read
+    # refuses the whole node, so the readability gate owns the statement —
+    # one drift finding naming the missing component member, and no `binds`
+    # claim about a schema nothing was ever read from.
+    weakened = copy.deepcopy(backend)
+    clip200 = weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"]
+    clip200["content"]["application/json"]["schema"]["$ref"] = (
+        "#/components/schemas/NonexistentSchema"
+    )
+    weakened["components"]["responses"]["ClipDetailOK"] = clip200
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"] = {
+        "$ref": "#/components/responses/ClipDetailOK"
+    }
+    report = check_openapi("backend", weakened)
+    drift = [
+        violation
+        for violation in report
+        if violation.location == "backend-v1 GET /clips/{clip_id} responses/200"
+    ]
+    assert len(drift) == 1, [violation.render() for violation in report]
+    assert E.SPEC_COMPONENT_DRIFT == drift[0].code
+    assert drift[0].detail == (
+        "$ref names 'NonexistentSchema', a component member the document does not define"
+    )
+
+    # (d) A dangling requestBody `$ref` has no readability gate to skip to:
+    # the collapsed full read keeps exactly the pair this check named before
+    # this round — `not required` and `binds None` — no more, no less.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/uploads"]["post"]["requestBody"] = {
+        "$ref": "#/components/requestBodies/MissingBody"
+    }
+    report = check_openapi("backend", weakened)
+    verdicts = {
+        violation.detail
+        for violation in report
+        if violation.location == "backend-v1 POST /uploads requestBody"
+    }
+    assert verdicts == {"not required", "binds None instead of CreateUploadRequest"}, [
+        violation.render() for violation in report
+    ]
+
+
+def test_the_validator_reports_a_null_media_type_entry_as_a_finding(tmp_path: Path) -> None:
+    """Round 16 AC-5: the review's F1a escape dies at the CLI as a finding.
+
+    On a scratch copy of the contracts tree, the device download 206 whose
+    octet-stream entry is ``null`` must earn the full validator an exit-1
+    class contract finding naming the member — not silence (the review's
+    escape) and not an exception reaching the CLI as exit 2.
+    """
+    import yaml
+
+    broken = tmp_path / "contracts"
+    shutil.copytree(CONTRACTS, broken)
+    path = broken / "device-v1.yaml"
+    document = load_yaml(path)
+    document["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"]["content"][
+        "application/octet-stream"
+    ] = None
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    report = validate_contracts(tmp_path)
+    shape = [
+        violation
+        for violation in report.contract_violations
+        if violation.location
+        == "device-v1 GET /clips/{clip_id}/files/{name} responses/206 content"
+    ]
+    assert len(shape) == 1, [violation.render() for violation in report.contract_violations]
+    assert shape[0].detail == (
+        "media type 'application/octet-stream' is NoneType, not a media-type object"
+    )
+
+
 def test_load_yaml_refuses_an_explicit_duplicate_mapping_key(tmp_path: Path) -> None:
     """Round 14 finding 3: the duplicate key dies in the loader, not after it.
 
