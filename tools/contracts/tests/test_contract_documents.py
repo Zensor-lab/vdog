@@ -776,6 +776,198 @@ def test_an_optional_twin_of_a_required_parameter_is_detected(backend: dict) -> 
     assert all("optional" in violation.detail for violation in found), found
 
 
+# --- Round 13: the unreadable response and header nodes, the 204 length, the folding header ---
+
+
+def test_a_dangling_error_response_ref_is_reported_where_it_sits(backend: dict) -> None:
+    """An error status the operation table never speaks for still has to be read.
+
+    The three table loops resolve only the statuses they name, so
+    `GET /clips/{clip_id}`'s 404 — no named schema, no promised header — was read
+    by nothing: repointing its `$ref` at a component the document never defined
+    produced zero findings from the checker and the full gate alike. The
+    all-response scan reads every response the operation carries and names the
+    unreadable one at the status where it sits; deleting the shared component
+    every 404 points at names each of those operations in turn.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["404"] = {
+        "$ref": "#/components/responses/NoSuchResponse"
+    }
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_COMPONENT_DRIFT == violation.code
+        and violation.location.endswith("GET /clips/{clip_id} responses/404")
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    assert any("NoSuchResponse" in violation.detail for violation in found), found
+    # One dangling component is one finding per operation+status: no exact repeat.
+    all_found = check_openapi("backend", weakened)
+    identities = [(violation.code, violation.location, violation.detail) for violation in all_found]
+    assert len(identities) == len(set(identities)), [violation.render() for violation in all_found]
+
+    # The same refusal when the shared component itself vanishes: every backend
+    # route whose 404 pointed at `NotFound` is named at its own status.
+    referring = sorted(
+        f"{operation.method} {operation.path}"
+        for operation in ALL_OPERATIONS.values()
+        if operation.key.startswith("backend.")
+        and (
+            backend["paths"].get(operation.path, {})
+            .get(operation.method.lower(), {})
+            .get("responses", {})
+            .get("404")
+            == {"$ref": "#/components/responses/NotFound"}
+        )
+    )
+    assert referring, "the document must still answer 404 from the shared component"
+    weakened = copy.deepcopy(backend)
+    del weakened["components"]["responses"]["NotFound"]
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_COMPONENT_DRIFT == violation.code
+        and violation.location.endswith("responses/404")
+        and "NotFound" in violation.detail
+    ]
+    for subject in referring:
+        assert any(subject in violation.location for violation in found), (subject, found)
+
+
+def test_an_unreadable_optional_response_header_ref_is_a_drift_finding(
+    device: dict, backend: dict
+) -> None:
+    """A header the table never lists is still a declared node that must resolve.
+
+    The required-ness loop resolves only the headers the operation table lists and
+    the documented loop compares *names* alone, so the shared 416's optional
+    `Content-Range` — one component shared by the device file download and both
+    backend download routes, listed nowhere in the table — was never read:
+    dangling its `$ref` earned the documents nothing. The all-response scan reads
+    every declared header node and names the unreadable one at the member itself.
+    """
+    assert not check_openapi("device", device)
+    assert not check_openapi("backend", backend)
+    subjects = {
+        "device": ("GET /clips/{clip_id}/files/{name}",),
+        "backend": ("GET /clips/{clip_id}/files/{name}", "GET /derivatives/{id}/file"),
+    }
+    for contract, routes in subjects.items():
+        document = device if contract == "device" else backend
+        weakened = copy.deepcopy(document)
+        weakened["components"]["responses"]["RangeNotSatisfiable"]["headers"]["Content-Range"] = {
+            "$ref": "#/components/headers/ContentRangeAbsent"
+        }
+        found = check_openapi(contract, weakened)
+        named = [
+            violation
+            for violation in found
+            if E.SPEC_COMPONENT_DRIFT == violation.code
+            and "responses/416 headers/Content-Range" in violation.location
+            and "ContentRangeAbsent" in violation.detail
+        ]
+        assert len(named) == len(routes), (contract, [v.render() for v in found])
+        for route in routes:
+            assert any(route in violation.location for violation in named), (contract, route, named)
+        # Nothing else speaks: the shared component was the only defect.
+        assert len(found) == len(routes), [violation.render() for violation in found]
+
+
+def test_content_length_declared_on_a_204_is_refused(
+    device: dict, backend: dict
+) -> None:
+    """A 204 answers without a payload, so its document may not promise a length.
+
+    The no-body loop refused `content` on a 204 but read nothing of the header
+    map: declaring `Content-Length` on the upload commit's 204 — the same field
+    `api_validate._rule_content_length` refuses on the wire (RFC 9110 §8.6) — was
+    certified, teaching a generated client to expect bytes the status can never
+    carry. The refusal is the status's own: a HEAD answer legitimately reports the
+    length its GET would have sent, and every committed 200/206 declaration of
+    `Content-Length` stays silent.
+    """
+    assert not check_openapi("backend", backend)
+    for spelling in ("Content-Length", "content-length"):
+        weakened = copy.deepcopy(backend)
+        weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["responses"]["204"]["headers"][
+            spelling
+        ] = {"description": "x", "schema": {"type": "integer"}}
+        found = check_openapi("backend", weakened)
+        assert len(found) == 1, [violation.render() for violation in found]
+        violation = found[0]
+        assert E.SPEC_STRUCTURE_MISSING == violation.code, violation
+        assert violation.location.endswith(
+            "PATCH /uploads/{id}/files/{name} responses/204 headers/Content-Length"
+        ) or violation.location.endswith(
+            "PATCH /uploads/{id}/files/{name} responses/204 headers/content-length"
+        ), violation
+        assert "8.6" in violation.detail and "payload" in violation.detail, violation
+    # Controls: the 204 is the only refusal. A HEAD answer may declare the length
+    # its GET would have sent, and the committed range answers already do.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/uploads/{id}/files/{name}"]["head"]["responses"]["200"]["headers"][
+        "Content-Length"
+    ] = {"description": "x", "schema": {"type": "integer"}}
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if "content-length" in violation.location.lower()
+    ]
+    assert not found, [violation.render() for violation in found]
+    # The device 200/206 and the backend 200/206 declare `Content-Length` today,
+    # and the rule keeps them silent — the control is only real because those
+    # declarations exist, so pin that too.
+    assert not check_openapi("device", device)
+    assert "Content-Length" in device["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"]["headers"]
+    assert "Content-Length" in device["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["200"]["headers"]
+    assert "Content-Length" in backend["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["200"]["headers"]
+    assert "Content-Length" in backend["paths"]["/derivatives/{id}/file"]["get"]["responses"]["200"]["headers"]
+
+
+def test_a_required_request_header_name_folds_case(backend: dict) -> None:
+    """Required request headers match the way HTTP matches field names.
+
+    `_required_request_parameter` compared `name` verbatim for every location, so
+    respelling `UploadChecksum`'s name as `upload-checksum` — the same field per
+    RFC 9110 §5.1, `required: true` intact — made the checker demand a header the
+    document *does* require, while the round-12 duplicate-identity gate and the
+    wire validator already folded. Path and query names are URI elements, not
+    field names: the `Clip_Id` and `DEVICE_ID` renames below stay missing.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["parameters"]["UploadChecksum"]["name"] = "upload-checksum"
+    assert weakened["components"]["parameters"]["UploadChecksum"]["required"] is True
+    found = check_openapi("backend", weakened)
+    assert not found, [violation.render() for violation in found]
+
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["parameters"]["ClipIdPath"]["name"] = "Clip_Id"
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and "GET /clips/{clip_id} parameters/clip_id" in violation.location
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    assert any(violation.detail.startswith("the spec requires this path parameter") for violation in found)
+
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["parameters"]["DeviceIdQuery"]["name"] = "DEVICE_ID"
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and "GET /clips/{clip_id} parameters/device_id" in violation.location
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+    assert any(
+        violation.detail.startswith("the spec requires this query parameter") for violation in found
+    )
+
+
 def test_the_error_envelope_is_one_reusable_schema(device: dict, backend: dict) -> None:
     assert not check_shared_error_envelope({"device": device, "backend": backend})
     weakened = copy.deepcopy(backend)

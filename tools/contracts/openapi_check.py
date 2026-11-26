@@ -398,25 +398,60 @@ def _check_operation(
                     f"binds {ref!r} instead of {schema_name}",
                 )
             )
-    # HTTP field names are case-insensitive (RFC 9110 §5.1), so a response that
-    # declares `Upload-Offset` beside `upload-offset` declares one header twice —
-    # an ambiguous document a generated client may satisfy with either schema. The
+    # This loop speaks for *every* response the operation carries, not only the
+    # ones the table names, and it reads every node: an unreadable response is
+    # named here — otherwise an error status the three table loops above never
+    # mention (a 404 with no named schema and no promised header) could point its
+    # `$ref` at a component the document does not define and be certified — and
+    # so is an unreadable header node, because the required-ness loop below
+    # resolves only the headers the table lists and the documented loop compares
+    # names alone: the shared 416's optional `Content-Range` was never read.
+    # The header map is read from the *shallow* response, with nested `$ref`s left
+    # as nodes, so a dangling header component is named at the header where it
+    # sits rather than at the response whose full read it breaks. HTTP field
+    # names are case-insensitive (RFC 9110 §5.1), so a response that declares
+    # `Upload-Offset` beside `upload-offset` declares one header twice — an
+    # ambiguous document a generated client may satisfy with either schema. The
     # duplicate has to be refused *before* the required-ness loops below interpret
     # the flags, because `_resolved_header` reads only the first spelling and the
-    # second member would otherwise never be read at all. This speaks for every
-    # response the operation carries, not only the ones the table names.
+    # second member would otherwise never be read at all.
     for status_key, node in responses.items():
-        try:
-            resolved_response = _resolve(node, document)
-        except _RESOLUTION_FAILURES:
-            # An unreadable response is named by the loops above and below; this
-            # one simply cannot read a header map out of it.
+        resolved_response, unreadable = _resolved_response_node(node, document)
+        shallow = _shallow_response(node, document)
+        if shallow is None and unreadable is None:
+            shallow = resolved_response
+        if shallow is None:
+            found.append(
+                Violation(E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status_key}", unreadable)
+            )
             continue
-        if not isinstance(resolved_response, Mapping):
-            continue
-        declared_headers = resolved_response.get("headers")
+        if unreadable is not None:
+            # The component the response points at is there but its full read
+            # failed somewhere. Name the response unless the failure sat inside
+            # the header map, where the read below reports the very member that
+            # carries the bad `$ref`.
+            without_headers = {key: value for key, value in shallow.items() if key != "headers"}
+            try:
+                resolve_refs(without_headers, root=document)
+            except _RESOLUTION_FAILURES:
+                found.append(
+                    Violation(
+                        E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status_key}", unreadable
+                    )
+                )
+        declared_headers = shallow.get("headers")
         if not isinstance(declared_headers, Mapping):
             continue
+        for key, header_node in declared_headers.items():
+            _, broken = _read_header_node(header_node, document)
+            if broken is not None:
+                found.append(
+                    Violation(
+                        E.SPEC_COMPONENT_DRIFT,
+                        f"{where} responses/{status_key} headers/{key}",
+                        broken,
+                    )
+                )
         spellings: dict[str, list[str]] = {}
         for key in declared_headers:
             spellings.setdefault(str(key).lower(), []).append(str(key))
@@ -558,7 +593,10 @@ def _check_operation(
             status = status_key
         if not (operation.is_head or status == 204):
             continue
-        resolved = _resolve(response, document)
+        # Guarded: an unreadable response is named by the all-response scan above,
+        # and this loop simply cannot read a content or headers member out of it —
+        # never the exception reaching the CLI as exit 2 "validator internal error".
+        resolved, _ = _resolved_response_node(response, document)
         if isinstance(resolved, Mapping) and resolved.get("content"):
             found.append(
                 Violation(
@@ -567,6 +605,27 @@ def _check_operation(
                     "promises a body the method or status forbids",
                 )
             )
+        # RFC 9110 §8.6 and §15.3.2: a 204 describes its result without a payload,
+        # so a document promising its length teaches a generated client to expect
+        # bytes the status can never carry — the same rule
+        # ``api_validate._rule_content_length`` enforces on the wire. A HEAD
+        # answer *may* legitimately carry `Content-Length` (it reports the length
+        # the GET would have sent), so only the 204 half is refused here; the
+        # header key is read from the declared map, so the refusal stands whatever
+        # spelling or `$ref` the value carries.
+        if status == 204 and isinstance(resolved, Mapping):
+            declared = resolved.get("headers")
+            if isinstance(declared, Mapping):
+                for key in declared:
+                    if str(key).lower() == "content-length":
+                        found.append(
+                            Violation(
+                                E.SPEC_STRUCTURE_MISSING,
+                                f"{where} responses/{status} headers/{key}",
+                                "a 204 describes its result without a payload, so the "
+                                "document may not declare its length (RFC 9110 §8.6)",
+                            )
+                        )
 
     if operation.request_schema is not None:
         if body.get("required") is not True:
@@ -694,7 +753,20 @@ def _check_operation(
                     else "the spec requires this request header, and the document declares it optional",
                 )
             )
-    return found
+    # The all-response scan above reads the statuses and header nodes the table
+    # loops already walk, so one dangling shared component would otherwise earn
+    # the same statement twice. Collapse exact repeats on the (code, location,
+    # detail) triple — each loop keeps its own wording, and any finding that
+    # differs in subject, location, or detail survives untouched.
+    unique: list[Violation] = []
+    seen: set[tuple[str, str, str]] = set()
+    for violation in found:
+        identity = (violation.code, violation.location, violation.detail)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(violation)
+    return unique
 
 
 #: What :func:`tools.contracts.schema_docs.resolve_refs` raises when a pointer cannot be
@@ -739,11 +811,54 @@ def _resolved_response(
     `KeyError`, which would reach the CLI as an internal error and leave the very
     absence it came to report unreported. The caller names what it found instead.
     """
-    node = responses.get(str(status), {})
+    return _resolved_response_node(responses.get(str(status), {}), document)
+
+
+def _shallow_response(node: Any, document: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The response object one pointer hop away, with nested `$ref`s left alone.
+
+    :func:`_resolved_response_node` reads a response the way the table loops do:
+    ``resolve_refs`` inlines every nested reference, so when a *header's* component
+    is what vanished, that read fails at the response and the member carrying the
+    bad pointer is never named. Following the response's own pointer one hop
+    without recursing keeps each declared header a node the header read can
+    resolve on its own. A node that is not a readable object at this depth answers
+    ``None`` and the caller reports it at the response.
+    """
+    if not isinstance(node, Mapping):
+        return None
+    reference = node.get("$ref")
+    if reference is None:
+        return node
+    if not isinstance(reference, str):
+        return None
+    target: Any = document
+    try:
+        for segment in reference.lstrip("#").strip("/").split("/"):
+            target = target[segment.replace("~1", "/").replace("~0", "~")]
+    except _RESOLUTION_FAILURES:
+        return None
+    return target if isinstance(target, Mapping) else None
+
+
+def _resolved_response_node(
+    node: Any, document: Mapping[str, Any]
+) -> tuple[Mapping[str, Any], str | None]:
+    """The response object a declared node names, or the reason it cannot be read.
+
+    The all-response scan in :func:`_check_operation` holds the node itself rather
+    than a status, so it asks this question directly and reports the same wording as
+    :func:`_resolved_response` above: one dangling shared component earns one
+    finding per operation+status, whichever loop gets there first.
+    """
     try:
         resolved = _resolve(node, document)
     except KeyError as error:
         return {}, f"$ref names {error}, a component member the document does not define"
+    except _RESOLUTION_FAILURES as error:
+        # A pointer that walks through a list index or a scalar is a document
+        # defect named here, never the exception reaching the CLI as exit 2.
+        return {}, f"$ref cannot be followed: {error!r}"
     if not isinstance(resolved, Mapping):
         return {}, f"is {type(resolved).__name__}, not a response object"
     return resolved, None
@@ -775,7 +890,10 @@ def _required_request_parameter(
     `Idempotency-Key` does. Every matching declaration is consulted, not just the first:
     OpenAPI requires parameter names to be unique per location, and an optional twin
     hiding behind a required first entry is an ambiguous declaration a generated client
-    may still drop, so one non-required match is enough to answer ``optional``.
+    may still drop, so one non-required match is enough to answer ``optional``. HTTP
+    folds field names case-insensitively (RFC 9110 §5.1), so a ``header`` name matches
+    whatever casing the document declares; ``path`` and ``query`` names are URI
+    elements, not field names, and stay exact.
     """
     declared_parameters = item.get("parameters", [])
     if not isinstance(declared_parameters, list):
@@ -796,7 +914,12 @@ def _required_request_parameter(
             continue
         if not isinstance(resolved, Mapping):
             continue
-        if resolved.get("name") == name and resolved.get("in") == location:
+        declared_name = resolved.get("name")
+        if location == "header":
+            name_matches = isinstance(declared_name, str) and declared_name.lower() == name.lower()
+        else:
+            name_matches = declared_name == name
+        if name_matches and resolved.get("in") == location:
             matched = True
             if resolved.get("required") is not True:
                 all_required = False
@@ -823,6 +946,20 @@ def _resolved_header(
         if str(key).lower() == name.lower():
             node = value
             break
+    return _read_header_node(node, document)
+
+
+def _read_header_node(
+    node: Any, document: Mapping[str, Any]
+) -> tuple[Mapping[str, Any], str | None]:
+    """The Header Object a declared node names, or why it cannot be read.
+
+    The all-response scan in :func:`_check_operation` holds the declared member
+    itself rather than a name to look up, so it asks this question directly and
+    reports the same wording family :func:`_resolved_header` uses: one dangling
+    shared component earns one finding per operation+status+header, whichever loop
+    gets there first.
+    """
     try:
         resolved = _resolve(node, document)
     except KeyError as error:
