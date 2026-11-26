@@ -3383,6 +3383,11 @@ def test_security_scheme_reference_objects_are_resolved_before_the_bearer_check(
     assert {violation.location for violation in found} == _protected_locations("device"), [
         violation.render() for violation in found
     ]
+    # The cycle says exactly what a missing member says — the same named string,
+    # not just findings at the same locations (the pre-gate code also produced
+    # findings here, with the wrong wording).
+    named = next(violation for violation in found if violation.location == "GET /status")
+    assert "securitySchemes" in named.detail and "not defined" in named.detail, named.render()
 
     wrong = copy.deepcopy(device)
     wrong["components"]["securitySchemes"]["ApiKeyBearer"] = {
@@ -3556,3 +3561,68 @@ def test_ota_deferral_reads_a_shared_body_like_its_inline_twin_and_refuses_malfo
     assert "requestBodies" in found[0].detail and "does not define" in found[0].detail, (
         found[0].render()
     )
+
+
+def test_a_referenced_body_cannot_smuggle_a_request_schema_past_the_deferral_gate(
+    device: dict,
+) -> None:
+    """Review finding 1 (round-18 review): the ref-presence question reads the
+    *un-inlined* body, so reuse cannot launder a deferred envelope back in.
+
+    The full read resolves a ``$ref``'d body wholesale, and the schema-position
+    walk resolves the media entry's ``schema`` member with it — so asking
+    ``"$ref" in schema`` of the *resolved* body answers "references no schema"
+    for exactly the body that does, while the identical inline twin is refused.
+    AC-07's deferral must mean the same thing at both spellings: the operation
+    checker already asks its binding question of the shallow alias-chained node
+    for this reason, and so does this gate.
+    """
+    smuggled = copy.deepcopy(device)
+    smuggled["components"].setdefault("requestBodies", {})["SmuggledOtaBody"] = {
+        "required": True,
+        "description": (
+            "signed envelope; encoding and `contracts/ota-v1.json` deferred to "
+            "package 2.10; consumers must not guess"
+        ),
+        "content": {
+            "application/octet-stream": {"schema": {"$ref": "#/components/schemas/Error"}}
+        },
+    }
+    smuggled["paths"]["/ota"]["post"]["requestBody"] = {
+        "$ref": "#/components/requestBodies/SmuggledOtaBody"
+    }
+    found = check_ota_deferral(smuggled, CONTRACTS)
+    assert [(v.code, v.location, v.detail) for v in found] == [
+        (
+            E.OTA_DEFERRAL_MISSING,
+            "POST /ota requestBody schema",
+            "no request schema may be referenced while the encoding is deferred",
+        )
+    ], [v.render() for v in found]
+
+    # The inline twin — the same schema member riding on the inline body —
+    # answers identically: reuse is neither a laundering route nor a false alarm.
+    inline = copy.deepcopy(device)
+    inline["paths"]["/ota"]["post"]["requestBody"]["content"]["application/octet-stream"][
+        "schema"
+    ] = {"$ref": "#/components/schemas/Error"}
+    inline_found = check_ota_deferral(inline, CONTRACTS)
+    assert [(v.code, v.location, v.detail) for v in inline_found] == [
+        (v.code, v.location, v.detail) for v in found
+    ], [v.render() for v in inline_found]
+
+    # And the honest shapes still certify clean both ways (the shared component
+    # the probe moves verbatim; a non-mapping `schema` references nothing).
+    clean = copy.deepcopy(device)
+    clean["components"].setdefault("requestBodies", {})["ReviewOtaBody"] = copy.deepcopy(
+        clean["paths"]["/ota"]["post"]["requestBody"]
+    )
+    clean["paths"]["/ota"]["post"]["requestBody"] = {
+        "$ref": "#/components/requestBodies/ReviewOtaBody"
+    }
+    assert not check_ota_deferral(clean, CONTRACTS)
+    scalar_schema = copy.deepcopy(device)
+    scalar_schema["paths"]["/ota"]["post"]["requestBody"]["content"]["application/octet-stream"][
+        "schema"
+    ] = "not-a-schema"
+    assert not check_ota_deferral(scalar_schema, CONTRACTS)

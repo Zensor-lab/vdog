@@ -336,7 +336,6 @@ def check_ota_deferral(document: Mapping[str, Any], contracts_dir: Path) -> list
                 )
             )
         else:
-            entry = content["application/octet-stream"]
             description = str(body.get("description", ""))
             if "deferred" not in description or OTA_DEFERRAL_PACKAGE not in description:
                 found.append(
@@ -346,7 +345,28 @@ def check_ota_deferral(document: Mapping[str, Any], contracts_dir: Path) -> list
                         "must state that the encoding and contracts/ota-v1.json are deferred to 2.10",
                     )
                 )
-            schema = entry.get("schema", {})
+            # The ref-presence question reads the *un-inlined* body, mirroring
+            # the operation checker's binding read: the full read above inlines
+            # a shared component wholesale — the schema-position walk resolves
+            # the media entry's `schema` member with it — so asking the
+            # question of the resolved body would answer "references no
+            # schema" for exactly the reused body that does, while the
+            # identical inline twin is refused. An un-followable chain falls
+            # back to the full read's entry: the chain's own failure was
+            # already named by the resolution branch above, and the fallback
+            # hides no reference the document does not carry.
+            chained = _alias_chained_reference(ota.get("requestBody", {}), document)
+            schema: Any = {}
+            for host in (chained, body):
+                if not isinstance(host, Mapping):
+                    continue
+                host_content = host.get("content")
+                if not isinstance(host_content, Mapping):
+                    continue
+                candidate = host_content.get("application/octet-stream")
+                if isinstance(candidate, Mapping):
+                    schema = candidate.get("schema", {})
+                    break
             # A non-object `schema` references nothing, and the guarded read
             # says so as a shape the caller's own verdict covers — the `in`
             # test over a scalar would be the exit-2 crash this check exists
