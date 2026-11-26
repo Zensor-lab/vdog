@@ -715,8 +715,12 @@ def _check_operation(
         # A body with no named JSON schema has no ``$ref`` binding to check, so the one
         # thing that pins it to the wire is its own ``required``. The upload chunk is
         # exactly that body: a PATCH whose ``requestBody`` is optional documents an append
-        # of no bytes at all, which is how a client generator learns to send one.
-        if published and body.get("required") is not True:
+        # of no bytes at all, which is how a client generator learns to send one. The
+        # ``required`` question belongs to the requestBody node itself: a declared
+        # ``content`` member of any shape still declares a body, so the refusal is due
+        # even when the shape check above fired (only the media-type *comparison*,
+        # which reads the member, stays silenced beside its own shape finding).
+        if (published or body_issue is not None) and body.get("required") is not True:
             found.append(Violation(E.SPEC_STRUCTURE_MISSING, f"{where} requestBody", "not required"))
     for status, types in operation.response_content_types.items():
         # Read through the response's own pointer hop only: the comparison
@@ -1037,19 +1041,23 @@ def _shallow_response(node: Any, document: Mapping[str, Any]) -> Mapping[str, An
 
 
 def _alias_chained_response(node: Any, document: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """The one-hop response node with pure-`$ref` alias components walked through.
+    """The one-hop response node with `$ref` alias components walked through.
 
-    :func:`_shallow_response` stops at a component that is itself only a
-    ``$ref`` — an alias carrying no member of its own — so a media-type or
-    binding read taken there sees an empty document and reports a mismatch the
-    document never made. Keep taking guarded hops while the hop is a pure
-    ``$ref`` node (``$ref`` its only member), following each pointer at most
-    once so a cycle ends as a failure like any other un-followable hop. The
+    :func:`_shallow_response` stops at a component that is itself a ``$ref`` —
+    an alias carrying no ``content`` of its own — so a media-type or binding
+    read taken there sees an empty document and reports a mismatch the document
+    never made. Keep taking guarded hops while the hop carries a ``$ref``,
+    following each pointer at most once so a cycle ends as a failure like any
+    other un-followable hop. The predicate reads *any* node carrying ``$ref``,
+    not only one whose sole member is it: :func:`tools.contracts.schema_docs.resolve_refs`
+    (the full read the readability gate ran) replaces a ``$ref`` node wholesale
+    whatever siblings it carries, so stopping at a `$ref`-with-siblings alias
+    would diverge from the very read that certified the node readable. The
     all-response scan owns the drift a failed chain hides; callers skip.
     """
     response = _shallow_response(node, document)
     followed: set[str] = set()
-    while response is not None and set(response) == {"$ref"}:
+    while response is not None and "$ref" in response:
         reference = response["$ref"]
         if not isinstance(reference, str) or reference in followed:
             return None

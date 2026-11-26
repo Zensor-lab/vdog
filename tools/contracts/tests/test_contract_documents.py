@@ -1526,6 +1526,39 @@ def test_a_pure_ref_alias_component_still_publishes_the_table_media_types(
         and violation.location == f"{where} content"
     ], [violation.render() for violation in report]
 
+    # `$ref`-with-siblings is the same alias to this checker's own resolution
+    # semantics: resolve_refs (the full read the readability gate ran) replaces
+    # the node wholesale whatever decorators ride along, so the chain may not
+    # stop there and charge the operation for a member the target does publish.
+    weakened = copy.deepcopy(backend)
+    download = weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"]
+    weakened["components"]["responses"]["Partial206Real"] = copy.deepcopy(download)
+    weakened["components"]["responses"]["Partial206Sibling"] = {
+        "$ref": "#/components/responses/Partial206Real",
+        "description": "decorated alias hop",
+    }
+    weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"] = {
+        "$ref": "#/components/responses/Partial206Sibling",
+        "summary": "decorated operation node",
+    }
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+    # The envelope loop reads through the same chain: a decorated alias in
+    # front of the shared NotFound still answers with the Error envelope.
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["responses"]["NotFoundSibling"] = {
+        "$ref": "#/components/responses/NotFound",
+        "description": "decorated alias hop",
+    }
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["404"] = {
+        "$ref": "#/components/responses/NotFoundSibling"
+    }
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
 
 def test_a_scalar_content_member_is_named_once_and_never_crashes(backend: dict) -> None:
     """Round 15 item 4: a declared `content` that is not a map earns a finding.
@@ -1588,6 +1621,31 @@ def test_a_scalar_content_member_is_named_once_and_never_crashes(backend: dict) 
     assert not [
         violation for violation in report if "instead of CreateUploadRequest" in violation.detail
     ], [violation.render() for violation in report]
+
+    # (d) A malformed `content` still declares a body: the requestBody's own
+    # `required` question is independent of the member's shape, so a scalar
+    # content on the raw-chunk PATCH earns both statements — the shape refusal
+    # at the member and `not required` at the body.
+    weakened = copy.deepcopy(backend)
+    patch_body = weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["requestBody"]
+    patch_body["content"] = 5
+    patch_body["required"] = False
+    report = check_openapi("backend", weakened)
+    where = "backend-v1 PATCH /uploads/{id}/files/{name}"
+    shape = [
+        violation
+        for violation in report
+        if violation.location == f"{where} requestBody content"
+    ]
+    assert len(shape) == 1 and shape[0].detail == "is int, not a media-type map", [
+        violation.render() for violation in report
+    ]
+    required = [
+        violation
+        for violation in report
+        if violation.location == f"{where} requestBody" and violation.detail == "not required"
+    ]
+    assert required, [violation.render() for violation in report]
 
 
 def test_load_yaml_refuses_an_explicit_duplicate_mapping_key(tmp_path: Path) -> None:
