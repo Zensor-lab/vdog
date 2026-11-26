@@ -19,7 +19,7 @@ from . import errors as E
 from .api_model import Operation, operation_for
 from .bounds import DOCUMENTED_ERROR_STATUSES
 from .errors import Violation
-from .schema_docs import canonical, check_local_refs, check_metaschema, resolve_refs
+from .schema_docs import canonical, check_local_refs, check_metaschema, resolve_reference, resolve_refs
 
 #: Operations the spec leaves unauthenticated: pairing happens before a token
 #: exists, and the two health probes are documented as "minimal health only".
@@ -168,14 +168,16 @@ def check_openapi(contract: str, document: Mapping[str, Any]) -> list[Violation]
     for operation in operation_for(contract).values():
         found.extend(_check_operation(contract, document, operation))
         found.extend(_check_status_ceiling(contract, operation))
-        if operation.key not in UNAUTHENTICATED_OPERATIONS and not _requires_bearer(document, operation):
-            found.append(
-                Violation(
-                    E.SPEC_SECURITY_MISSING,
-                    f"{operation.method} {operation.path}",
-                    "requires Authorization: Bearer after pinned TLS",
+        if operation.key not in UNAUTHENTICATED_OPERATIONS:
+            gap = _authentication_gap(document, operation)
+            if gap is not None:
+                found.append(
+                    Violation(
+                        E.SPEC_SECURITY_MISSING,
+                        f"{operation.method} {operation.path}",
+                        f"requires Authorization: Bearer after pinned TLS: {gap}",
+                    )
                 )
-            )
     return found
 
 
@@ -523,7 +525,7 @@ def _check_operation(
             # reports the very member that carries the bad `$ref`.
             without_headers = {key: value for key, value in shallow.items() if key != "headers"}
             try:
-                resolve_refs(without_headers, root=document)
+                resolve_reference(without_headers, document)
             except _RESOLUTION_FAILURES:
                 headers_scannable = False
             if not headers_scannable:
@@ -583,7 +585,7 @@ def _check_operation(
                         )
                     )
                 try:
-                    resolve_refs(declared_headers, root=document)
+                    resolve_reference(declared_headers, document)
                 except KeyError as error:
                     found.append(
                         Violation(
@@ -1003,8 +1005,19 @@ _RESOLUTION_FAILURES: Final[tuple[type[Exception], ...]] = (ValueError, KeyError
 
 
 def _resolve(node: Any, document: Mapping[str, Any]) -> Any:
+    """Follow a declared node's ``$ref`` as the OpenAPI Reference Object it is.
+
+    Every caller here reads a Reference-Object position — a response, header,
+    parameter or requestBody entry, possibly a ``$ref`` into ``components`` —
+    so the read is :func:`tools.contracts.schema_docs.resolve_reference`,
+    which drops non-``$ref`` siblings: decoration beside the reference may not
+    augment the target or move a gate decision. Schema positions (the shared
+    ``Error``/``Manifest`` comparisons above) keep the schema-aware
+    :func:`tools.contracts.schema_docs.resolve_refs`, where siblings are JSON
+    Schema assertions.
+    """
     if isinstance(node, Mapping) and "$ref" in node:
-        return resolve_refs(node, root=document)
+        return resolve_reference(node, document)
     return node
 
 
@@ -1044,7 +1057,8 @@ def _shallow_reference(node: Any, document: Mapping[str, Any]) -> Mapping[str, A
     """The object one pointer hop away from a declared node, nested `$ref`s intact.
 
     :func:`_resolved_response_node` reads a response the way the table loops do:
-    ``resolve_refs`` inlines every nested reference, so when a *header's* component
+    its full read (:func:`tools.contracts.schema_docs.resolve_reference`, via
+    :func:`_resolve`) inlines every nested reference, so when a *header's* component
     is what vanished, that read fails at the response and the member carrying the
     bad pointer is never named. Following the node's own pointer one hop without
     recursing keeps each declared member a node the reader can resolve on its own.
@@ -1090,10 +1104,13 @@ def _alias_chained_reference(node: Any, document: Mapping[str, Any]) -> Mapping[
     never made. Keep taking guarded hops while the hop carries a ``$ref``,
     following each pointer at most once so a cycle ends as a failure like any
     other un-followable hop. The predicate reads *any* node carrying ``$ref``,
-    not only one whose sole member is it: :func:`tools.contracts.schema_docs.resolve_refs`
-    (the full read the readability gate ran) replaces a ``$ref`` node wholesale
-    whatever siblings it carries, so stopping at a `$ref`-with-siblings alias
-    would diverge from the very read that certified the node readable. The
+    not only one whose sole member is it: the full read the readability gate
+    ran at a Reference-Object position
+    (:func:`tools.contracts.schema_docs.resolve_reference`, via
+    :func:`_resolve`) follows a ``$ref`` node whatever siblings it carries —
+    stripping the non-``$ref`` members and resolving the target — so stopping
+    at a `$ref`-with-siblings alias would diverge from the very read that
+    certified the node readable. The
     all-response scan owns the drift a failed chain hides; response callers
     skip, and the requestBody binding read falls back to its full read.
     """
@@ -1283,8 +1300,47 @@ def _read_header_node(
     return resolved, None
 
 
-def _requires_bearer(document: Mapping[str, Any], operation: Operation) -> bool:
+def _authentication_gap(document: Mapping[str, Any], operation: Operation) -> str | None:
+    """Why this protected operation does not demand bearerAuth, or None when it does.
+
+    Security requirements are *alternatives* (OpenAPI 3.1 security-requirement
+    semantics): the operation authenticates only under whichever single
+    requirement is satisfied, so one ``{}`` branch lets the whole operation run
+    anonymously — the old ``any(...)`` over the alternatives asked the wrong
+    quantifier and passed ``[{}, {bearerAuth: []}]`` on a protected operation.
+    Every alternative must therefore name ``bearerAuth``, and naming a scheme
+    is only a promise: ``components.securitySchemes.bearerAuth`` must exist and
+    define HTTP bearer authentication (OpenAPI treats the ``scheme`` value
+    case-insensitively), or the document describes a mechanism it never
+    declares.
+    """
     paths = document.get("paths", {})
     item = paths.get(operation.path, {}).get(operation.method.lower(), {})
-    security = item.get("security", document.get("security", []))
-    return any("bearerAuth" in entry for entry in security)
+    if "security" in item:
+        security = item["security"]
+    else:
+        security = document.get("security", [])
+    if not isinstance(security, list) or not security:
+        return "the effective security list declares no authentication alternative"
+    for alternative in security:
+        if not isinstance(alternative, Mapping):
+            return f"alternative {alternative!r} is not a security requirement object"
+        if "bearerAuth" not in alternative:
+            return (
+                f"alternative {alternative!r} names no bearerAuth requirement, and "
+                "one alternative may not authenticate nobody"
+            )
+    schemes = document.get("components", {}).get("securitySchemes", {})
+    scheme = schemes.get("bearerAuth") if isinstance(schemes, Mapping) else None
+    if not isinstance(scheme, Mapping):
+        return "components.securitySchemes.bearerAuth is not defined"
+    if (
+        scheme.get("type") != "http"
+        or not isinstance(scheme.get("scheme"), str)
+        or scheme["scheme"].casefold() != "bearer"
+    ):
+        return (
+            "components.securitySchemes.bearerAuth is not an HTTP bearer scheme "
+            f"(type {scheme.get('type')!r}, scheme {scheme.get('scheme')!r})"
+        )
+    return None

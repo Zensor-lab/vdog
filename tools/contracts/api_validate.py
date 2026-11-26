@@ -1467,7 +1467,16 @@ def _evaluate_request_sidecar(
     return found
 
 
+# RFC 9110 §8.6: an HTTP integer field value is 1*DIGIT — ASCII digits, no sign,
+# no separators, no whitespace, no lookalike codepoints. Bare ``int()`` accepted
+# "+512", "51_2", fullwidth digits and " 512" alike, so the gate below refused
+# none of them; this anchor is what every caller of ``_as_int`` shares.
+_HTTP_INTEGER = re.compile(r"\A[0-9]+\Z")
+
+
 def _as_int(value: str) -> int | None:
+    if not isinstance(value, str) or _HTTP_INTEGER.fullmatch(value) is None:
+        return None
     try:
         return int(value)
     except ValueError:

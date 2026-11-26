@@ -265,6 +265,17 @@ def resolve_refs(document: Any, *, root: Mapping[str, Any] | None = None, _stack
     Only ``#/...`` JSON pointers are supported, which is all either contract uses. A
     reference cycle is expanded once and then refused: a recursive wire contract
     would be a design change worth failing on rather than looping over.
+
+    A ``$ref`` node here is a JSON Schema 2020-12 Schema Object (§8.2.3.1): its
+    sibling members are assertions that conjoin with the referenced target, so
+    they are recursively resolved and merged *over* the target — the sibling
+    wins a key conflict, which is what conjunction means. A boolean target
+    conjoins the obvious way (``true`` leaves the siblings standing alone,
+    ``false`` makes the whole node unsatisfiable); any other scalar target
+    cannot conjoin with siblings at all and is refused by its ``$ref``. Read
+    OpenAPI Reference Object positions (``components/responses``, ``headers``
+    or ``parameters`` entries) through :func:`resolve_reference` instead, which
+    strips non-``$ref`` siblings the way OpenAPI 3.1 defines that node.
     """
     base = document if root is None else root
     stack = _stack if _stack is not None else deque()
@@ -278,13 +289,48 @@ def resolve_refs(document: Any, *, root: Mapping[str, Any] | None = None, _stack
             target = _pointer(base, ref)
             stack.append(ref)
             try:
-                return resolve_refs(target, root=base, _stack=stack)
+                resolved = resolve_refs(target, root=base, _stack=stack)
+                siblings = {
+                    key: resolve_refs(value, root=base, _stack=stack)
+                    for key, value in document.items()
+                    if key != "$ref"
+                }
             finally:
                 stack.pop()
+            if isinstance(resolved, Mapping):
+                return {**resolved, **siblings}
+            if resolved is True:
+                return siblings
+            if resolved is False:
+                return False
+            if siblings:
+                raise ValueError(
+                    f"$ref {ref!r} targets {resolved!r}; a schema object cannot "
+                    f"conjoin {sorted(siblings)} with it"
+                )
+            return resolved
         return {key: resolve_refs(value, root=base, _stack=stack) for key, value in document.items()}
     if isinstance(document, list):
         return [resolve_refs(item, root=base, _stack=stack) for item in document]
     return document
+
+
+def resolve_reference(node: Any, root: Mapping[str, Any] | None = None) -> Any:
+    """Inline a local ``$ref`` the way an OpenAPI Reference Object is resolved.
+
+    A Reference Object (the ``$ref`` beside a response, header or parameter) is
+    not a Schema Object: OpenAPI 3.1 lets it carry only ``summary`` and
+    ``description``, and neither augments the target — the rest is decoration
+    the reference does not merge. So every member other than ``$ref`` is
+    stripped here before :func:`resolve_refs` follows the pointer, keeping a
+    gate decision about the target independent of what rode along beside the
+    reference. Schema positions (Schema Objects, where siblings *are*
+    assertions) keep :func:`resolve_refs` directly. A node without ``$ref`` is
+    read verbatim, exactly as ``resolve_refs`` reads it.
+    """
+    if isinstance(node, Mapping) and "$ref" in node:
+        node = {"$ref": node["$ref"]}
+    return resolve_refs(node, root=root)
 
 
 def check_local_refs(document: Mapping[str, Any]) -> str | None:

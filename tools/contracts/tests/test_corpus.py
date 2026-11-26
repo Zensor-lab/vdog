@@ -372,6 +372,47 @@ def test_duplicate_index_entry_is_reported(tmp_path: Path) -> None:
     assert E.FIXTURE_DUPLICATE in codes
 
 
+def test_a_ref_sibling_bound_fails_the_corpus_run(tmp_path: Path) -> None:
+    """A sibling assertion the resolution path dropped kept the corpus green (round 17 F2).
+
+    The review's mutation — ``maxLength: 1`` beside the ``setup_secret`` ``$ref``
+    in ``PairRequest`` — is enforced by a standard Draft 2020-12 validator. The
+    published-schema path must agree: on a temporary copy the committed 43-char
+    secrets stop passing, the untouched copy stays 441 fixtures and PASS, and
+    the refusal is named where a maintainer reads it.
+    """
+    import shutil
+
+    import yaml
+
+    clean = tmp_path / "clean"
+    shutil.copytree(REPO_ROOT / "contracts", clean / "contracts")
+    baseline = validate_contracts(clean)
+    assert baseline.passed and baseline.fixture_total == 441, (
+        baseline.fixture_total,
+        [violation.render() for violation in baseline.violations],
+    )
+
+    broken = tmp_path / "broken"
+    shutil.copytree(REPO_ROOT / "contracts", broken / "contracts")
+    path = broken / "contracts" / "device-v1.yaml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document["components"]["schemas"]["PairRequest"]["properties"]["setup_secret"][
+        "maxLength"
+    ] = 1
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    report = validate_contracts(broken)
+    assert not report.passed
+    assert report.violations, "the corpus must refuse the bound-violating pair bodies"
+    named = [
+        violation
+        for violation in report.violations
+        if "setup_secret" in violation.render()
+    ]
+    assert named, [violation.render() for violation in report.violations]
+
+
 def test_report_names_every_category(report) -> None:
     document = json.loads((FIXTURES / "fixtures.json").read_bytes().decode("utf-8"))
     expected = {entry["category"] for entry in document["fixtures"]}

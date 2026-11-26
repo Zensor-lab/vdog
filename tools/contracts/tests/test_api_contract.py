@@ -2905,3 +2905,68 @@ def test_a_manifest_that_cites_no_device_contributes_no_source_size(tmp_path) ->
     assert clip_dimensions(tmp_path, [entry]) == {
         (manifest["device_id"], manifest["clip_id"]): (64, 64)
     }
+
+
+# --- Round 17: the shared HTTP integer helper refuses every non-1*DIGIT spelling ---
+
+
+def test_http_integer_field_values_refuse_every_non_digit_spelling(
+    tmp_path, by_id: dict, specs: dict, media_schemas: dict
+) -> None:
+    """RFC 9110 §8.6: an HTTP integer field is ``1*DIGIT``, not whatever ``int()`` eats.
+
+    ``_as_int`` was a bare ``int()`` with a ``ValueError`` catch, so ``+512``,
+    ``51_2``, fullwidth digits and a leading space all converted and every rule
+    sharing the helper — Content-Length, Upload-Offset, Retry-After — certified
+    malformed wire values as valid vectors. The committed upload PATCH is copied
+    to a temporary directory whole (body and matching checksum preserved, exactly
+    as the review probe did), one field is mutated per probe, and the finding the
+    RFC owes must come back.
+    """
+    entry = by_id["backend/valid/upload-patch-request-valid"]
+    for name in entry["files"]:
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((FIXTURES / name).read_bytes())
+    header_file = next(
+        tmp_path / name for name in entry["files"] if name.endswith(".headers.json")
+    )
+    original = json.loads(header_file.read_bytes())
+    assert original["Content-Length"] == "512", "the committed vector changed"
+
+    def probe(**overrides: str) -> list:
+        header_file.write_text(json.dumps({**original, **overrides}))
+        return validate_api_fixture(tmp_path, entry, specs, media_schemas)
+
+    assert not probe(), [violation.render() for violation in probe()]
+
+    for label, value in (
+        ("signed", "+512"),
+        ("underscore", "51_2"),
+        ("fullwidth", "\uff15\uff11\uff12"),
+        ("leading space", " 512"),
+    ):
+        found = probe(**{"Content-Length": value})
+        assert found, f"Content-Length {label} ({value!r}) must be refused"
+        assert any(
+            violation.code == E.CONTENT_LENGTH_MISMATCH
+            and violation.location.endswith(": Content-Length")
+            for violation in found
+        ), [violation.render() for violation in found]
+
+    # The same helper guards the other HTTP integer fields; one signed refusal per
+    # rule proves the gate is the shared one, not a Content-Length special case.
+    found = probe(**{"Upload-Offset": "+0"})
+    assert any(
+        violation.code == E.UPLOAD_OFFSET_INVALID
+        and violation.location.endswith(": Upload-Offset")
+        for violation in found
+    ), [violation.render() for violation in found]
+
+    found = probe(**{"Retry-After": "+120"})
+    assert any(
+        violation.code == E.HEADER_INVALID
+        and violation.location.endswith(": Retry-After")
+        and "nonnegative delay" in violation.detail
+        for violation in found
+    ), [violation.render() for violation in found]

@@ -22,6 +22,7 @@ from tools.contracts import bounds as bounds_module
 from tools.contracts import errors as E
 from tools.contracts.api_model import ALL_OPERATIONS
 from tools.contracts.openapi_check import (
+    UNAUTHENTICATED_OPERATIONS,
     check_headers_contract,
     check_manifest_component,
     check_openapi,
@@ -29,7 +30,13 @@ from tools.contracts.openapi_check import (
     check_shared_error_envelope,
     load_media_schemas,
 )
-from tools.contracts.schema_docs import load_json, load_yaml, resolve_refs, schema_error_report
+from tools.contracts.schema_docs import (
+    load_json,
+    load_yaml,
+    resolve_reference,
+    resolve_refs,
+    schema_error_report,
+)
 from tools.contracts.validate import validate_contracts
 
 from conftest import CORPUS_MUTATIONS, REPO_ROOT
@@ -1527,9 +1534,10 @@ def test_a_pure_ref_alias_component_still_publishes_the_table_media_types(
     ], [violation.render() for violation in report]
 
     # `$ref`-with-siblings is the same alias to this checker's own resolution
-    # semantics: resolve_refs (the full read the readability gate ran) replaces
-    # the node wholesale whatever decorators ride along, so the chain may not
-    # stop there and charge the operation for a member the target does publish.
+    # semantics: the Reference-Object full read (resolve_reference, via
+    # _resolve) strips the non-`$ref` siblings and follows the pointer, so the
+    # chain may not stop there and charge the operation for a member the
+    # target does not publish.
     weakened = copy.deepcopy(backend)
     download = weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"]
     weakened["components"]["responses"]["Partial206Real"] = copy.deepcopy(download)
@@ -1812,8 +1820,8 @@ def test_a_reusable_json_response_component_binds_like_its_inline_equivalent(
         violation.render() for violation in check_openapi("backend", weakened)
     ]
 
-    # `$ref`-with-siblings hop: resolve_refs (the full read the gate ran)
-    # replaces the node wholesale whatever decorators ride along, so the
+    # `$ref`-with-siblings hop: the Reference-Object full read (resolve_reference,
+    # via _resolve) drops the decorators and follows the pointer, so the
     # chain may not stop here either.
     weakened = reused({"$ref": "#/components/responses/ClipDetailSibling"})
     weakened["components"]["responses"]["ClipDetailSibling"] = {
@@ -2681,3 +2689,277 @@ def test_an_invalid_keyword_value_is_a_finding_not_a_crash() -> None:
     assert failure is not None
     assert failure == failure.strip() and "\n" not in failure, failure
     assert not check_metaschema({"type": "object", "properties": {"x": {"maximum": 3}}})
+
+
+# --- Round 17: the effective-security gate and the two $ref resolution semantics --
+
+
+def _security_findings(document: dict, contract: str) -> list:
+    return [
+        violation
+        for violation in check_openapi(contract, document)
+        if violation.code == E.SPEC_SECURITY_MISSING
+    ]
+
+
+def _protected_locations(contract: str) -> set[str]:
+    return {
+        f"{operation.method} {operation.path}"
+        for operation in ALL_OPERATIONS.values()
+        if operation.contract == contract
+        and operation.key not in UNAUTHENTICATED_OPERATIONS
+    }
+
+
+def test_anonymous_security_alternatives_are_refused_on_protected_operations(device: dict) -> None:
+    """Security requirements are ALTERNATIVES — one branch may not authenticate nobody.
+
+    The old gate asked ``any("bearerAuth" in entry for entry in security)``, so
+    ``[{}, {bearerAuth: []}]`` passed on a protected operation even though the
+    ``{}`` alternative lets it run anonymous (OpenAPI 3.1 security-requirement
+    semantics), contradicting interfaces.md §2. The effective list must be
+    non-empty and *every* alternative must name bearerAuth; each failure earns
+    its one ``SPEC_SECURITY_MISSING`` at ``{method} {path}``, with a message
+    naming the reason.
+    """
+    assert not check_openapi("device", device)
+
+    for label, mutate in (
+        ("anonymous alternative", {"security": [{}, {"bearerAuth": []}]}),
+        ("single anonymous alternative", {"security": [{}]}),
+        ("foreign-only alternative", {"security": [{"apiKey": []}]}),
+        ("non-object alternative", {"security": ["bearerAuth"]}),
+        ("empty effective list", {"security": []}),
+    ):
+        weakened = copy.deepcopy(device)
+        weakened["paths"]["/status"]["get"].update(mutate)
+        found = _security_findings(weakened, "device")
+        assert [violation.location for violation in found] == ["GET /status"], (
+            label,
+            [violation.render() for violation in found],
+        )
+    # The document-level fallback is read under the same rules: no document
+    # default and an operation that declares nothing authenticates nobody.
+    weakened = copy.deepcopy(device)
+    del weakened["security"]
+    found = _security_findings(weakened, "device")
+    assert {violation.location for violation in found} == _protected_locations("device"), [
+        violation.render() for violation in found
+    ]
+    anonymous = [
+        violation for violation in found if violation.location == "GET /status"
+    ]
+    assert anonymous and "bearerAuth" not in anonymous[0].detail, anonymous
+    # A named scheme is a promise, not a definition: an anonymous alternative
+    # names the reason, and the message must say which failure it reports.
+    weakened = copy.deepcopy(device)
+    weakened["paths"]["/status"]["get"]["security"] = [{}, {"bearerAuth": []}]
+    found = [
+        violation
+        for violation in _security_findings(weakened, "device")
+        if violation.location == "GET /status"
+    ]
+    assert len(found) == 1, [violation.render() for violation in found]
+    assert "bearerAuth" in found[0].detail and "alternative" in found[0].detail.lower(), (
+        found[0].render()
+    )
+
+
+def test_protected_operations_require_an_http_bearer_scheme(device: dict, backend: dict) -> None:
+    """``bearerAuth`` must exist as ``{type: http, scheme: bearer}`` — or it is missing.
+
+    Nothing used to inspect ``components.securitySchemes``: deleting the scheme
+    or replacing it with a query-token ``apiKey`` kept every protected operation
+    green while documenting no authentication mechanism at all. The scheme check
+    runs per protected operation, and the exemptions keep their exemption
+    exactly — pairing and the two health probes never carry the finding.
+    """
+    assert not check_openapi("device", device)
+    assert not check_openapi("backend", backend)
+
+    for label, mutate in (
+        ("undefined scheme", lambda d: d["components"]["securitySchemes"].pop("bearerAuth")),
+        (
+            "apiKey scheme",
+            lambda d: d["components"]["securitySchemes"].update(
+                bearerAuth={"type": "apiKey", "in": "query", "name": "token"}
+            ),
+        ),
+        (
+            "non-http type",
+            lambda d: d["components"]["securitySchemes"].update(
+                bearerAuth={"type": "oauth2", "flows": {}}
+            ),
+        ),
+        (
+            "wrong scheme value",
+            lambda d: d["components"]["securitySchemes"]["bearerAuth"].update(scheme="basic"),
+        ),
+        (
+            "non-string scheme value",
+            lambda d: d["components"]["securitySchemes"]["bearerAuth"].update(scheme=1),
+        ),
+    ):
+        weakened = copy.deepcopy(device)
+        mutate(weakened)
+        found = _security_findings(weakened, "device")
+        assert {violation.location for violation in found} == _protected_locations("device"), (
+            label,
+            [violation.render() for violation in found],
+        )
+        assert len(found) == len({violation.location for violation in found}), label
+        named = next(
+            violation for violation in found if violation.location == "GET /status"
+        )
+        assert "securitySchemes" in named.detail and "bearerAuth" in named.detail, (
+            label,
+            named.render(),
+        )
+
+    # The exemptions are untouched by the scheme half as well: with the scheme
+    # gone, the backend still refuses nothing on the two health probes.
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["securitySchemes"].pop("bearerAuth")
+    found = _security_findings(weakened, "backend")
+    assert {violation.location for violation in found} == _protected_locations("backend"), [
+        violation.render() for violation in found
+    ]
+    assert {
+        "POST /pair",
+        "GET /health/live",
+        "GET /health/ready",
+    }.isdisjoint({violation.location for violation in found}), [
+        violation.render() for violation in found
+    ]
+
+    # A scheme name the document spells in capitals is the same scheme: OpenAPI
+    # treats scheme values case-insensitively, so the gate must not.
+    strengthened = copy.deepcopy(device)
+    strengthened["components"]["securitySchemes"]["bearerAuth"]["scheme"] = "BEARER"
+    assert not _security_findings(strengthened, "device")
+
+
+def test_a_ref_sibling_assertion_binds_through_schema_resolution(device: dict) -> None:
+    """JSON Schema 2020-12 §8.2.3.1: siblings of a ``$ref`` are assertions too.
+
+    ``resolve_refs`` returned the referenced target and dropped every sibling,
+    so the review's ``maxLength: 1`` beside the ``setup_secret`` pointer in
+    ``PairRequest`` was enforced by a standard Draft 2020-12 validator and
+    silently ignored by the published-schema path — body validation and the
+    corpus kept certifying the violating 43-character secret. Siblings now
+    merge over the resolved target, agreeing with the standard validator on
+    the same document.
+    """
+    from jsonschema import Draft202012Validator, RefResolver
+
+    instance = {"v": 1, "setup_secret": "A" * 43, "client_name": "long-client"}
+    untouched = resolve_refs(
+        device["components"]["schemas"]["PairRequest"], root=device
+    )
+    assert not schema_error_report(untouched, instance), (
+        "the committed PairRequest accepts this secret today"
+    )
+
+    weakened = copy.deepcopy(device)
+    weakened["components"]["schemas"]["PairRequest"]["properties"]["setup_secret"][
+        "maxLength"
+    ] = 1
+    reference = Draft202012Validator(
+        weakened["components"]["schemas"]["PairRequest"],
+        resolver=RefResolver.from_schema(weakened),
+    )
+    standard = [error.message for error in reference.iter_errors(instance)]
+    assert standard, "a standard validator must refuse the 43-character secret"
+
+    resolved = resolve_refs(
+        weakened["components"]["schemas"]["PairRequest"], root=weakened
+    )
+    report = schema_error_report(resolved, instance)
+    assert any(keyword == "maxLength" for _property, keyword, _message in report), report
+
+
+def test_a_ref_sibling_wins_the_key_it_shares_with_its_target(device: dict) -> None:
+    """Conjunction means the sibling overrides a conflicting target key."""
+    weakened = copy.deepcopy(device)
+    node = weakened["components"]["schemas"]["PairRequest"]["properties"]["setup_secret"]
+    node["description"] = "sibling wins"
+    resolved = resolve_refs(node, root=weakened)
+    plain = resolve_refs({"$ref": "#/components/schemas/SetupSecret"}, root=weakened)
+    assert resolved["description"] == "sibling wins"
+    assert plain["description"] != "sibling wins", "SetupSecret lost its own description"
+    # Assertions merged from the target keep binding alongside the override.
+    assert resolved["maxLength"] == 43 and resolved["pattern"].startswith("^")
+
+
+def test_boolean_and_scalar_ref_targets_conjoin_the_obvious_way() -> None:
+    """A boolean target conjoins; a scalar one cannot conjoin at all.
+
+    ``true`` leaves the siblings as the whole satisfiable assertion, ``false``
+    makes the node unsatisfiable (an unsatisfiable conjunct dominates), and a
+    non-schema target with siblings is refused by name — a schema object
+    cannot conjoin assertions with ``"hello"``. A scalar target without
+    siblings keeps today's wholesale return.
+    """
+    document = {"$defs": {"allow": True, "deny": False, "word": "hello"}}
+    assert resolve_refs({"$ref": "#/$defs/allow", "maxLength": 7}, root=document) == {
+        "maxLength": 7
+    }
+    assert resolve_refs({"$ref": "#/$defs/allow"}, root=document) == {}
+    assert resolve_refs({"$ref": "#/$defs/deny", "maxLength": 7}, root=document) is False
+    assert resolve_refs({"$ref": "#/$defs/deny"}, root=document) is False
+    assert resolve_refs({"$ref": "#/$defs/word"}, root=document) == "hello"
+    with pytest.raises(ValueError, match=re.escape("#/$defs/word")):
+        resolve_refs({"$ref": "#/$defs/word", "maxLength": 7}, root=document)
+
+
+def test_a_reference_object_sibling_does_not_reach_the_resolved_target() -> None:
+    """OpenAPI 3.1 Reference Objects do not augment the target — strip, then follow.
+
+    The response/header/parameter positions are Reference Object territory, not
+    Schema Object territory: members other than ``$ref`` riding beside a
+    reference are decorations that must not change a gate decision, unlike
+    JSON Schema siblings which are assertions. ``resolve_reference`` is that
+    read: every non-``$ref`` sibling is stripped before the pointer is
+    followed. A node without ``$ref`` is read verbatim, as ``resolve_refs``
+    reads it.
+    """
+    document = {"components": {"responses": {"Ok": {"description": "target words"}}}}
+    resolved = resolve_reference(
+        {"$ref": "#/components/responses/Ok", "required": True, "x-decoration": 1},
+        root=document,
+    )
+    assert resolved == {"description": "target words"}
+    assert resolve_reference({"description": "plain"}, root=document) == {
+        "description": "plain"
+    }
+
+
+def test_a_decorated_reference_does_not_promise_content_the_target_withholds(
+    backend: dict,
+) -> None:
+    """The round-16 full-read/shallow-read agreement, restated for the split.
+
+    The HEAD/204 no-body gate asks the *full* read what the response carries
+    while the table loops read the guarded shallow hop. Both must resolve a
+    Reference-Object position the same way: through ``resolve_reference``,
+    which drops non-``$ref`` siblings. A ``content`` member decorating a
+    ``$ref`` beside the HEAD 200 is decoration the reference does not merge —
+    the target still promises no body, and the document must certify clean
+    exactly as the undecorated ``$ref`` does (the two round-16 agreement tests
+    at the top of this module pin the undecorated and ``$ref``-with-siblings
+    alias hops).
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    head200 = weakened["paths"]["/uploads/{id}/files/{name}"]["head"]["responses"]["200"]
+    weakened["components"]["responses"]["HeadUpload200"] = copy.deepcopy(head200)
+    weakened["paths"]["/uploads/{id}/files/{name}"]["head"]["responses"]["200"] = {
+        "$ref": "#/components/responses/HeadUpload200",
+        "content": {"application/json": {}},
+    }
+    found = check_openapi("backend", weakened)
+    assert not [
+        violation
+        for violation in found
+        if "promises a body the method or status forbids" in violation.detail
+    ], [violation.render() for violation in found]
