@@ -19,7 +19,14 @@ from . import errors as E
 from .api_model import Operation, operation_for
 from .bounds import DOCUMENTED_ERROR_STATUSES
 from .errors import Violation
-from .schema_docs import canonical, check_local_refs, check_metaschema, resolve_reference, resolve_refs
+from .schema_docs import (
+    canonical,
+    check_local_refs,
+    check_metaschema,
+    mapping_or_empty,
+    resolve_reference,
+    resolve_refs,
+)
 
 #: Operations the spec leaves unauthenticated: pairing happens before a token
 #: exists, and the two health probes are documented as "minimal health only".
@@ -160,8 +167,25 @@ def check_openapi(contract: str, document: Mapping[str, Any]) -> list[Violation]
                 f"expected {expected_server!r}",
             )
         )
-    components = document.get("components", {})
-    if "Error" not in components.get("schemas", {}):
+    # A declared ``components`` of any other shape is a document failure the
+    # gate names once, here, and every reader below then asks its question of
+    # an empty container: the named findings a missing component earns
+    # ("reusable envelope missing", the schema-not-defined drifts, the
+    # bearerAuth-not-defined security gap) all still fire, and the CLI exits
+    # 1 on a malformed document instead of dying over ``None.get`` as the
+    # exit-2 "validator internal error" it is not. An absent ``components``
+    # says exactly what it always said, with no new finding.
+    declared_components = document.get("components")
+    if "components" in document and not isinstance(declared_components, Mapping):
+        found.append(
+            Violation(
+                E.SPEC_STRUCTURE_MISSING,
+                "components",
+                f"components is {type(declared_components).__name__}, not a component container",
+            )
+        )
+    components = mapping_or_empty(declared_components)
+    if "Error" not in mapping_or_empty(components.get("schemas")):
         found.append(
             Violation(E.SPEC_STRUCTURE_MISSING, "components/schemas/Error", "reusable envelope missing")
         )
@@ -211,7 +235,7 @@ def check_shared_error_envelope(documents: Mapping[str, Mapping[str, Any]]) -> l
         return [Violation(E.SPEC_STRUCTURE_MISSING, "error envelope", "both contracts are required")]
     rendered = {}
     for contract, document in documents.items():
-        schemas = document.get("components", {}).get("schemas", {})
+        schemas = mapping_or_empty(mapping_or_empty(document.get("components")).get("schemas"))
         if "Error" not in schemas:
             return [Violation(E.SPEC_STRUCTURE_MISSING, f"{contract}-v1 Error", "missing")]
         rendered[contract] = canonical(resolve_refs(schemas["Error"], root=document))
@@ -241,7 +265,7 @@ def check_manifest_component(
         document = documents.get(contract)
         if document is None:  # pragma: no cover - loader reports a missing file first
             continue
-        schemas = document.get("components", {}).get("schemas", {})
+        schemas = mapping_or_empty(mapping_or_empty(document.get("components")).get("schemas"))
         if "Manifest" not in schemas:
             found.append(
                 Violation(E.SPEC_STRUCTURE_MISSING, f"{contract}-v1 Manifest", "component missing")
@@ -262,7 +286,7 @@ def check_manifest_component(
 def check_headers_contract(document: Mapping[str, Any], contract: str) -> list[Violation]:
     """Shared header component schemas must keep the shapes the spec states."""
     found: list[Violation] = []
-    headers = document.get("components", {}).get("headers", {})
+    headers = mapping_or_empty(mapping_or_empty(document.get("components")).get("headers"))
     for name, expected in _EXPECTED_HEADER_SCHEMAS.items():
         if name not in headers:
             found.append(Violation(E.SPEC_STRUCTURE_MISSING, f"{contract}-v1 headers/{name}", "missing"))
@@ -356,8 +380,7 @@ def check_ota_deferral(document: Mapping[str, Any], contracts_dir: Path) -> list
             # already named by the resolution branch above, and the fallback
             # hides no reference the document does not carry.
             chained = _alias_chained_reference(ota.get("requestBody", {}), document)
-            schema: Any = {}
-            entry_ref = False
+            entry: Any = {}
             for host in (chained, body):
                 if not isinstance(host, Mapping):
                     continue
@@ -366,22 +389,27 @@ def check_ota_deferral(document: Mapping[str, Any], contracts_dir: Path) -> list
                     continue
                 candidate = host_content.get("application/octet-stream")
                 if isinstance(candidate, Mapping):
-                    schema = candidate.get("schema", {})
-                    # A `$ref` spelled at the Media Type Object position is not
-                    # an OpenAPI 3.1 reference position — and no OpenAPI
-                    # metaschema gates these documents — but it is still a
-                    # route for a shared component to carry a referenced schema
-                    # into the body, so treat it as the same deferral refusal.
-                    # Fail-closed and baseline-safe: the committed octet-stream
-                    # entry spells no `$ref` (and the operation checker's
-                    # binding read shares this entry-position blindness).
-                    entry_ref = "$ref" in candidate
+                    entry = candidate
                     break
-            # A non-object `schema` references nothing, and the guarded read
-            # says so as a shape the caller's own verdict covers — the `in`
-            # test over a scalar would be the exit-2 crash this check exists
-            # to avoid.
-            if entry_ref or (isinstance(schema, Mapping) and "$ref" in schema):
+            # The deferred body may not reference a request schema at all, so
+            # the question is whether the octet-stream Media Type Object — or
+            # anything nested inside it, its ``schema`` member included —
+            # spells a ``$ref``. A direct member is the first spelling the
+            # gate used to know; a reference smuggled under a standard
+            # applicator (``schema: {"allOf": [{"$ref": …}]}`` or any deeper
+            # Mapping/Sequence nest) is the same schema reference and earns
+            # the same refusal — the round-17/R3-N2 bypass, closed fail-closed
+            # as the Orchestrator ruled. A `$ref` spelled at the Media Type
+            # Object position itself is not an OpenAPI 3.1 reference position
+            # — and no OpenAPI metaschema gates these documents — but it too
+            # is a route for a shared component to carry a referenced schema
+            # into the body, so the same refusal has always covered it.
+            # Fail-closed and baseline-safe: the committed octet-stream entry
+            # spells no `$ref` anywhere in its subtree. Non-mappings carry no
+            # members and are guarded as before — the `in` test over a scalar
+            # would be the exit-2 crash this check exists to avoid. The scan
+            # walks the finite un-inlined entry, so no cycle budget is due.
+            if _subtree_spells_reference(entry):
                 found.append(
                     Violation(
                         E.OTA_DEFERRAL_MISSING,
@@ -390,6 +418,27 @@ def check_ota_deferral(document: Mapping[str, Any], contracts_dir: Path) -> list
                     )
                 )
     return found
+
+
+def _subtree_spells_reference(node: Any) -> bool:
+    """True when any Mapping member of the subtree — ``node`` included — carries a ``$ref``.
+
+    :func:`check_ota_deferral` asks this of the deferred body's octet-stream
+    Media Type Object: the encoding is deferred, so no request schema may be
+    referenced through it at *any* depth — a reference under a standard
+    schema applicator (``allOf``/``anyOf``/``items`` and every other nested
+    Mapping or Sequence member) is as much a schema reference as one spelled
+    directly on the entry or its ``schema``. Scalars reference nothing and are
+    never membership-tested, so a malformed member answers the verdict, never
+    the crash.
+    """
+    if isinstance(node, Mapping):
+        return "$ref" in node or any(
+            _subtree_spells_reference(value) for value in node.values()
+        )
+    if isinstance(node, list):
+        return any(_subtree_spells_reference(item) for item in node)
+    return False
 
 
 def _check_operation(
@@ -570,17 +619,38 @@ def _check_operation(
                 Violation(E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status_key}", unreadable)
             )
             continue
+        # A one-hop node that is itself a Reference Object (a decorated alias:
+        # ``{"$ref": …, "headers": …}``) does not merge its ``headers``
+        # member — Reference Object decoration never reaches the target, at
+        # this hop or any other — so that member is inert here: it must not
+        # stand in as the response's name map (a real duplicate inside the
+        # target hid behind an inert ``headers: {}``) and it must not be
+        # inspected as if it declared response headers (a dangling ``$ref``
+        # inside the ignored decoration earned a false component drift). The
+        # effective header map is the target's own, which the two-hop branch
+        # below reads from the full resolution the scan already computes.
+        shallow_is_reference = "$ref" in shallow
         declared_headers = shallow.get("headers")
         # The map is scannable only when it is a map of declared names: a
         # ``$ref`` node is not one (the table loops read that shape through the
-        # full response resolution below), and a member that is not a map at all
-        # declares no names for the scan to read.
-        headers_scannable = isinstance(declared_headers, Mapping) and "$ref" not in declared_headers
+        # full response resolution below), a member that is not a map at all
+        # declares no names for the scan to read, and the inert decoration of
+        # a Reference-Object alias declares nothing at all.
+        headers_scannable = (
+            isinstance(declared_headers, Mapping)
+            and "$ref" not in declared_headers
+            and not shallow_is_reference
+        )
         if unreadable is not None:
             # The component the response points at is there but its full read
             # failed somewhere. Name the response unless the failure sat inside
             # a header map the scan below can read, where the per-header read
-            # reports the very member that carries the bad `$ref`.
+            # reports the very member that carries the bad `$ref`. Behind a
+            # decorated alias the map the scan reads is the target's and the
+            # full read just failed on it, so there is no scannable shallow
+            # map to name — the response-level drift names the failing
+            # member from the resolution error instead, and an inert
+            # ``headers: {}`` cannot talk the scan out of it.
             without_headers = {key: value for key, value in shallow.items() if key != "headers"}
             try:
                 resolve_reference(without_headers, document)
@@ -594,15 +664,18 @@ def _check_operation(
                 )
         if headers_scannable:
             name_map: Mapping[str, Any] | None = declared_headers
-        elif unreadable is None and "headers" not in shallow:
+        elif unreadable is None and ("headers" not in shallow or shallow_is_reference):
             # A two-hop `$ref` chain landed on an intermediate node that carries
-            # no member of its own, so the full resolution holds the header map
-            # the hop could not reach — the duplicate-spelling gate keeps its
-            # round-12 coverage for this shape. The shape verdict travels with
-            # it: an alias may hide a target that declares `headers: null` (or
-            # any other non-map), and reading only the shallow node let that
-            # member escape the refusal the direct shape gets (round-14's
-            # recorded two-hop escape).
+            # no header member of its own — or carries only inert decoration,
+            # which the reference does not merge — so the full resolution holds
+            # the header map the hop could not reach: the effective target's
+            # duplicate-spelling and per-header coverage travel with it (an
+            # inert ``headers: {}`` or ``headers: <dangling>`` beside the alias
+            # neither hides the target's duplicates nor fabricates findings).
+            # The shape verdict travels with it too: an alias may hide a target
+            # that declares `headers: null` (or any other non-map), and reading
+            # only the shallow node let that member escape the refusal the
+            # direct shape gets (round-14's recorded two-hop escape).
             full_headers = resolved_response.get("headers")
             if "headers" in resolved_response and not isinstance(full_headers, Mapping):
                 found.append(
@@ -625,8 +698,12 @@ def _check_operation(
             # *presence* is the question, not truthiness: an explicit
             # `headers:` null declares a member OpenAPI defines as a Map, and
             # the status may carry no mandatory header for any presence loop to
-            # notice it (the shared 404 was exactly that silence).
-            if "headers" in shallow:
+            # notice it (the shared 404 was exactly that silence). Behind a
+            # Reference-Object alias there is no declared member to judge at
+            # all — the decoration beside the `$ref` is inert whatever the
+            # full read did with the target, and the drift the failure earns
+            # was already named above.
+            if "headers" in shallow and not shallow_is_reference:
                 if not isinstance(declared_headers, Mapping):
                     # OpenAPI's Response Object defines `headers` as a Map, so a
                     # declared member of any other shape is a document defect
@@ -1417,8 +1494,10 @@ def _authentication_gap(document: Mapping[str, Any], operation: Operation) -> st
                 f"alternative {alternative!r} names no bearerAuth requirement, and "
                 "one alternative may not authenticate nobody"
             )
-    schemes = document.get("components", {}).get("securitySchemes", {})
-    declared = schemes.get("bearerAuth") if isinstance(schemes, Mapping) else None
+    schemes = mapping_or_empty(
+        mapping_or_empty(document.get("components")).get("securitySchemes")
+    )
+    declared = schemes.get("bearerAuth")
     # OpenAPI permits a Reference Object where the Components Object defines a
     # security scheme, so the name is followed the Reference-Object way first —
     # the same guarded read the response/header/body positions take. A dangling

@@ -42,7 +42,7 @@ from .bounds import (
 )
 from .errors import Violation
 from .media_validate import MANIFEST_WIRE_SUPPRESSED, validate_manifest_fields
-from .schema_docs import is_json_integer, resolve_refs, schema_error_report
+from .schema_docs import is_json_integer, mapping_or_empty, schema_error_report
 
 _UUID = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 _QUOTED_SHA = re.compile(r'\A"[0-9a-f]{64}"\Z')
@@ -593,7 +593,7 @@ def _validate_against_component(
     entry: Mapping[str, Any],
 ) -> list[Violation]:
     """Validate a body against one ``components/schemas`` entry."""
-    components = document.get("components", {}).get("schemas", {})
+    components = mapping_or_empty(mapping_or_empty(document.get("components")).get("schemas"))
     if schema_name not in components:
         return [
             Violation(
@@ -602,9 +602,14 @@ def _validate_against_component(
                 "the contract does not define the schema the index binds",
             )
         ]
-    schema = resolve_refs(components[schema_name], root=document)
     found: list[Violation] = []
-    for property_name, keyword, message in schema_error_report(schema, instance):
+    # The raw node plus the document root, never a resolve_refs pre-expansion:
+    # a sibling ``unevaluatedProperties``/``unevaluatedItems`` beside a
+    # ``$ref`` only sees the referenced target's annotations when the
+    # standard library evaluates the node in its document scope (§11.3).
+    for property_name, keyword, message in schema_error_report(
+        components[schema_name], instance, root=document
+    ):
         code = E.API_SCHEMA_MISSING_FIELD if keyword == "required" else E.API_SCHEMA
         location = f"{entry['id']}{f' at {property_name}' if property_name else ''}"
         found.append(Violation(code, location, message))
@@ -627,7 +632,7 @@ def _validate_error_vector(
     ``API_SCHEMA`` — the code every other documented response reports — rather than a
     complaint about an envelope this status no longer uses.
     """
-    components = document.get("components", {}).get("schemas", {})
+    components = mapping_or_empty(mapping_or_empty(document.get("components")).get("schemas"))
     schema_name = operation.response_schemas.get(status) or "Error"
     if schema_name not in components:
         return [
@@ -638,9 +643,14 @@ def _validate_error_vector(
             )
         ]
     schema_code = E.ERROR_ENVELOPE_INVALID if schema_name == "Error" else E.API_SCHEMA
-    schema = resolve_refs(components[schema_name], root=document)
     found: list[Violation] = []
-    for property_name, keyword, message in schema_error_report(schema, body):
+    # Raw node plus document root, as in :func:`_validate_against_component`:
+    # the shared envelope's ``$ref`` members must keep their JSON Schema scope
+    # so a sibling ``unevaluatedProperties`` judges the instance with the
+    # annotations the referenced body produced, not against a flattened tree.
+    for property_name, keyword, message in schema_error_report(
+        components[schema_name], body, root=document
+    ):
         found.append(
             Violation(
                 schema_code,
@@ -1543,7 +1553,13 @@ def validate_manifest_binding(entry: Mapping[str, Any], body: Mapping[str, Any],
             )
         ]
     found: list[Violation] = []
-    for property_name, keyword, message in schema_error_report(media_schema, manifest):
+    # The manifest schema is its own document root — its ``#/...`` pointers
+    # address its own ``$defs`` — so name it as the root and let the standard
+    # library resolve them in place, the same rooted read the API-path
+    # validators use, instead of expanding the tree beforehand.
+    for property_name, keyword, message in schema_error_report(
+        media_schema, manifest, root=media_schema
+    ):
         if (property_name, keyword) in MANIFEST_WIRE_SUPPRESSED:
             # The mirror states the shape; the rules below name this defect themselves, and
             # a second code for one defect would make the vector's declared set a matter of

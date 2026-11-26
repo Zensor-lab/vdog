@@ -3682,3 +3682,344 @@ def test_a_referenced_body_cannot_smuggle_a_request_schema_past_the_deferral_gat
         "schema"
     ] = "not-a-schema"
     assert not check_ota_deferral(scalar_schema, CONTRACTS)
+
+
+# --- Round 19: annotation-scope validation, aliased-header scan, ----------------
+# --- components guards, and the composed OTA schema reference --------------------
+
+
+def _report_triples(
+    report: list[tuple[str, str, str]],
+) -> set[tuple[str, str, str]]:
+    return {(property_name, keyword, message) for property_name, keyword, message in report}
+
+
+def _standard_triples(validator, instance) -> set[tuple[str, str, str]]:
+    triples: set[tuple[str, str, str]] = set()
+    for error in validator.iter_errors(instance):
+        property_name = ""
+        for part in reversed(list(error.absolute_path)):
+            if isinstance(part, str):
+                property_name = part
+                break
+        message = error.message.replace("\n", " ")
+        if len(message) > 200:
+            message = message[:197] + "..."
+        triples.add((property_name, str(error.validator or ""), message))
+    return triples
+
+
+def test_a_ref_sibling_unevaluated_properties_agrees_with_the_standard_validator(
+    device: dict, tmp_path: Path
+) -> None:
+    """F1: instance validation must keep ``$ref`` siblings in schema scope.
+
+    The round-18 ``{"allOf": [target, siblings]}`` pre-expansion splits the
+    ``$ref`` node into two independently validated branches, and
+    ``unevaluatedProperties`` (JSON Schema 2020-12 §11.3) only observes the
+    annotations of applicators in its own scope — so the review's strict
+    ``PairRequest`` = ``{"$ref": …, "unevaluatedProperties": false}`` over a
+    copy of itself reported every legitimate field as unevaluated. The report
+    now judges the raw node against the whole document through an offline
+    local-reference registry, and this pins it against a standard Draft
+    2020-12 validator on the actual contract: the valid pair request reports
+    zero errors and the corpus certifies the edited document 441/0, while the
+    extra property earns exactly the errors — and only the errors — the
+    standard validator names.
+    """
+    import yaml
+
+    from jsonschema import Draft202012Validator
+
+    assert not check_openapi("device", device)
+
+    weakened = copy.deepcopy(device)
+    weakened["components"]["schemas"]["ReviewPairBase"] = copy.deepcopy(
+        weakened["components"]["schemas"]["PairRequest"]
+    )
+    weakened["components"]["schemas"]["PairRequest"] = {
+        "$ref": "#/components/schemas/ReviewPairBase",
+        "unevaluatedProperties": False,
+    }
+    raw = weakened["components"]["schemas"]["PairRequest"]
+    valid = {"v": 1, "setup_secret": "A" * 43, "client_name": "review"}
+    oracle = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "#/components/schemas/PairRequest",
+        "components": weakened["components"],
+    }
+
+    # The valid pair request: zero errors from the standard validator over the
+    # complete local root, and zero from the report on the raw node.
+    assert not list(Draft202012Validator(oracle).iter_errors(valid)), (
+        "the standard validator itself must accept the valid pair request"
+    )
+    assert not schema_error_report(raw, valid, root=weakened), (
+        "a $ref target that already evaluates every field must leave a sibling "
+        "unevaluatedProperties nothing to refuse"
+    )
+
+    # The extra property: the report agrees with the standard validator on the
+    # exact (property, keyword, message) triples — including the one
+    # unevaluatedProperties error the pre-expansion fabricated for every
+    # legitimate field instead.
+    extra = {**valid, "surprise": True}
+    standard = _standard_triples(Draft202012Validator(oracle), extra)
+    assert sum(keyword == "unevaluatedProperties" for _p, keyword, _m in standard) == 1, standard
+    report = schema_error_report(raw, extra, root=weakened)
+    assert _report_triples(report) == standard, (report, sorted(standard))
+
+    # The complete corpus certifies that edited document, every fixture.
+    broken = tmp_path / "contracts"
+    shutil.copytree(CONTRACTS, broken)
+    (broken / "device-v1.yaml").write_text(
+        yaml.safe_dump(weakened, sort_keys=False), encoding="utf-8"
+    )
+    result = validate_contracts(tmp_path)
+    assert result.fixture_total == 441 and result.passed, [
+        violation.render() for violation in result.violations
+    ]
+
+    # The real API path keeps the referenced target's verdict (the round-18
+    # ``+``-secret pin, restated for the raw rooted read that replaced the
+    # pre-expansion at this call site): a strictly broader sibling pattern
+    # beside the ``setup_secret`` pointer cannot admit the ``+`` string the
+    # referenced ``SetupSecret`` prohibits, and the valid secret still passes.
+    from tools.contracts.api_validate import _validate_against_component
+
+    api_doc = copy.deepcopy(device)
+    api_doc["components"]["schemas"]["PairRequest"]["properties"]["setup_secret"][
+        "pattern"
+    ] = r"^[A-Za-z0-9_+\-]{43}$"
+    entry = {"id": "device/review-plus-secret"}
+    violations = _validate_against_component(
+        api_doc, "PairRequest", {"v": 1, "setup_secret": "+" * 43, "client_name": "review"}, entry
+    )
+    assert any(
+        violation.code == E.API_SCHEMA
+        and "^[A-Za-z0-9_-]{43}$" in violation.detail
+        for violation in violations
+    ), [violation.render() for violation in violations]
+    assert not _validate_against_component(api_doc, "PairRequest", valid, entry)
+
+
+def test_a_ref_sibling_unevaluated_items_agrees_with_the_standard_validator() -> None:
+    """F1's §11.3 twin: ``unevaluatedItems`` shares the annotation-scope rule.
+
+    The same scoping dependency that broke ``unevaluatedProperties`` also
+    breaks ``unevaluatedItems``: a sibling of a ``$ref`` may only see the
+    ``prefixItems`` annotations the target produces in the target's own
+    scope. A target declaring ``prefixItems`` with a sibling
+    ``unevaluatedItems: false`` must accept the prefix-length array and
+    refuse the additional item — exactly as the standard validator does.
+    """
+    from jsonschema import Draft202012Validator
+
+    document = {"$defs": {"Tuple": {"type": "array", "prefixItems": [{"type": "integer"}]}}}
+    node = {"$ref": "#/$defs/Tuple", "unevaluatedItems": False}
+    oracle = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "#/$defs/Tuple",
+        "unevaluatedItems": False,
+        "$defs": document["$defs"],
+    }
+
+    assert not list(Draft202012Validator(oracle).iter_errors([1]))
+    assert not schema_error_report(node, [1], root=document), (
+        "a $ref target's prefixItems annotation must bind a sibling unevaluatedItems"
+    )
+
+    standard = _standard_triples(Draft202012Validator(oracle), [1, "x"])
+    assert [keyword for _p, keyword, _m in standard] == ["unevaluatedItems"], standard
+    report = schema_error_report(node, [1, "x"], root=document)
+    assert _report_triples(report) == standard, (report, sorted(standard))
+
+
+def test_a_decorated_response_alias_cannot_hide_target_duplicate_headers(
+    backend: dict, tmp_path: Path
+) -> None:
+    """F2: the all-response scan reads the *effective target's* header map.
+
+    The scan took the header name map from ``_shallow_reference``'s one-hop
+    node even when that node was itself a Reference Object, so a ``headers``
+    member beside the alias's ``$ref`` — inert decoration the reference does
+    not merge — displaced the target's real map: ``ETag`` beside ``etag``
+    inside a shared ``components/responses`` member earned its duplicate
+    finding when referenced directly but hid behind an alias carrying
+    ``headers: {}``. The scan now ignores the decoration and reads the
+    target's map, so the duplicate is refused whatever route the document
+    takes to it, and the complete validator fails the corpus on it.
+    """
+    import yaml
+
+    assert not check_openapi("backend", backend)
+
+    weakened = copy.deepcopy(backend)
+    real = copy.deepcopy(weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"])
+    real["headers"] = {
+        "ETag": {"$ref": "#/components/headers/ETagSha256"},
+        "etag": {"$ref": "#/components/headers/ETagSha256"},
+    }
+    weakened["components"]["responses"]["ReviewClip200"] = real
+
+    def duplicates(found: list) -> list:
+        return [
+            violation
+            for violation in found
+            if violation.code == E.SPEC_STRUCTURE_MISSING and "declared twice" in violation.detail
+        ]
+
+    # The direct-reference control, unchanged: the target's own duplicate
+    # spelling earns its one finding.
+    direct = copy.deepcopy(weakened)
+    direct["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"] = {
+        "$ref": "#/components/responses/ReviewClip200"
+    }
+    direct_found = check_openapi("backend", direct)
+    assert len(duplicates(direct_found)) == 1, [v.render() for v in direct_found]
+
+    # The decorated alias: an inert ``headers: {}`` beside the reference must
+    # not stand in for the target's map — the duplicate still earns exactly
+    # one finding, and it is the only thing this document breaks.
+    weakened["components"]["responses"]["ReviewClipAlias"] = {
+        "$ref": "#/components/responses/ReviewClip200",
+        "headers": {},
+    }
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"] = {
+        "$ref": "#/components/responses/ReviewClipAlias"
+    }
+    found = check_openapi("backend", weakened)
+    assert len(duplicates(found)) == 1, [violation.render() for violation in found]
+    assert len(found) == 1, [violation.render() for violation in found]
+
+    # And the corpus run on that edited document FAILS.
+    broken = tmp_path / "contracts"
+    shutil.copytree(CONTRACTS, broken)
+    (broken / "backend-v1.yaml").write_text(
+        yaml.safe_dump(weakened, sort_keys=False), encoding="utf-8"
+    )
+    result = validate_contracts(tmp_path)
+    assert not result.passed, "the complete validator must refuse the hidden duplicate"
+    assert any(
+        violation.code == E.SPEC_STRUCTURE_MISSING and "declared twice" in violation.detail
+        for violation in result.violations
+    ), [violation.render() for violation in result.violations]
+
+
+def test_a_decorated_response_alias_neither_fabricates_nor_silences_header_findings(
+    backend: dict,
+) -> None:
+    """F2's opposite direction, plus the per-attribution floor behind an alias.
+
+    A dangling ``$ref`` inside the ignored ``headers`` decoration is inert —
+    no effective read ever follows it, and the scan must not inspect it as a
+    real header (round 18 charged a false ``SPEC_COMPONENT_DRIFT`` for
+    exactly that). An unreadable *target* header map, by contrast, is a real
+    defect: with the alias's ``headers: {}`` out of the way the scan has no
+    readable shallow map to lean on, so the response-level drift names the
+    failing member — an inert decoration must not talk the scan into a
+    silent pass.
+    """
+    assert not check_openapi("backend", backend)
+
+    # The ignored decoration is never inspected: zero findings.
+    ignored = copy.deepcopy(backend)
+    ignored["components"]["responses"]["ReviewClip200"] = copy.deepcopy(
+        ignored["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"]
+    )
+    ignored["components"]["responses"]["ReviewClipAlias"] = {
+        "$ref": "#/components/responses/ReviewClip200",
+        "headers": {"X-Ignored": {"$ref": "#/components/headers/ReviewMissingHeader"}},
+    }
+    ignored["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"] = {
+        "$ref": "#/components/responses/ReviewClipAlias"
+    }
+    assert not check_openapi("backend", ignored), [
+        violation.render() for violation in check_openapi("backend", ignored)
+    ]
+
+    # The target's own unreadable header map still fails closed: the alias's
+    # ``headers: {}`` cannot hide it and cannot become the finding's subject.
+    broken = copy.deepcopy(backend)
+    target = copy.deepcopy(broken["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"])
+    target["headers"] = {"ETag": {"$ref": "#/components/headers/ReviewMissingHeader"}}
+    broken["components"]["responses"]["ReviewClip200"] = target
+    broken["components"]["responses"]["ReviewClipAlias"] = {
+        "$ref": "#/components/responses/ReviewClip200",
+        "headers": {},
+    }
+    broken["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"] = {
+        "$ref": "#/components/responses/ReviewClipAlias"
+    }
+    found = check_openapi("backend", broken)
+    drift = [
+        violation
+        for violation in found
+        if violation.code == E.SPEC_COMPONENT_DRIFT
+        and violation.location == "backend-v1 GET /clips/{clip_id} responses/200"
+        and "ReviewMissingHeader" in violation.detail
+    ]
+    assert drift, [violation.render() for violation in found]
+
+
+def test_the_ota_deferral_gate_refuses_a_schema_reference_under_any_applicator(
+    device: dict, tmp_path: Path
+) -> None:
+    """F4 (queued R3-N2): a schema ref under a standard applicator is still a ref.
+
+    The gate tested only whether ``$ref`` was a *direct* member of the
+    octet-stream Media Type Object or of its ``schema``, so
+    ``schema: {"allOf": [{"$ref": …}]}`` — legal OpenAPI schema content and
+    still a request-schema reference — slipped through clean while the
+    identical direct reference was refused. The deferral is enforced
+    fail-closed now: any Mapping member of the un-inlined entry's subtree
+    that carries a ``$ref`` earns the one refusal, and the non-mapping
+    guard (the ``in``-over-scalar crash) is kept.
+    """
+    import yaml
+
+    committed = check_ota_deferral(device, CONTRACTS)
+    assert not committed, [violation.render() for violation in committed]
+
+    expected = [
+        (
+            E.OTA_DEFERRAL_MISSING,
+            "POST /ota requestBody schema",
+            "no request schema may be referenced while the encoding is deferred",
+        )
+    ]
+    forms = {
+        "direct": {"$ref": "#/components/schemas/VersionedRequest"},
+        "allOf": {"allOf": [{"$ref": "#/components/schemas/VersionedRequest"}]},
+        "deep": {"anyOf": [{"items": {"$ref": "#/components/schemas/VersionedRequest"}}]},
+    }
+    composed = None
+    for label, schema in forms.items():
+        weakened = copy.deepcopy(device)
+        weakened["paths"]["/ota"]["post"]["requestBody"]["content"][
+            "application/octet-stream"
+        ]["schema"] = schema
+        found = check_ota_deferral(weakened, CONTRACTS)
+        assert [(v.code, v.location, v.detail) for v in found] == expected, (
+            label,
+            [v.render() for v in found],
+        )
+        if label == "allOf":
+            composed = weakened
+
+    # The complete corpus run on the composed-ref document reports the
+    # finding — it does not PASS — and the committed corpus stays 441/0/PASS.
+    broken = tmp_path / "contracts"
+    shutil.copytree(CONTRACTS, broken)
+    (broken / "device-v1.yaml").write_text(
+        yaml.safe_dump(composed, sort_keys=False), encoding="utf-8"
+    )
+    result = validate_contracts(tmp_path)
+    assert not result.passed, "the composed schema ref must fail the corpus run"
+    assert any(
+        violation.code == E.OTA_DEFERRAL_MISSING
+        and "no request schema may be referenced" in violation.detail
+        for violation in result.violations
+    ), [violation.render() for violation in result.violations]
+    baseline = validate_contracts(REPO_ROOT)
+    assert baseline.fixture_total == 441 and not baseline.violations and baseline.passed

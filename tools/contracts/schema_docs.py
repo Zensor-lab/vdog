@@ -17,11 +17,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, Mapping
 
+import referencing
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema._types import draft202012_type_checker
 from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.validators import create
+from referencing.jsonschema import specification_with
 
 #: Keys stripped before comparing two documents that must say the same thing.
 _NON_SEMANTIC_KEYS: frozenset[str] = frozenset(
@@ -126,6 +128,43 @@ DRAFT202012_VALIDATOR: Final = create(
     validators=Draft202012Validator.VALIDATORS,
     type_checker=draft202012_type_checker.redefine("integer", is_json_integer),
 )
+
+#: The base URI the local-reference registry of :func:`schema_error_report`
+#: registers the document root under, matching the empty base every ``#/…``
+#: pointer in a contract document carries. The registry is built offline from
+#: the caller's own document — no URI is ever fetched.
+_REPORT_BASE_URI: Final[str] = ""
+
+#: Synthetic member :func:`schema_error_report` hangs the validated node on
+#: inside its shallow copy of the root, so ``#/`` pointers keep resolving
+#: against the whole document while the validator judges the raw node. No
+#: committed schema references it, and OpenAPI's ``x-`` prefix reserves it
+#: from meaning anything to a document reader.
+_REPORT_TARGET_MEMBER: Final[str] = "x-schema-error-report-target"
+
+#: The Draft 2020-12 specification used to read a root that spells no
+#: ``$schema`` of its own — which an OpenAPI document never does. Its schemas
+#: are 2020-12 (the documents' ``jsonSchemaDialect`` says so, and
+#: :data:`DRAFT202012_VALIDATOR` is what judges them either way).
+_2020_12_SPECIFICATION: Final = specification_with(
+    "https://json-schema.org/draft/2020-12/schema"
+)
+
+
+def mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    """Return ``value`` when it is a mapping, and ``{}`` when it is not.
+
+    ``document.get("components", {})`` hands the caller ``None`` (or any other
+    declared value) when the document spells ``components: null``, and the
+    plain ``.get`` on the result then raises ``AttributeError`` out of the CLI
+    as exit 2 "validator internal error" for what is a malformed document, not
+    a broken validator. Every reader of a document container — the component
+    map and its ``schemas``/``headers``/``securitySchemes`` sub-containers —
+    reads through this guard so an unusable value declares nothing and the
+    named findings for what it fails to define still fire (the caller owns
+    naming the shape itself, once).
+    """
+    return value if isinstance(value, Mapping) else {}
 
 
 def load_json(path: Path) -> Any:
@@ -286,12 +325,19 @@ def resolve_refs(
     * ``"schema"`` (the default) reads a JSON Schema 2020-12 Schema Object
       (§8.2.3.1): a ``$ref``'s sibling members are assertions that conjoin with
       the referenced target, so when target and siblings are both mappings the
-      result is their exact conjunction ``{"allOf": [target, siblings]}`` — no
+      result is their conjunction ``{"allOf": [target, siblings]}`` — no
       sibling key can overwrite a target keyword, which a ``{**target,
-      **siblings}`` merge would allow. A boolean target conjoins the obvious
-      way (``true`` leaves the siblings standing alone, ``false`` makes the
-      whole node unsatisfiable); any other scalar target cannot conjoin with
-      siblings at all and is refused by its ``$ref``.
+      **siblings}`` merge would allow. It is *not*, however, an
+      annotation-scope-preserving conjunction (§11.3): a sibling
+      ``unevaluatedProperties``/``unevaluatedItems`` cannot observe the
+      annotations the referenced target produces across the allOf split, so
+      this expansion is for structural readers only and never for judging an
+      instance — :func:`schema_error_report` takes the raw node plus the
+      document ``root`` and lets the standard library keep ``$ref`` in scope.
+      A boolean target conjoins the obvious way (``true`` leaves the siblings
+      standing alone, ``false`` makes the whole node unsatisfiable); any other
+      scalar target cannot conjoin with siblings at all and is refused by its
+      ``$ref``.
     * ``"reference"`` reads OpenAPI 3.1 Reference Object positions
       (``components/responses``, ``headers``, ``parameters``, ``requestBodies``
       or ``securitySchemes`` entries): a Reference Object carries only
@@ -423,7 +469,10 @@ def check_local_refs(document: Mapping[str, Any]) -> str | None:
 
 
 def schema_error_report(
-    schema: Mapping[str, Any], instance: Any
+    schema: Mapping[str, Any],
+    instance: Any,
+    *,
+    root: Mapping[str, Any] | None = None,
 ) -> list[tuple[str, str, str]]:
     """Return ``(property, keyword, message)`` for every schema violation.
 
@@ -434,8 +483,25 @@ def schema_error_report(
     Instances may hold :class:`~decimal.Decimal` (the media index is parsed that way);
     :data:`DRAFT202012_VALIDATOR` is the ordinary 2020-12 validator plus the integer
     branch that makes such an instance judgeable.
+
+    ``root`` states which complete document the ``schema`` node was read out of, and
+    is what keeps ``$ref`` in its JSON Schema scope. With no root the node is judged
+    as it always has been — self-contained, its own ``#/…`` pointers resolving only
+    inside itself. With a root the **raw, unexpanded** node is judged against a
+    :class:`referencing.Registry` whose single resource at base URI ``""`` is the
+    root document, so every ``#/…`` pointer resolves against the whole document
+    offline (nothing leaves the machine) and — the part the
+    ``{"allOf": [target, siblings]}`` pre-expansion of :func:`resolve_refs` cannot
+    express (JSON Schema 2020-12 §11.3) — a ``unevaluatedProperties``/
+    ``unevaluatedItems`` sibling of a ``$ref`` still observes the annotations the
+    referenced target produced in its own scope. Because the validator anchors the
+    *evaluated* schema as the resource bare ``#/…`` pointers resolve inside, the node
+    is handed over as a member of a shallow copy of the root: the copy's own
+    top-level ``$ref`` — never meaningful in an OpenAPI or media-document root —
+    becomes the pointer to the node, and every other member, and every pointer the
+    node or its targets spell, resolves exactly as in the committed document.
     """
-    validator = DRAFT202012_VALIDATOR(schema, format_checker=FORMAT_CHECKER)
+    validator = _rooted_validator(schema, root)
     report: list[tuple[str, str, str]] = []
     for error in sorted(validator.iter_errors(instance), key=_error_sort_key):
         property_name = ""
@@ -449,6 +515,38 @@ def schema_error_report(
             message = message[:197] + "..."
         report.append((property_name, keyword, message))
     return report
+
+
+def _rooted_validator(
+    schema: Mapping[str, Any], root: Mapping[str, Any] | None
+) -> DRAFT202012_VALIDATOR:
+    """The instance validator :func:`schema_error_report` judges ``schema`` with.
+
+    With no root (or with the whole document as its own schema, where today's
+    self-contained read already resolves every pointer inside itself) this is
+    the plain validator over the node. With a distinct root the node travels
+    as :data:`_REPORT_TARGET_MEMBER` of a shallow copy of that root, so bare
+    ``#/…`` pointers reach the document's own members while the validator
+    still evaluates the raw node — ``$ref`` included, which the standard
+    library follows through the offline registry without ever expanding the
+    tree. A root that spells its own top-level ``$ref`` loses that assertion
+    to the pointer onto the node: the node, never the root, is what this
+    report judges, and no contract root spells one.
+    """
+    if root is None or root is schema:
+        return DRAFT202012_VALIDATOR(schema, format_checker=FORMAT_CHECKER)
+    registry = referencing.Registry().with_resource(
+        _REPORT_BASE_URI,
+        referencing.Resource.from_contents(
+            root, default_specification=_2020_12_SPECIFICATION
+        ),
+    )
+    rooted = dict(root)
+    rooted[_REPORT_TARGET_MEMBER] = schema
+    rooted["$ref"] = f"#/{_REPORT_TARGET_MEMBER}"
+    return DRAFT202012_VALIDATOR(
+        rooted, format_checker=FORMAT_CHECKER, registry=registry
+    )
 
 
 def check_metaschema(document: Mapping[str, Any]) -> str | None:

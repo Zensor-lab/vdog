@@ -363,3 +363,68 @@ def test_the_documented_entry_script_runs_as_a_process() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.splitlines()[-1] == "RESULT: PASS"
+
+
+def _broken_yaml_document(tmp_path: Path, kind: str, mutate) -> Path:
+    """Copy the contract tree and rewrite one OpenAPI document through ``mutate``."""
+    import yaml
+
+    from tools.contracts.schema_docs import load_yaml
+
+    broken = tmp_path / "contracts"
+    shutil.copytree(REPO_ROOT / "contracts", broken)
+    target = broken / f"{kind}-v1.yaml"
+    document = load_yaml(target)
+    mutate(document)
+    target.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return tmp_path
+
+
+@pytest.mark.parametrize("kind", ["device", "backend"])
+def test_cli_exits_one_when_components_is_not_a_container(
+    kind: str, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A declared ``components: null`` is a document failure, never exit 2.
+
+    Every component reader did ``document.get("components", {})`` and then
+    ``.get`` on the result — which is ``None.get`` for a document that
+    declares the container as null, so the CLI died as "validator internal
+    error" exit 2 (the round-18 deferred R1-F7). The malformed container is
+    now named once at ``components`` and every reader treats it as empty, so
+    the named findings it implies fire and the run reports like any other
+    failed check.
+    """
+    root = _broken_yaml_document(tmp_path, kind, lambda document: document.__setitem__("components", None))
+    monkeypatch.chdir(root)
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert "validator internal error" not in captured.err
+    assert "RESULT: FAIL" in captured.out
+    assert f"SPEC_STRUCTURE_MISSING: components: components is NoneType, not a component container" in captured.out
+    # The findings an empty container implies still fire (the envelope gate
+    # and the security gate read what the document no longer defines).
+    assert "reusable envelope missing" in captured.out
+
+
+def test_cli_exits_one_when_schemas_is_not_a_container(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Sub-containers answer the same question: unusable reads as empty.
+
+    ``components.schemas: null`` used to explode the same way one level
+    deeper. The schemas map is now read through the same guard, so the
+    named "reusable envelope missing" finding appears instead of a crash.
+    """
+
+    def break_schemas(document: dict) -> None:
+        document["components"]["schemas"] = None
+
+    root = _broken_yaml_document(tmp_path, "device", break_schemas)
+    monkeypatch.chdir(root)
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert "validator internal error" not in captured.err
+    assert "RESULT: FAIL" in captured.out
+    assert "reusable envelope missing" in captured.out
