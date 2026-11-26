@@ -158,20 +158,44 @@ def _construct_mapping_without_duplicate_keys(
             # own: merge it in as the safe constructor does (first source wins
             # among merges, explicit assignment beats all of them), but never
             # submit the merge itself to the duplicate check below.
+            #
+            # A sequence of merge sources is walked at the *node* level, the
+            # way ``BaseConstructor.flatten_mapping`` walks it, before anything
+            # is constructed. Constructing it instead loses the anchored
+            # sequence to the loader's already-constructed memo: the anchor was
+            # registered when its own key constructed it shallowly, so
+            # ``construct_object`` hands back the generator-backed list while
+            # its pending generator has appended nothing yet — every merged key
+            # would then silently vanish while ``yaml.safe_load`` merges them.
+            # Each entry has to name a mapping; a source that names anything
+            # else is the same document defect the stock constructor refuses.
+            if isinstance(value_node, yaml.nodes.SequenceNode):
+                for entry_node in value_node.value:
+                    if not isinstance(entry_node, yaml.nodes.MappingNode):
+                        raise yaml.constructor.ConstructorError(
+                            "while constructing a mapping",
+                            node.start_mark,
+                            "expected a mapping for merging, but found "
+                            f"{entry_node.id}",
+                            key_node.start_mark,
+                        )
+                    source = loader.construct_object(entry_node, deep=True)
+                    for merged_key, merged_value in source.items():
+                        mapping.setdefault(merged_key, merged_value)
+                continue
             merged = loader.construct_object(value_node, deep=True)
-            for source in merged if isinstance(merged, list) else [merged]:
-                if not isinstance(source, Mapping):
-                    # The same refusal ``BaseConstructor.flatten_mapping``
-                    # raises: a merge that names a scalar is a document defect,
-                    # not a member to drop on the floor.
-                    raise yaml.constructor.ConstructorError(
-                        "while constructing a mapping",
-                        node.start_mark,
-                        f"expected a mapping for merging, but found {type(source).__name__}",
-                        key_node.start_mark,
-                    )
-                for merged_key, merged_value in source.items():
-                    mapping.setdefault(merged_key, merged_value)
+            if not isinstance(merged, Mapping):
+                # The same refusal ``BaseConstructor.flatten_mapping``
+                # raises: a merge that names a scalar is a document defect,
+                # not a member to drop on the floor.
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"expected a mapping for merging, but found {type(merged).__name__}",
+                    key_node.start_mark,
+                )
+            for merged_key, merged_value in merged.items():
+                mapping.setdefault(merged_key, merged_value)
             continue
         key = loader.construct_object(key_node, deep=True)
         if not isinstance(key, Hashable):

@@ -1033,11 +1033,14 @@ def test_malformed_response_member_shapes_are_read_or_named(backend: dict) -> No
     assert found, [violation.render() for violation in check_openapi("backend", weakened)]
 
     # (c) A `$ref` headers member declares no names: no name-keyed finding, and
-    # the full read reads it just as the table loops do.
+    # the full read reads it just as the table loops do. The Error body it
+    # carries is the round-15 envelope gate's demand for this documented status;
+    # the pin here is the `$ref` member's silence, not a bodyless 404.
     weakened = copy.deepcopy(backend)
     weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["404"] = {
         "description": "gone",
         "headers": {"$ref": "#/components/headers/ContentLength"},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}},
     }
     assert not check_openapi("backend", weakened), [
         violation.render() for violation in check_openapi("backend", weakened)
@@ -1236,6 +1239,357 @@ def test_a_broken_header_ref_does_not_swallow_the_media_type_mismatch(backend: d
     assert mismatch, [violation.render() for violation in report]
 
 
+# --- Round 15: the shared-envelope binding gate, declared-header shape, scalar content ---
+
+
+def test_an_unbound_error_status_must_publish_the_shared_error_envelope(
+    backend: dict, device: dict
+) -> None:
+    """Round 15 P3-1: the document answers unbound errors like the fixtures do.
+
+    ``api_validate`` selects ``operation.response_schemas.get(status) or "Error"``
+    (api_validate.py:631): a documented refusal the table does not bind its own
+    schema to is checked against the shared ``Error`` envelope. The document
+    checker's binding loop walked only the table's bound statuses, so the
+    review's two mutations — ``GET /clips/{clip_id}``' 404 reduced to a
+    description, or 404 publishing the operation's own ``StoredClip`` —
+    certified with zero findings. Every documented error status the table does
+    not bind now has to publish exactly ``#/components/schemas/Error``. The
+    status the table does bind (the settings 409 with its dedicated schema)
+    keeps the binding loop's comparison, unbound-and-bodyless HEAD refusals
+    stay the method's own answer, and no committed operation trips the gate.
+    """
+    assert not check_openapi("backend", backend)
+    assert not check_openapi("device", device)
+
+    # (a) The review's mutation (a): a bodyless 404 is a document that no
+    # longer answers the status the contract says it answers.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["404"] = {
+        "description": "Resource was never known."
+    }
+    report = check_openapi("backend", weakened)
+    found = [
+        violation
+        for violation in report
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location == "backend-v1 GET /clips/{clip_id} responses/404"
+    ]
+    assert found, [violation.render() for violation in report]
+    assert any(
+        "Error envelope" in violation.detail and "no response body" in violation.detail
+        for violation in found
+    ), found
+
+    # (b) The review's mutation (b): a 404 publishing the 200's schema binds a
+    # body the contract never assigned that status.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["404"] = {
+        "description": "Resource was never known.",
+        "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/StoredClip"}}
+        },
+    }
+    report = check_openapi("backend", weakened)
+    found = [
+        violation
+        for violation in report
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location == "backend-v1 GET /clips/{clip_id} responses/404"
+    ]
+    assert found, [violation.render() for violation in report]
+    assert any(
+        "StoredClip" in violation.detail and "instead of Error" in violation.detail
+        for violation in found
+    ), found
+
+    # (c) The whole shared component answers with a foreign schema: every
+    # operation carrying the status names it, one statement per operation.
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["responses"]["NotFound"]["content"]["application/json"][
+        "schema"
+    ] = {"$ref": "#/components/schemas/StoredClip"}
+    report = check_openapi("backend", weakened)
+    located = {
+        violation.location
+        for violation in report
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and "instead of Error" in violation.detail
+        and violation.location.endswith(" responses/404")
+    }
+    expected = {
+        f"backend-v1 {operation} responses/404"
+        for operation in _shared_404_operations(backend)
+    }
+    assert expected <= located, sorted(expected - located)
+
+    # (d) The dedicated-schema comparison is untouched: the settings 409 is
+    # bound in the table, so flipping its body to the shared envelope earns
+    # the binding loop's verdict for *that* schema, not this loop's Error rule.
+    weakened = copy.deepcopy(device)
+    weakened["paths"]["/settings"]["put"]["responses"]["409"]["content"]["application/json"][
+        "schema"
+    ] = {"$ref": "#/components/schemas/Error"}
+    report = check_openapi("device", weakened)
+    found = [
+        violation
+        for violation in report
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location.endswith("PUT /settings responses/409")
+    ]
+    assert found, [violation.render() for violation in report]
+    assert any(
+        "instead of SettingsRevisionConflictResponse" in violation.detail
+        for violation in found
+    ), found
+
+
+def test_a_bodyless_head_refusal_is_the_method_s_own_answer(backend: dict) -> None:
+    """Round 15: the envelope gate keeps a HEAD refusal bodyless-legal.
+
+    ``content_types_for`` answers a HEAD refusal with "no content" (RFC 9110
+    §9.3.2), and the committed ``headUploadFile`` refusals are exactly that:
+    status and headers alone. The new gate may not demand a body the method
+    forbids — but a HEAD that *does* publish one still earns the round-13
+    no-body loop's refusal, and binding the wrong schema names both defects.
+    """
+    assert not check_openapi("backend", backend)
+    head = backend["paths"]["/uploads/{id}/files/{name}"]["head"]["responses"]
+    for status in ("401", "404", "410"):
+        assert "content" not in head[status], status
+
+    # A bodyless refusal stays fully silent (the document pin above proves it
+    # for all three); adding the shared envelope earns exactly the pre-existing
+    # HEAD refusal — the binding question itself answers "Error", correctly.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/uploads/{id}/files/{name}"]["head"]["responses"]["404"]["content"] = {
+        "application/json": {"schema": {"$ref": "#/components/schemas/Error"}}
+    }
+    report = check_openapi("backend", weakened)
+    found = [
+        violation
+        for violation in report
+        if violation.location.endswith("HEAD /uploads/{id}/files/{name} responses/404 content")
+    ]
+    assert len(found) == 1, [violation.render() for violation in report]
+    assert E.SPEC_STRUCTURE_MISSING == found[0].code
+    assert "forbids" in found[0].detail
+
+    # Binding the 200's schema on that same body earns both statements: the
+    # no-body loop's and this gate's `binds … instead of Error`.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/uploads/{id}/files/{name}"]["head"]["responses"]["404"]["content"] = {
+        "application/json": {"schema": {"$ref": "#/components/schemas/StoredClip"}}
+    }
+    report = check_openapi("backend", weakened)
+    assert any(
+        "binds '#/components/schemas/StoredClip' instead of Error" in violation.detail
+        and violation.location.endswith("HEAD /uploads/{id}/files/{name} responses/404")
+        for violation in report
+    ), [violation.render() for violation in report]
+    assert any(
+        "forbids" in violation.detail
+        and violation.location.endswith("responses/404 content")
+        for violation in report
+    ), [violation.render() for violation in report]
+
+
+def test_an_explicit_null_headers_member_is_named_like_a_malformed_one(
+    backend: dict,
+) -> None:
+    """Round 15 P3-2: key presence, not truthiness, asks the shape question.
+
+    The shared ``NotFound`` declares no mandatory header, so no presence loop
+    ever read its header map, and the all-response scan's shape refusal ran
+    only under ``if declared_headers is not None:`` — an explicit
+    ``headers: null`` read as an omission and certified with zero findings.
+    OpenAPI defines ``headers`` as a Map whatever the status carries, so a
+    declared member of any other shape earns the named refusal on every
+    operation carrying the status; omission and the empty map stay valid.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["responses"]["NotFound"]["headers"] = None
+    report = check_openapi("backend", weakened)
+    located = {
+        violation.location
+        for violation in report
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location.endswith(" responses/404 headers")
+    }
+    expected = {
+        f"backend-v1 {operation} responses/404 headers"
+        for operation in _shared_404_operations(backend)
+    }
+    assert expected <= located, sorted(expected - located)
+    assert located == expected, sorted(located ^ expected)
+    assert all(
+        "is NoneType, not a map of declared header names" in violation.detail
+        for violation in report
+        if violation.location in located
+    ), [violation.render() for violation in report]
+
+    # Omission (the committed document) and the empty map are both valid: the
+    # Map may simply name no header.
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["responses"]["NotFound"]["headers"] = {}
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+
+def test_an_alias_component_cannot_hide_a_malformed_headers_member(
+    backend: dict,
+) -> None:
+    """Round 15 item 3: the two-hop branch owes the member the shape verdict.
+
+    A response component that is a pure ``$ref`` to another response leaves the
+    all-response scan's shallow node without the member, and the two-hop branch
+    read only the name map from the full resolution — a target declaring
+    ``headers: null`` (round 14's recorded escape) was certified. The branch
+    now judges presence on the full-resolved response too.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["responses"]["AliasHop"] = {
+        "$ref": "#/components/responses/NullHeaderTarget"
+    }
+    weakened["components"]["responses"]["NullHeaderTarget"] = {
+        "description": "Resource was never known.",
+        "headers": None,
+        "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/Error"}}
+        },
+    }
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["404"] = {
+        "$ref": "#/components/responses/AliasHop"
+    }
+    report = check_openapi("backend", weakened)
+    found = [
+        violation
+        for violation in report
+        if E.SPEC_STRUCTURE_MISSING == violation.code
+        and violation.location == "backend-v1 GET /clips/{clip_id} responses/404 headers"
+    ]
+    assert found, [violation.render() for violation in report]
+    assert "is NoneType, not a map of declared header names" in found[0].detail
+
+
+def test_a_pure_ref_alias_component_still_publishes_the_table_media_types(
+    backend: dict,
+) -> None:
+    """Round 15 item 3: the media-type loop follows pure-`$ref` alias chains.
+
+    A table-listed status pointed at a component that is nothing but a
+    ``$ref`` stopped the loop's one hop at the alias — which carries no
+    ``content`` member — and the operation was charged a ``publishes []``
+    mismatch against types the document does publish behind the alias. Each
+    hop past the first is guarded the same way, so a chain that cannot be
+    followed stays the all-response scan's drift alone.
+    """
+    assert not check_openapi("backend", backend)
+    where = "backend-v1 GET /clips/{clip_id}/files/{name} responses/206"
+    weakened = copy.deepcopy(backend)
+    download = weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"]
+    weakened["components"]["responses"]["Partial206Real"] = copy.deepcopy(download)
+    weakened["components"]["responses"]["Partial206Alias"] = {
+        "$ref": "#/components/responses/Partial206Real"
+    }
+    weakened["components"]["responses"]["Partial206Outer"] = {
+        "$ref": "#/components/responses/Partial206Alias"
+    }
+    weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"] = {
+        "$ref": "#/components/responses/Partial206Outer"
+    }
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+    # A chain whose far end dangles: named once by the scan, and the media
+    # comparison skips rather than stack a mismatch beside the drift.
+    weakened["components"]["responses"]["Partial206Real"] = {
+        "$ref": "#/components/responses/NoSuchPartial"
+    }
+    report = check_openapi("backend", weakened)
+    drift = [
+        violation
+        for violation in report
+        if E.SPEC_COMPONENT_DRIFT == violation.code and violation.location == where
+    ]
+    assert drift and any("NoSuchPartial" in violation.detail for violation in drift), [
+        violation.render() for violation in report
+    ]
+    assert not [
+        violation
+        for violation in report
+        if "the operation table carries" in violation.detail
+        and violation.location == f"{where} content"
+    ], [violation.render() for violation in report]
+
+
+def test_a_scalar_content_member_is_named_once_and_never_crashes(backend: dict) -> None:
+    """Round 15 item 4: a declared `content` that is not a map earns a finding.
+
+    ``set(response.get("content", {}))`` in the media-type loop and the
+    ``"application/json" in content`` test behind ``_json_schema_ref`` both
+    raise over a scalar member — a ``TypeError`` the CLI reported as exit 2
+    "validator internal error" for a merely malformed document. Every such
+    read now yields ``is {type}, not a media-type map`` at the member, named
+    by one owner per status: the binding loop and the media-type loop name
+    the same triple for a listed download status and the dedup keeps one, and
+    the request-body reads answer the same way.
+    """
+    assert not check_openapi("backend", backend)
+
+    # (a) The table-listed download 206: two loops read the member, the report
+    # states the refusal exactly once, and no media-type mismatch piles on.
+    where = "backend-v1 GET /clips/{clip_id}/files/{name} responses/206 content"
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}/files/{name}"]["get"]["responses"]["206"]["content"] = 5
+    report = check_openapi("backend", weakened)
+    shape = [violation for violation in report if violation.location == where]
+    assert len(shape) == 1, [violation.render() for violation in report]
+    assert E.SPEC_STRUCTURE_MISSING == shape[0].code
+    assert shape[0].detail == "is int, not a media-type map"
+    assert not [
+        violation
+        for violation in report
+        if "the operation table carries" in violation.detail
+    ], [violation.render() for violation in report]
+
+    # (b) An unbound error status: the envelope loop owns the member there.
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["responses"]["NotFound"]["content"] = "gone"
+    report = check_openapi("backend", weakened)
+    shape = [
+        violation
+        for violation in report
+        if violation.location.endswith(" responses/404 content")
+    ]
+    assert shape, [violation.render() for violation in report]
+    assert {violation.location for violation in shape} == {
+        f"backend-v1 {operation} responses/404 content"
+        for operation in _shared_404_operations(backend)
+    }
+    assert all(violation.detail == "is str, not a media-type map" for violation in shape)
+
+    # (c) The bound requestBody: the shape refusal replaces the crash and the
+    # misleading `binds None` — nothing was ever read from the member.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/uploads"]["post"]["requestBody"]["content"] = 5
+    report = check_openapi("backend", weakened)
+    shape = [
+        violation
+        for violation in report
+        if violation.location == "backend-v1 POST /uploads requestBody content"
+    ]
+    assert len(shape) == 1, [violation.render() for violation in report]
+    assert shape[0].detail == "is int, not a media-type map"
+    assert not [
+        violation for violation in report if "instead of CreateUploadRequest" in violation.detail
+    ], [violation.render() for violation in report]
+
+
 def test_load_yaml_refuses_an_explicit_duplicate_mapping_key(tmp_path: Path) -> None:
     """Round 14 finding 3: the duplicate key dies in the loader, not after it.
 
@@ -1347,6 +1701,63 @@ def test_load_yaml_keeps_the_safe_loader_merge_semantics(tmp_path: Path) -> None
     with pytest.raises(yaml.YAMLError) as raised:
         load_yaml(path)
     assert "expected a mapping for merging" in str(raised.value), str(raised.value)
+
+
+def test_load_yaml_merges_an_anchored_sequence_of_mappings_like_the_safe_loader(
+    tmp_path: Path,
+) -> None:
+    """Round 15: ``<<`` over an anchored sequence merges — it never drops.
+
+    The merge operand is the anchored ``SequenceNode`` itself. Constructing it
+    hits the loader's already-constructed memo — the anchor was registered when
+    its own key constructed it shallowly — which hands back the generator-
+    backed list *before* its pending generator appends the entries, so the
+    merge loop iterated nothing and every merged key silently vanished while
+    ``yaml.safe_load`` merged them all. The walk now happens at the node level,
+    the way ``BaseConstructor.flatten_mapping`` walks it: each entry has to be
+    a mapping, first source wins, the explicit member beats all of them, and a
+    non-mapping entry dies the same ``ConstructorError`` family (which the
+    validator reports as ``SPEC_PARSE_FAILED``) rather than dropping members.
+    """
+    import yaml
+
+    path = tmp_path / "merge-seq.yaml"
+
+    # The exact loader probe from the review: a sequence of two single-pair
+    # mappings merged under an explicit key.
+    text = "s: &s\n  - a: 1\n  - b: 2\nm:\n  <<: *s\n  k: v\n"
+    path.write_text(text, encoding="utf-8")
+    loaded = load_yaml(path)
+    assert loaded["m"] == {"a": 1, "b": 2, "k": "v"}, loaded
+    assert loaded == yaml.safe_load(text), loaded
+
+    # First source wins among the sequence's entries and the explicit member
+    # still beats them all — the round-14 precedence, unchanged for sequences.
+    text = (
+        "a: &a\n  k: from-a\n"
+        "b: &b\n  k: from-b\n  j: from-b\n"
+        "t:\n  <<: [*a, *b]\n  j: explicit\n"
+    )
+    path.write_text(text, encoding="utf-8")
+    loaded = load_yaml(path)
+    assert loaded["t"] == {"k": "from-a", "j": "explicit"}, loaded
+    assert loaded == yaml.safe_load(text), loaded
+
+    # An anchored sequence merged as a *sequence entry* is not a mapping and
+    # dies the stock refusal family — as does any entry that names a scalar or
+    # a sequence — a ``YAMLError`` for the validator, never a silently dropped
+    # member. Each case refuses identically under ``yaml.safe_load``.
+    for text in (
+        "s: &s\n  - 1\nm:\n  <<: *s\n",
+        "s: &s\n  - [1]\nm:\n  <<: *s\n",
+        "a: &a\n  k: 1\ns: &s\n  - k: 77\nm:\n  <<: [*a, *s]\n",
+    ):
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(yaml.YAMLError) as raised:
+            load_yaml(path)
+        assert "expected a mapping for merging" in str(raised.value), text
+        with pytest.raises(yaml.YAMLError):
+            yaml.safe_load(text)
 
 
 def test_the_error_envelope_is_one_reusable_schema(device: dict, backend: dict) -> None:

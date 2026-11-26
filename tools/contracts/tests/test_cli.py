@@ -228,6 +228,87 @@ def test_cli_exits_one_on_a_dangling_download_206_ref(tmp_path: Path, monkeypatc
     assert "validator internal error" not in output
 
 
+def test_cli_exits_one_when_an_unbound_error_status_drops_its_error_body(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Round 15 P3-1: a description-only getClip 404 is a finding, never a pass.
+
+    The document checker asked the schema-binding question only of the statuses
+    the operation table binds a schema to, so the review's mutation — ``GET
+    /clips/{clip_id}``' 404 reduced to a bare description while the fixture
+    side still validates that status against the shared ``Error`` envelope —
+    certified ``RESULT: PASS`` with zero findings. The envelope gate now names
+    it at the status, and the CLI owes the user exit 1.
+    """
+    broken = tmp_path / "contracts"
+    shutil.copytree(REPO_ROOT / "contracts", broken)
+    target = broken / "backend-v1.yaml"
+    data = target.read_text(encoding="utf-8")
+    start = data.index("  /clips/{clip_id}:\n    get:\n")
+    block = "        '404':\n          $ref: '#/components/responses/NotFound'\n"
+    at = data.index(block, start)
+    end = data.index("        '410':\n", at)
+    target.write_text(
+        data[:at]
+        + "        '404':\n          description: Resource was never known.\n"
+        + data[end:],
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "RESULT: FAIL" in output
+    assert "SPEC_STRUCTURE_MISSING" in output
+    assert "GET /clips/{clip_id}" in output
+    assert "responses/404" in output
+    assert "Error envelope" in output
+    assert "validator internal error" not in output
+
+
+def test_cli_exits_one_on_scalar_content_in_a_listed_206(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Round 15 item 4: a scalar ``content`` earns a finding, never exit 2.
+
+    The media-type comparison ran ``set(response.get("content", {}))`` and the
+    binding read tested ``"application/json" in content`` — both raise over a
+    scalar member, and the CLI called the merely-broken document a "validator
+    internal error" with exit 2. The shape refusal is the honest verdict.
+    """
+    broken = tmp_path / "contracts"
+    shutil.copytree(REPO_ROOT / "contracts", broken)
+    target = broken / "backend-v1.yaml"
+    data = target.read_text(encoding="utf-8")
+    start = data.index("  /clips/{clip_id}/files/{name}:\n    get:\n")
+    block = "        '206':\n          description: Requested single byte range.\n"
+    at = data.index(block, start)
+    end = data.index("        '401':\n", at)
+    chunk = data[at:end]
+    scalar = chunk.replace(
+        "          content:\n"
+        "            application/octet-stream:\n"
+        "              schema:\n"
+        "                type: string\n"
+        "                format: binary\n",
+        "          content: 5\n",
+    )
+    assert scalar != chunk, "the download 206 content block moved"
+    target.write_text(data[:at] + scalar + data[end:], encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "RESULT: FAIL" in output
+    assert "SPEC_STRUCTURE_MISSING" in output
+    assert "GET /clips/{clip_id}/files/{name}" in output
+    assert "responses/206 content" in output
+    assert "is int, not a media-type map" in output
+    assert "validator internal error" not in output
+
+
 def test_cli_exits_one_when_a_response_header_key_is_declared_twice(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

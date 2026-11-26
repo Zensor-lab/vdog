@@ -385,8 +385,22 @@ def _check_operation(
                 Violation(E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status}", unreadable)
             )
             continue
+        content, content_issue = _media_type_map(response)
+        if content_issue is not None:
+            # A declared ``content`` member that is not a media-type map answers
+            # neither "no content" nor "which schema does it bind": name the
+            # member. The media-type loop may name the identical triple for a
+            # listed status; the dedup pass at the end keeps one statement.
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} responses/{status} content",
+                    content_issue,
+                )
+            )
+            continue
         if schema_name is None:
-            if not response.get("content"):
+            if not content:
                 found.append(Violation(E.SPEC_STRUCTURE_MISSING, f"{where} responses/{status}", "no content"))
             continue
         ref = _json_schema_ref(response, document)
@@ -398,11 +412,67 @@ def _check_operation(
                     f"binds {ref!r} instead of {schema_name}",
                 )
             )
+    # The fixture validator selects `operation.response_schemas.get(status) or
+    # "Error"` for every documented status ≥400 (api_validate.py:631): a refusal
+    # the table does not bind a dedicated schema to answers with the shared
+    # ``Error`` envelope, so the document has to publish exactly that body. The
+    # binding loop above walks only the statuses the table names, so without
+    # this loop an error status could drop its body entirely — or publish the
+    # operation's own 200 schema — and the checker would certify it. Statuses
+    # the table binds (the settings 409 with its SettingsRevisionConflictResponse
+    # among them) keep the comparison above, and this loop speaks only for the
+    # rest. The binding read is taken from the shallow alias-chained node on
+    # purpose: the full read of a `$ref` response inlines the shared component
+    # and its schema `$ref` is gone, so the binding question could no longer be
+    # asked of it — the same reference the fixture side would follow.
+    for status in operation.error_codes:
+        if status < 400 or status in operation.response_schemas:
+            continue
+        _, unreadable = _resolved_response(responses, status, document)
+        if unreadable is not None:
+            # The all-response scan below owns that SPEC_COMPONENT_DRIFT.
+            continue
+        response = _alias_chained_response(responses.get(str(status), {}), document)
+        if response is None:
+            continue  # likewise: the scan names the hop this chain could not follow
+        content, content_issue = _media_type_map(response)
+        if content_issue is not None:
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} responses/{status} content",
+                    content_issue,
+                )
+            )
+            continue
+        if not content:
+            if not operation.is_head:
+                found.append(
+                    Violation(
+                        E.SPEC_STRUCTURE_MISSING,
+                        f"{where} responses/{status}",
+                        "the contract answers this status with the shared Error "
+                        "envelope, and the document carries no response body",
+                    )
+                )
+            # A HEAD answer is status and headers alone (RFC 9110 §9.3.2): the
+            # bodyless refusal is exactly what the method promises, not a defect.
+            continue
+        ref = _json_schema_ref(response, document)
+        if ref != "#/components/schemas/Error":
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} responses/{status}",
+                    f"binds {ref!r} instead of Error",
+                )
+            )
     # This loop speaks for *every* response the operation carries, not only the
-    # ones the table names, and it reads every node: an unreadable response is
-    # named here — otherwise an error status the three table loops above never
-    # mention (a 404 with no named schema and no promised header) could point its
-    # `$ref` at a component the document does not define and be certified — and
+    # ones the table loops name, and it reads every node: an unreadable response
+    # is named here — otherwise an error status the binding loop does not bind
+    # and the error-envelope loop only skips as unreadable (a 404 with no named
+    # schema and no promised header) could point its `$ref` at a component the
+    # document does not define and be certified — and
     # so is an unreadable header node, because the required-ness loop below
     # resolves only the headers the table lists and the documented loop compares
     # names alone: the shared 416's optional `Content-Range` was never read.
@@ -453,16 +523,35 @@ def _check_operation(
             # A two-hop `$ref` chain landed on an intermediate node that carries
             # no member of its own, so the full resolution holds the header map
             # the hop could not reach — the duplicate-spelling gate keeps its
-            # round-12 coverage for this shape.
+            # round-12 coverage for this shape. The shape verdict travels with
+            # it: an alias may hide a target that declares `headers: null` (or
+            # any other non-map), and reading only the shallow node let that
+            # member escape the refusal the direct shape gets (round-14's
+            # recorded two-hop escape).
             full_headers = resolved_response.get("headers")
-            name_map = full_headers if isinstance(full_headers, Mapping) else None
+            if "headers" in resolved_response and not isinstance(full_headers, Mapping):
+                found.append(
+                    Violation(
+                        E.SPEC_STRUCTURE_MISSING,
+                        f"{where} responses/{status_key} headers",
+                        f"is {type(full_headers).__name__}, not a map of declared header names",
+                    )
+                )
+                name_map = None
+            else:
+                name_map = full_headers if isinstance(full_headers, Mapping) else None
         else:
             # The member is not a name map the scan can read (a `$ref` node, or
-            # not a map at all). If it still carries references, follow them the
+            # not a map at all). If the response declares it at all, judge its
+            # shape and, if it still carries references, follow them the
             # guarded way: a failure here is a defect no other reader reaches —
             # the helpers do not deep-resolve an inline response node — so it is
-            # named at the response, never left unread and unnamed.
-            if declared_headers is not None:
+            # named at the response, never left unread and unnamed. Key
+            # *presence* is the question, not truthiness: an explicit
+            # `headers:` null declares a member OpenAPI defines as a Map, and
+            # the status may carry no mandatory header for any presence loop to
+            # notice it (the shared 404 was exactly that silence).
+            if "headers" in shallow:
                 if not isinstance(declared_headers, Mapping):
                     # OpenAPI's Response Object defines `headers` as a Map, so a
                     # declared member of any other shape is a document defect
@@ -605,8 +694,16 @@ def _check_operation(
     # into a second source of truth: a media type added to one side and not the other is
     # a finding here rather than a rule that quietly stops matching anything.
     if operation.request_schema is None:
-        published = set(body.get("content", {}))
-        if published != set(operation.request_content_types):
+        published_map, body_issue = _media_type_map(body)
+        published = set(published_map)
+        if body_issue is not None:
+            # The shape refusal is this body's one owner; the media-type
+            # comparison below can only repeat it against an unreadable member.
+            found.append(
+                Violation(E.SPEC_STRUCTURE_MISSING, f"{where} requestBody content", body_issue)
+            )
+            published = set()
+        elif published != set(operation.request_content_types):
             found.append(
                 Violation(
                     E.SPEC_STRUCTURE_MISSING,
@@ -630,13 +727,29 @@ def _check_operation(
         # named at `{where} responses/{status}` by the all-response scan above,
         # which owns that diagnostic; this loop skips it rather than let the
         # failed pointer raise past the CLI as exit 2 "validator internal
-        # error" the way the unguarded `_resolve` here once did. A status the
-        # table names but the document lacks still compares, as ever: the
+        # error" the way the unguarded `_resolve` here once did. A pure-`$ref`
+        # alias component is followed to its target before the keys are read:
+        # the alias carries no ``content`` member, and stopping at it would
+        # report a mismatch against types the document does publish. A status
+        # the table names but the document lacks still compares, as ever: the
         # missing status reads as an empty mapping and earns its mismatch.
-        response = _shallow_response(responses.get(str(status), {}), document)
+        response = _alias_chained_response(responses.get(str(status), {}), document)
         if response is None:
             continue
-        published = set(response.get("content", {}))
+        content, content_issue = _media_type_map(response)
+        if content_issue is not None:
+            # A declared ``content`` that is not a media-type map cannot answer
+            # the media-type question; the shape refusal is that one owner, and
+            # the empty-vs-table mismatch beside it would only repeat it.
+            found.append(
+                Violation(
+                    E.SPEC_STRUCTURE_MISSING,
+                    f"{where} responses/{status} content",
+                    content_issue,
+                )
+            )
+            continue
+        published = set(content)
         if published != set(types):
             found.append(
                 Violation(
@@ -700,15 +813,25 @@ def _check_operation(
     if operation.request_schema is not None:
         if body.get("required") is not True:
             found.append(Violation(E.SPEC_STRUCTURE_MISSING, f"{where} requestBody", "not required"))
-        ref = _json_schema_ref(body, document)
-        if ref != f"#/components/schemas/{operation.request_schema}":
+        _, body_issue = _media_type_map(body)
+        if body_issue is not None:
+            # A `content` member that is not a media-type map carries no
+            # readable schema `$ref`: name the member as the one owner instead
+            # of letting the read raise past the CLI, or naming the body as if
+            # it bound no schema when nothing was ever read from it.
             found.append(
-                Violation(
-                    E.SPEC_STRUCTURE_MISSING,
-                    f"{where} requestBody",
-                    f"binds {ref!r} instead of {operation.request_schema}",
-                )
+                Violation(E.SPEC_STRUCTURE_MISSING, f"{where} requestBody content", body_issue)
             )
+        else:
+            ref = _json_schema_ref(body, document)
+            if ref != f"#/components/schemas/{operation.request_schema}":
+                found.append(
+                    Violation(
+                        E.SPEC_STRUCTURE_MISSING,
+                        f"{where} requestBody",
+                        f"binds {ref!r} instead of {operation.request_schema}",
+                    )
+                )
     # Every parameter an operation declares has to be a usable parameter object, and
     # every `{placeholder}` the path carries — plus every query parameter the spec
     # pins by name — has to be declared and required. The required-input checks of the
@@ -913,6 +1036,46 @@ def _shallow_response(node: Any, document: Mapping[str, Any]) -> Mapping[str, An
     return target if isinstance(target, Mapping) else None
 
 
+def _alias_chained_response(node: Any, document: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The one-hop response node with pure-`$ref` alias components walked through.
+
+    :func:`_shallow_response` stops at a component that is itself only a
+    ``$ref`` — an alias carrying no member of its own — so a media-type or
+    binding read taken there sees an empty document and reports a mismatch the
+    document never made. Keep taking guarded hops while the hop is a pure
+    ``$ref`` node (``$ref`` its only member), following each pointer at most
+    once so a cycle ends as a failure like any other un-followable hop. The
+    all-response scan owns the drift a failed chain hides; callers skip.
+    """
+    response = _shallow_response(node, document)
+    followed: set[str] = set()
+    while response is not None and set(response) == {"$ref"}:
+        reference = response["$ref"]
+        if not isinstance(reference, str) or reference in followed:
+            return None
+        followed.add(reference)
+        response = _shallow_response(response, document)
+    return response
+
+
+def _media_type_map(container: Mapping[str, Any]) -> tuple[Mapping[str, Any], str | None]:
+    """The ``content`` map a response or requestBody declares, or why it is not one.
+
+    An absent ``content`` member is the empty map — a bodyless answer says so
+    itself — but a *declared* member of any other shape (null, a string, a
+    number, a list) makes every plain read explode: ``set(content)`` raises a
+    ``TypeError``, and so does the ``"application/json" in content`` test
+    :func:`_json_schema_ref` runs. Unguarded, that reached the CLI as exit 2
+    "validator internal error" for a document that is simply malformed. The
+    caller names the defect once for the node it owns, in the wording the
+    other member-shape refusals use.
+    """
+    content = container.get("content", {})
+    if isinstance(content, Mapping):
+        return content, None
+    return {}, f"is {type(content).__name__}, not a media-type map"
+
+
 def _resolved_response_node(
     node: Any, document: Mapping[str, Any]
 ) -> tuple[Mapping[str, Any], str | None]:
@@ -937,11 +1100,24 @@ def _resolved_response_node(
 
 
 def _json_schema_ref(container: Mapping[str, Any], document: Mapping[str, Any]) -> str | None:
-    """Return the ``application/json`` schema ``$ref`` before inlining happened."""
+    """Return the ``application/json`` schema ``$ref`` before inlining happened.
+
+    The loops that ask this question of a response or body guard the shape of
+    ``content`` themselves and name the member once; the ``isinstance`` walls
+    here are the last line so no reader hands the membership test a scalar it
+    would raise over as exit 2, and a media-type entry or schema that is not an
+    object simply binds no readable schema — ``None``, which every caller
+    reports as its own finding.
+    """
     content = container.get("content", {})
-    if "application/json" not in content:
+    if not isinstance(content, Mapping) or "application/json" not in content:
         return None
-    schema = content["application/json"].get("schema", {})
+    entry = content["application/json"]
+    if not isinstance(entry, Mapping):
+        return None
+    schema = entry.get("schema", {})
+    if not isinstance(schema, Mapping):
+        return None
     ref = schema.get("$ref")
     return ref if isinstance(ref, str) else None
 
