@@ -803,6 +803,19 @@ def test_a_dangling_error_response_ref_is_reported_where_it_sits(backend: dict) 
     ]
     assert found, [violation.render() for violation in check_openapi("backend", weakened)]
     assert any("NoSuchResponse" in violation.detail for violation in found), found
+    # The same refusal for pointers the full read refuses outright: only local
+    # `#/...` references are walkable, and the shallow hop mirrors that guard,
+    # so a dropped-slash typo cannot quietly resolve at one depth and vanish.
+    for typo in ("#components/responses/NotFound", "components/responses/NotFound"):
+        weakened = copy.deepcopy(backend)
+        weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["404"] = {"$ref": typo}
+        found = [
+            violation
+            for violation in check_openapi("backend", weakened)
+            if E.SPEC_COMPONENT_DRIFT == violation.code
+            and violation.location.endswith("GET /clips/{clip_id} responses/404")
+        ]
+        assert found, (typo, [v.render() for v in check_openapi("backend", weakened)])
     # One dangling component is one finding per operation+status: no exact repeat.
     all_found = check_openapi("backend", weakened)
     identities = [(violation.code, violation.location, violation.detail) for violation in all_found]
@@ -966,6 +979,72 @@ def test_a_required_request_header_name_folds_case(backend: dict) -> None:
     assert any(
         violation.detail.startswith("the spec requires this query parameter") for violation in found
     )
+
+
+def test_malformed_response_member_shapes_are_read_or_named(backend: dict) -> None:
+    """The all-response scan never leaves a node unread *and* unnamed.
+
+    Three shapes outside valid OpenAPI pin the scan's fail-closed boundary: a
+    two-hop `$ref` chain whose far member dangles is named at the response the
+    operation carries (the hop cannot see the broken header, and silence at both
+    depths is the defect this round died on); a ``headers`` member that is not a
+    name map but hides a dangling `$ref` inside is likewise named at the
+    response; and a ``headers`` member that is itself one `$ref` node earns no
+    spurious name-keyed finding, because it declares no names — the table loops
+    read that same shape through the full resolution.
+    """
+    assert not check_openapi("backend", backend)
+    # (a) Two-hop chain, clean then dangling: the chain alone certifies, and
+    # breaking the far header names the response the operation actually carries.
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["responses"]["ChainRef"] = {
+        "$ref": "#/components/responses/RangeNotSatisfiable"
+    }
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["404"] = {
+        "$ref": "#/components/responses/ChainRef"
+    }
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+    weakened["components"]["responses"]["RangeNotSatisfiable"]["headers"]["Content-Range"] = {
+        "$ref": "#/components/headers/ContentRangeAbsent"
+    }
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_COMPONENT_DRIFT == violation.code
+        and "GET /clips/{clip_id} responses/404" in violation.location
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+
+    # (b) A non-map headers member hiding a dangling ref is named at the response.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["404"] = {
+        "description": "gone",
+        "headers": [{"$ref": "#/components/headers/AbsentOne"}],
+    }
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if E.SPEC_COMPONENT_DRIFT == violation.code
+        and "GET /clips/{clip_id} responses/404" in violation.location
+        and "AbsentOne" in violation.detail
+    ]
+    assert found, [violation.render() for violation in check_openapi("backend", weakened)]
+
+    # (c) A `$ref` headers member declares no names: no name-keyed finding, and
+    # the full read reads it just as the table loops do.
+    weakened = copy.deepcopy(backend)
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["404"] = {
+        "description": "gone",
+        "headers": {"$ref": "#/components/headers/ContentLength"},
+    }
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if "headers/$ref" in violation.location
+    ]
+    assert not found, [violation.render() for violation in check_openapi("backend", weakened)]
 
 
 def test_the_error_envelope_is_one_reusable_schema(device: dict, backend: dict) -> None:

@@ -425,24 +425,66 @@ def _check_operation(
                 Violation(E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status_key}", unreadable)
             )
             continue
+        declared_headers = shallow.get("headers")
+        # The map is scannable only when it is a map of declared names: a
+        # ``$ref`` node is not one (the table loops read that shape through the
+        # full response resolution below), and a member that is not a map at all
+        # declares no names for the scan to read.
+        headers_scannable = isinstance(declared_headers, Mapping) and "$ref" not in declared_headers
         if unreadable is not None:
             # The component the response points at is there but its full read
             # failed somewhere. Name the response unless the failure sat inside
-            # the header map, where the read below reports the very member that
-            # carries the bad `$ref`.
+            # a header map the scan below can read, where the per-header read
+            # reports the very member that carries the bad `$ref`.
             without_headers = {key: value for key, value in shallow.items() if key != "headers"}
             try:
                 resolve_refs(without_headers, root=document)
             except _RESOLUTION_FAILURES:
+                headers_scannable = False
+            if not headers_scannable:
                 found.append(
                     Violation(
                         E.SPEC_COMPONENT_DRIFT, f"{where} responses/{status_key}", unreadable
                     )
                 )
-        declared_headers = shallow.get("headers")
-        if not isinstance(declared_headers, Mapping):
+        if headers_scannable:
+            name_map: Mapping[str, Any] | None = declared_headers
+        elif unreadable is None and "headers" not in shallow:
+            # A two-hop `$ref` chain landed on an intermediate node that carries
+            # no member of its own, so the full resolution holds the header map
+            # the hop could not reach — the duplicate-spelling gate keeps its
+            # round-12 coverage for this shape.
+            full_headers = resolved_response.get("headers")
+            name_map = full_headers if isinstance(full_headers, Mapping) else None
+        else:
+            # The member is not a name map the scan can read (a `$ref` node, or
+            # not a map at all). If it still carries references, follow them the
+            # guarded way: a failure here is a defect no other reader reaches —
+            # the helpers do not deep-resolve an inline response node — so it is
+            # named at the response, never left unread and unnamed.
+            if declared_headers is not None:
+                try:
+                    resolve_refs(declared_headers, root=document)
+                except KeyError as error:
+                    found.append(
+                        Violation(
+                            E.SPEC_COMPONENT_DRIFT,
+                            f"{where} responses/{status_key}",
+                            f"$ref names {error}, a component member the document does not define",
+                        )
+                    )
+                except _RESOLUTION_FAILURES as error:
+                    found.append(
+                        Violation(
+                            E.SPEC_COMPONENT_DRIFT,
+                            f"{where} responses/{status_key}",
+                            f"$ref cannot be followed: {error!r}",
+                        )
+                    )
+            name_map = None
+        if name_map is None:
             continue
-        for key, header_node in declared_headers.items():
+        for key, header_node in name_map.items():
             _, broken = _read_header_node(header_node, document)
             if broken is not None:
                 found.append(
@@ -453,7 +495,7 @@ def _check_operation(
                     )
                 )
         spellings: dict[str, list[str]] = {}
-        for key in declared_headers:
+        for key in name_map:
             spellings.setdefault(str(key).lower(), []).append(str(key))
         for collisions in spellings.values():
             if len(collisions) < 2:
@@ -830,11 +872,13 @@ def _shallow_response(node: Any, document: Mapping[str, Any]) -> Mapping[str, An
     reference = node.get("$ref")
     if reference is None:
         return node
-    if not isinstance(reference, str):
+    # Mirror resolve_refs' own guard: only local pointers are walkable here. Any
+    # other spelling must fall through to the full read, which names it.
+    if not isinstance(reference, str) or not reference.startswith("#/"):
         return None
     target: Any = document
     try:
-        for segment in reference.lstrip("#").strip("/").split("/"):
+        for segment in reference[2:].split("/"):
             target = target[segment.replace("~1", "/").replace("~0", "~")]
     except _RESOLUTION_FAILURES:
         return None
