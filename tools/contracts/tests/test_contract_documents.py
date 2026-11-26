@@ -3611,6 +3611,39 @@ def test_a_referenced_body_cannot_smuggle_a_request_schema_past_the_deferral_gat
         (v.code, v.location, v.detail) for v in found
     ], [v.render() for v in inline_found]
 
+    # The same class one level deeper: a `$ref` spelled at the Media Type
+    # Object position (not an OpenAPI 3.1 reference position — the repo runs
+    # no OpenAPI metaschema over these documents) is still a route for a
+    # shared component to bring a referenced schema back into the body, so it
+    # is the same deferral refusal.
+    entry_ref = copy.deepcopy(device)
+    entry_ref["components"]["schemas"]["OtaEntryTarget"] = {
+        "schema": {"$ref": "#/components/schemas/Error"}
+    }
+    entry_ref["components"].setdefault("requestBodies", {})["EntryRefOtaBody"] = {
+        "required": True,
+        "description": (
+            "signed envelope; encoding and `contracts/ota-v1.json` deferred to "
+            "package 2.10; consumers must not guess"
+        ),
+        "content": {
+            "application/octet-stream": {
+                "$ref": "#/components/schemas/OtaEntryTarget"
+            }
+        },
+    }
+    entry_ref["paths"]["/ota"]["post"]["requestBody"] = {
+        "$ref": "#/components/requestBodies/EntryRefOtaBody"
+    }
+    found_entry = check_ota_deferral(entry_ref, CONTRACTS)
+    assert [(v.code, v.location, v.detail) for v in found_entry] == [
+        (
+            E.OTA_DEFERRAL_MISSING,
+            "POST /ota requestBody schema",
+            "no request schema may be referenced while the encoding is deferred",
+        )
+    ], [v.render() for v in found_entry]
+
     # And the honest shapes still certify clean both ways (the shared component
     # the probe moves verbatim; a non-mapping `schema` references nothing).
     clean = copy.deepcopy(device)

@@ -357,6 +357,7 @@ def check_ota_deferral(document: Mapping[str, Any], contracts_dir: Path) -> list
             # hides no reference the document does not carry.
             chained = _alias_chained_reference(ota.get("requestBody", {}), document)
             schema: Any = {}
+            entry_ref = False
             for host in (chained, body):
                 if not isinstance(host, Mapping):
                     continue
@@ -366,12 +367,21 @@ def check_ota_deferral(document: Mapping[str, Any], contracts_dir: Path) -> list
                 candidate = host_content.get("application/octet-stream")
                 if isinstance(candidate, Mapping):
                     schema = candidate.get("schema", {})
+                    # A `$ref` spelled at the Media Type Object position is not
+                    # an OpenAPI 3.1 reference position — and no OpenAPI
+                    # metaschema gates these documents — but it is still a
+                    # route for a shared component to carry a referenced schema
+                    # into the body, so treat it as the same deferral refusal.
+                    # Fail-closed and baseline-safe: the committed octet-stream
+                    # entry spells no `$ref` (and the operation checker's
+                    # binding read shares this entry-position blindness).
+                    entry_ref = "$ref" in candidate
                     break
             # A non-object `schema` references nothing, and the guarded read
             # says so as a shape the caller's own verdict covers — the `in`
             # test over a scalar would be the exit-2 crash this check exists
             # to avoid.
-            if isinstance(schema, Mapping) and "$ref" in schema:
+            if entry_ref or (isinstance(schema, Mapping) and "$ref" in schema):
                 found.append(
                     Violation(
                         E.OTA_DEFERRAL_MISSING,
