@@ -259,28 +259,60 @@ def canonical(document: Any) -> Any:
     return document
 
 
-def resolve_refs(document: Any, *, root: Mapping[str, Any] | None = None, _stack: deque[str] | None = None) -> Any:
+def resolve_refs(
+    document: Any,
+    *,
+    root: Mapping[str, Any] | None = None,
+    mode: str = "schema",
+    _stack: deque[str] | None = None,
+) -> Any:
     """Inline every local ``$ref`` so plain JSON Schema validation can run.
 
     Only ``#/...`` JSON pointers are supported, which is all either contract uses. A
     reference cycle is expanded once and then refused: a recursive wire contract
-    would be a design change worth failing on rather than looping over.
+    would be a design change worth failing on rather than looping over. Only a
+    pointer that a chain actually reaches again while in flight is a cycle: the
+    node's own ``$ref`` sits on the stack for the *target* expansion, while
+    sibling subtrees are evaluated with the stack as it stood before that push
+    (a fresh copy each), because a sibling re-referencing the same finite
+    target — ``{"$ref": A, "allOf": [{"$ref": A}]}`` — is two independent
+    assertions of one document, which standard validators accept. Genuine
+    recursion, a target expansion that reaches an enclosing in-flight pointer,
+    still raises.
 
-    A ``$ref`` node here is a JSON Schema 2020-12 Schema Object (§8.2.3.1): its
-    sibling members are assertions that conjoin with the referenced target, so
-    they are recursively resolved and merged *over* the target — the sibling
-    wins a key conflict, which is what conjunction means. A boolean target
-    conjoins the obvious way (``true`` leaves the siblings standing alone,
-    ``false`` makes the whole node unsatisfiable); any other scalar target
-    cannot conjoin with siblings at all and is refused by its ``$ref``. Sibling
-    subtrees resolve with the node's own pointer still on the cycle stack, so a
-    sibling that re-references the node's own target is refused like any other
-    re-expansion — the same deliberate "expand once, then refuse" policy as the
-    target walk. Read
-    OpenAPI Reference Object positions (``components/responses``, ``headers``
-    or ``parameters`` entries) through :func:`resolve_reference` instead, which
-    strips non-``$ref`` siblings the way OpenAPI 3.1 defines that node.
+    ``mode`` states which document position is being resolved, because the two
+    positions read a ``$ref`` node differently:
+
+    * ``"schema"`` (the default) reads a JSON Schema 2020-12 Schema Object
+      (§8.2.3.1): a ``$ref``'s sibling members are assertions that conjoin with
+      the referenced target, so when target and siblings are both mappings the
+      result is their exact conjunction ``{"allOf": [target, siblings]}`` — no
+      sibling key can overwrite a target keyword, which a ``{**target,
+      **siblings}`` merge would allow. A boolean target conjoins the obvious
+      way (``true`` leaves the siblings standing alone, ``false`` makes the
+      whole node unsatisfiable); any other scalar target cannot conjoin with
+      siblings at all and is refused by its ``$ref``.
+    * ``"reference"`` reads OpenAPI 3.1 Reference Object positions
+      (``components/responses``, ``headers``, ``parameters``, ``requestBodies``
+      or ``securitySchemes`` entries): a Reference Object carries only
+      ``$ref``, and every member beside it is decoration the reference does not
+      merge, at *every* hop of a chain — if a hop lands on a node that is
+      itself a ``$ref`` node, its siblings are stripped again and followed.
+      Reference mode therefore never conjoins a sibling assertion. Members of
+      a resolved document object are themselves document members and descend
+      in reference mode, except in schema positions — the value of a ``schema``
+      member, and entries under ``components/schemas`` (a pointer hop that
+      lands there) — where Schema Object semantics apply and nested ``$ref``s
+      keep the conjunction rules above.
+
+    Dangling pointers, unsupported pointers and cycles raise the same
+    ``ValueError``/``KeyError`` classes in both modes, so guarded readers turn
+    them into named findings. Schema positions call :func:`resolve_refs`
+    directly (schema mode is the default); Reference Object positions read
+    through :func:`resolve_reference`.
     """
+    if mode not in ("schema", "reference"):
+        raise ValueError(f"unknown resolution mode {mode!r}; expected 'schema' or 'reference'")
     base = document if root is None else root
     stack = _stack if _stack is not None else deque()
     if isinstance(document, Mapping):
@@ -291,18 +323,39 @@ def resolve_refs(document: Any, *, root: Mapping[str, Any] | None = None, _stack
             if ref in stack:
                 raise ValueError(f"recursive $ref {ref!r} in the contract")
             target = _pointer(base, ref)
+            # Independent sibling subtrees see the stack as it stood before
+            # this node's own pointer was pushed: a sibling re-referencing the
+            # node's target is a second, self-contained assertion of the same
+            # finite document, not a re-expansion of the target walk. Each
+            # sibling gets a fresh copy so sibling chains stay independent of
+            # one another; the target expansion keeps the pushed stack, which
+            # is what still refuses genuine recursion.
+            sibling_stack = deque(stack)
             stack.append(ref)
             try:
-                resolved = resolve_refs(target, root=base, _stack=stack)
-                siblings = {
-                    key: resolve_refs(value, root=base, _stack=stack)
-                    for key, value in document.items()
-                    if key != "$ref"
-                }
+                # A Reference-Object hop that lands under ``components/schemas``
+                # has landed on a Schema Object: its members are schema
+                # keywords, so it descends with Schema Object semantics.
+                target_mode = (
+                    "schema" if mode == "reference" and ref.startswith("#/components/schemas/") else mode
+                )
+                resolved = resolve_refs(target, root=base, mode=target_mode, _stack=stack)
             finally:
                 stack.pop()
+            if mode == "reference":
+                # Reference Object semantics: only ``$ref`` is meaningful here,
+                # so the siblings are not even walked — decoration (including a
+                # dangling pointer inside it) is inert and never merged.
+                return resolved
+            siblings = {
+                key: resolve_refs(value, root=base, mode=mode, _stack=deque(sibling_stack))
+                for key, value in document.items()
+                if key != "$ref"
+            }
             if isinstance(resolved, Mapping):
-                return {**resolved, **siblings}
+                if not siblings:
+                    return resolved
+                return {"allOf": [resolved, siblings]}
             if resolved is True:
                 return siblings
             if resolved is False:
@@ -313,29 +366,42 @@ def resolve_refs(document: Any, *, root: Mapping[str, Any] | None = None, _stack
                     f"conjoin {sorted(siblings)} with it"
                 )
             return resolved
-        return {key: resolve_refs(value, root=base, _stack=stack) for key, value in document.items()}
+        return {
+            key: resolve_refs(
+                value,
+                root=base,
+                mode="schema" if mode == "reference" and key == "schema" else mode,
+                _stack=stack,
+            )
+            for key, value in document.items()
+        }
     if isinstance(document, list):
-        return [resolve_refs(item, root=base, _stack=stack) for item in document]
+        return [resolve_refs(item, root=base, mode=mode, _stack=stack) for item in document]
     return document
 
 
 def resolve_reference(node: Any, root: Mapping[str, Any] | None = None) -> Any:
     """Inline a local ``$ref`` the way an OpenAPI Reference Object is resolved.
 
-    A Reference Object (the ``$ref`` beside a response, header or parameter) is
-    not a Schema Object: OpenAPI 3.1 lets it carry only ``summary`` and
-    ``description``, and neither augments the target — the rest is decoration
-    the reference does not merge. So every member other than ``$ref`` is
-    stripped here before :func:`resolve_refs` follows the pointer, keeping a
-    gate decision about the target independent of what rode along beside the
-    reference. Schema positions (Schema Objects, where siblings *are*
-    assertions) keep :func:`resolve_refs` directly. A node without ``$ref`` is
-    walked by :func:`resolve_refs` itself — nested references in it are still
-    inlined, exactly as a plain schema read of that node would do.
+    A Reference Object (the ``$ref`` beside a response, header, parameter,
+    requestBody or securityScheme) is not a Schema Object: OpenAPI 3.1 lets it
+    carry only ``summary`` and ``description``, and neither augments the target
+    — the rest is decoration the reference does not merge, at *every* hop of a
+    reference chain, not just the first. So this is :func:`resolve_refs` in
+    ``mode="reference"``: each hop strips the non-``$ref`` members it carries
+    and follows its pointer (a hop that lands on another ``$ref`` node is
+    stripped again), and members of a resolved document object descend in
+    reference mode — except in schema positions (the value of a ``schema``
+    member, and entries under ``components/schemas``), where Schema Object
+    semantics apply and nested ``$ref``s keep the sibling-conjunction rules.
+    Keeping a gate decision about the target independent of what rode along
+    beside the reference is the whole point. Schema positions (Schema Objects,
+    where siblings *are* assertions) keep :func:`resolve_refs` directly. A node
+    without ``$ref`` is walked by the same reference-mode read — nested
+    references in it are still inlined, with Reference Object semantics at
+    every further hop.
     """
-    if isinstance(node, Mapping) and "$ref" in node:
-        node = {"$ref": node["$ref"]}
-    return resolve_refs(node, root=root)
+    return resolve_refs(node, root=root, mode="reference")
 
 
 def check_local_refs(document: Mapping[str, Any]) -> str | None:

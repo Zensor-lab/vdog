@@ -2878,17 +2878,30 @@ def test_a_ref_sibling_assertion_binds_through_schema_resolution(device: dict) -
     assert any(keyword == "maxLength" for _property, keyword, _message in report), report
 
 
-def test_a_ref_sibling_wins_the_key_it_shares_with_its_target(device: dict) -> None:
-    """Conjunction means the sibling overrides a conflicting target key."""
+def test_a_ref_sibling_conjoins_instead_of_overwriting_its_target_keyword(device: dict) -> None:
+    """Conjunction means *exact* conjunction: a sibling replaces no target keyword.
+
+    The round-17 read merged ``{**target, **siblings}``, so a sibling spelled
+    with the same keyword as the target — ``description`` here — silently won,
+    and any assertion the sibling dropped left the referenced schema unbound.
+    JSON Schema 2020-12 §8.2.3.1 evaluates both sides, so the resolution is
+    now the exact conjunction ``{"allOf": [target, siblings]}``: the sibling's
+    annotation rides along and every target assertion keeps binding.
+    """
     weakened = copy.deepcopy(device)
     node = weakened["components"]["schemas"]["PairRequest"]["properties"]["setup_secret"]
-    node["description"] = "sibling wins"
+    node["description"] = "sibling rides along"
     resolved = resolve_refs(node, root=weakened)
     plain = resolve_refs({"$ref": "#/components/schemas/SetupSecret"}, root=weakened)
-    assert resolved["description"] == "sibling wins"
-    assert plain["description"] != "sibling wins", "SetupSecret lost its own description"
-    # Assertions merged from the target keep binding alongside the override.
-    assert resolved["maxLength"] == 43 and resolved["pattern"].startswith("^")
+    assert plain["description"] != "sibling rides along", "SetupSecret lost its own description"
+    assert resolved == {"allOf": [plain, {"description": "sibling rides along"}]}
+    # The target's own assertions still bind through the conjunction: the
+    # length pair and pattern the merge would have overwritten or dropped
+    # still judge every instance (the resolution is the property schema).
+    assert not schema_error_report(resolved, "A" * 43)
+    assert schema_error_report(resolved, "A" * 42), (
+        "SetupSecret's own length bound stopped binding through the conjunction"
+    )
 
 
 def test_boolean_and_scalar_ref_targets_conjoin_the_obvious_way() -> None:
@@ -2910,39 +2923,71 @@ def test_boolean_and_scalar_ref_targets_conjoin_the_obvious_way() -> None:
     assert resolve_refs({"$ref": "#/$defs/word"}, root=document) == "hello"
     with pytest.raises(ValueError, match=re.escape("#/$defs/word")):
         resolve_refs({"$ref": "#/$defs/word", "maxLength": 7}, root=document)
-    # A sibling that re-references the node's own target is refused like any
-    # other re-expansion: siblings resolve with the node's pointer still on
-    # the cycle stack, the same "expand once, then refuse" policy as the
-    # target walk (pinned so a future relaxation cannot silently change it).
-    with pytest.raises(ValueError, match=re.escape("recursive $ref '#/$defs/allow'")):
-        resolve_refs(
-            {"$ref": "#/$defs/allow", "patternProperties": {"x": {"$ref": "#/$defs/allow"}}},
-            root=document,
-        )
+    # A sibling that re-references the node's own target is *not* recursion
+    # (round-18 F4): sibling subtrees resolve with a fresh copy of the stack as
+    # it stood before the node's own pointer was pushed, so this repeated
+    # assertion of one finite target resolves the way a standard validator
+    # accepts it. Genuine recursion — a target expansion reaching an
+    # enclosing in-flight pointer — is still refused by name.
+    assert resolve_refs(
+        {"$ref": "#/$defs/allow", "patternProperties": {"x": {"$ref": "#/$defs/allow"}}},
+        root=document,
+    ) == {"patternProperties": {"x": {}}}
+    cyclic = {
+        "$defs": {
+            "loop": {"type": "object", "properties": {"next": {"$ref": "#/$defs/loop"}}}
+        }
+    }
+    with pytest.raises(ValueError, match=re.escape("recursive $ref '#/$defs/loop'")):
+        resolve_refs({"$ref": "#/$defs/loop"}, root=cyclic)
 
 
-def test_a_dangling_decoration_sibling_pointer_fails_closed_at_the_headers_read(
+def test_stripped_reference_decoration_is_inert_while_followed_pointers_fail_closed(
     backend: dict,
 ) -> None:
-    """Round 17 note: the Reference-Object probes read nested siblings — fail closed.
+    """Round 18 F2, correcting the round-17 note: decoration is inert, hops fail closed.
 
-    ``resolve_reference`` strips siblings only at the node it is handed; a
-    response whose *declared* header map is itself a ``$ref`` node is
-    full-read through the strips-then-deep-walk path, so a dangling ``$ref``
-    hiding inside a nested header node's decoration sibling can no longer be
-    ignored. That is the fail-closed direction the readability probes have
-    always taken — a document with a pointer it cannot follow earns one
-    ``SPEC_COMPONENT_DRIFT`` at the response, never a silent pass or an exit-2
-    crash — and this pins it so the asymmetry is stated behaviour, not an
-    accident a later refactor could flip either way.
+    Round 17 pinned that a dangling ``$ref`` hiding inside a header node's
+    *decoration* sibling earned ``SPEC_COMPONENT_DRIFT`` — the deep schema-mode
+    walk followed it. OpenAPI 3.1 Reference Object semantics say that sibling
+    is never read at all: the reference-mode read strips every non-``$ref``
+    member at every hop, so a pointer inside stripped decoration is inert —
+    nothing names it and nothing crashes. What the walk does follow still
+    fails closed: a pointer a hop reaches (a Header Object's own ``schema``
+    member here) is resolved, and one the document cannot follow still earns
+    its ``SPEC_COMPONENT_DRIFT`` at the response, never an exit-2 crash.
     """
     assert not check_openapi("backend", backend)
+
+    # The very mutation round 17 pinned as drift: the dangling pointer sits in
+    # a stripped sibling of a Reference Object, so it is never followed, never
+    # named, and the rest of the document certifies honestly.
     weakened = copy.deepcopy(backend)
     weakened["components"]["headers"]["SiblingProbeMap"] = {
         "X-Probe": {
             "$ref": "#/components/headers/ETagSha256",
             "x-decoration": {"$ref": "#/components/headers/NoSuchHeader"},
         }
+    }
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"]["headers"] = {
+        "$ref": "#/components/headers/SiblingProbeMap"
+    }
+    report = check_openapi("backend", weakened)
+    assert not [violation for violation in report if "NoSuchHeader" in violation.render()], [
+        violation.render() for violation in report
+    ]
+    assert not report, [violation.render() for violation in report]
+
+    # The pointer this hop *does* follow — the Header Object's ``schema``
+    # member — is still walked: a dangling target there is the document
+    # defect it always was, named at the response in the guarded wording.
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["headers"]["ProbeSchemaHop"] = {
+        "description": "a header whose schema pointer dangles",
+        "schema": {"$ref": "#/components/headers/NoSuchHeader"},
+    }
+    weakened["components"]["headers"]["SiblingProbeMap"] = {
+        "X-Probe": {"$ref": "#/components/headers/ProbeSchemaHop"}
     }
     weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"]["headers"] = {
         "$ref": "#/components/headers/SiblingProbeMap"
@@ -3010,3 +3055,504 @@ def test_a_decorated_reference_does_not_promise_content_the_target_withholds(
         for violation in found
         if "promises a body the method or status forbids" in violation.detail
     ], [violation.render() for violation in found]
+
+
+# --- Round 18: sibling conjunction, Reference Object hops, scheme refs, cycle
+# --- policy, and the guarded OTA body -----------------------------------------
+
+
+def test_ref_sibling_assertions_agree_with_a_standard_validator(device: dict) -> None:
+    """F1: siblings of a ``$ref`` conjoin with the target, keyword for keyword.
+
+    The round-17 merge handed every keyword the sibling spelled to the sibling,
+    so an overlapping ``pattern``, ``required``, ``properties`` or ``minimum``
+    silently dropped the referenced assertion. JSON Schema 2020-12 §8.2.3.1
+    evaluates both, and this asks the same node and instance of a Draft
+    2020-12 validator with a real ref resolver and of
+    ``schema_error_report(resolve_refs(...))``, pinning that they agree —
+    including the review's ``+``-string case and a weakening attempt whose
+    sibling pattern is strictly broader than the target's.
+    """
+    from jsonschema import Draft202012Validator, RefResolver
+
+    document = {
+        "$defs": {
+            "Secret": {"type": "string", "pattern": "^[a-z]{3}$"},
+            "Count": {"type": "integer", "minimum": 5, "maximum": 10},
+            "Box": {
+                "type": "object",
+                "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+                "required": ["a"],
+                "additionalProperties": False,
+            },
+        }
+    }
+    cases = (
+        # label, node, instance, expected_rejected_by_both
+        (
+            "sibling pattern overlapping the target, outside the target",
+            {"$ref": "#/$defs/Secret", "pattern": "^[a-z+]{3}$"},
+            "+++",
+            True,
+        ),
+        (
+            "sibling pattern overlapping the target, inside the intersection",
+            {"$ref": "#/$defs/Secret", "pattern": "^[a-z+]{3}$"},
+            "abc",
+            False,
+        ),
+        (
+            "attempted weakening: a strictly broader sibling still rejects",
+            {"$ref": "#/$defs/Secret", "pattern": "^.{3}$"},
+            "+++",
+            True,
+        ),
+        (
+            "sibling minimum cannot lower the target floor",
+            {"$ref": "#/$defs/Count", "minimum": 0},
+            3,
+            True,
+        ),
+        (
+            "sibling minimum, instance inside both floors",
+            {"$ref": "#/$defs/Count", "minimum": 0},
+            7,
+            False,
+        ),
+        (
+            "sibling required cannot drop the target's required member",
+            {"$ref": "#/$defs/Box", "required": ["b"]},
+            {"b": "y"},
+            True,
+        ),
+        (
+            "sibling required keeps both lists binding",
+            {"$ref": "#/$defs/Box", "required": ["b"]},
+            {"a": "x", "b": "y"},
+            False,
+        ),
+        (
+            "sibling properties cannot drop a target property constraint",
+            {"$ref": "#/$defs/Box", "properties": {"a": {"type": "string"}}},
+            {"a": "x", "b": 42},
+            True,
+        ),
+        (
+            "disjoint sibling key conjoins beside the target",
+            {"$ref": "#/$defs/Secret", "description": "rides along"},
+            "abc",
+            False,
+        ),
+    )
+    for label, node, instance, rejected in cases:
+        standard = Draft202012Validator(node, resolver=RefResolver.from_schema(document))
+        standard_errors = list(standard.iter_errors(instance))
+        resolved_errors = schema_error_report(resolve_refs(node, root=document), instance)
+        assert bool(standard_errors) is rejected, (label, [e.message for e in standard_errors])
+        assert bool(resolved_errors) is rejected, (
+            label,
+            resolved_errors,
+            [e.message for e in standard_errors],
+        )
+
+    # The review's mutation on the real document: a broader sibling pattern on
+    # the pair-request secret cannot admit the ``+`` string the referenced
+    # ``SetupSecret`` pattern prohibits, and the valid secret still passes.
+    weakened = copy.deepcopy(device)
+    weakened["components"]["schemas"]["PairRequest"]["properties"]["setup_secret"][
+        "pattern"
+    ] = r"^[A-Za-z0-9_+\-]{43}$"
+    raw = weakened["components"]["schemas"]["PairRequest"]
+    for secret, rejected in (("+" * 43, True), ("A" * 43, False)):
+        instance = {"v": 1, "setup_secret": secret, "client_name": "review"}
+        standard = Draft202012Validator(raw, resolver=RefResolver.from_schema(weakened))
+        standard_errors = list(standard.iter_errors(instance))
+        report = schema_error_report(resolve_refs(raw, root=weakened), instance)
+        assert bool(standard_errors) is rejected, secret
+        assert bool(report) is rejected, (secret, report)
+        if rejected:
+            assert any(
+                keyword == "pattern" and "^[A-Za-z0-9_-]{43}$" in message
+                for _property, keyword, message in report
+            ), report
+
+
+def test_a_two_hop_header_alias_cannot_weaken_a_required_response_header(
+    backend: dict, tmp_path: Path
+) -> None:
+    """F2: a Reference Object carries only ``$ref`` at every hop of the chain.
+
+    The review's mutation: an optional copy of ``UploadOffset`` behind an alias
+    that declares ``required: true`` beside its own ``$ref``. Round 17 merged
+    that alias sibling into the target, so the gate certified a 204 whose
+    ``Upload-Offset`` had been demoted to a suggestion. OpenAPI 3.1 Reference
+    Object semantics strip it at the alias hop — the effective Header Object
+    is the optional copy, and the required-ness gate says so through the
+    complete validator, not only the operation scan.
+    """
+    import yaml
+
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    target = copy.deepcopy(weakened["components"]["headers"]["UploadOffset"])
+    target["required"] = False
+    weakened["components"]["headers"]["ReviewOptionalOffset"] = target
+    weakened["components"]["headers"]["ReviewOffsetAlias"] = {
+        "$ref": "#/components/headers/ReviewOptionalOffset",
+        "required": True,
+    }
+    weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["responses"]["204"]["headers"][
+        "Upload-Offset"
+    ] = {"$ref": "#/components/headers/ReviewOffsetAlias"}
+    found = [
+        violation
+        for violation in check_openapi("backend", weakened)
+        if violation.code == E.SPEC_STRUCTURE_MISSING
+        and violation.location
+        == "backend-v1 PATCH /uploads/{id}/files/{name} responses/204 headers/Upload-Offset"
+    ]
+    assert found and all("declares it optional" in violation.detail for violation in found), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+    broken = tmp_path / "contracts"
+    shutil.copytree(CONTRACTS, broken)
+    (broken / "backend-v1.yaml").write_text(yaml.safe_dump(weakened, sort_keys=False), encoding="utf-8")
+    report = validate_contracts(tmp_path)
+    assert not report.passed, "the complete validator must refuse the weakened header"
+    assert any(
+        violation.code == E.SPEC_STRUCTURE_MISSING
+        and "declares it optional" in violation.detail
+        for violation in report.violations
+    ), [violation.render() for violation in report.violations]
+
+
+def test_a_parameter_alias_sibling_cannot_make_a_required_parameter_optional(
+    backend: dict,
+) -> None:
+    """F2 at the parameter position: the sibling beside a hop is decoration.
+
+    ``Upload-Checksum`` is already a ``$ref`` component; pointing the operation
+    two hops away at a decoy that declares ``required: false`` beside its own
+    ``$ref`` is the same weakening the header probe ran at the parameter
+    position. Reference Object semantics strip the decoy's sibling, so the
+    required-request-header gate still reads the component's own
+    ``required: true`` and says nothing.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    real = copy.deepcopy(weakened["components"]["parameters"]["UploadChecksum"])
+    assert real.get("required") is True, "the pinned sibling is a real weakening attempt"
+    weakened["components"]["parameters"]["ChecksumReal"] = real
+    weakened["components"]["parameters"]["ChecksumDecoy"] = {
+        "$ref": "#/components/parameters/ChecksumReal",
+        "required": False,
+    }
+    parameters = weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["parameters"]
+    parameters[
+        parameters.index({"$ref": "#/components/parameters/UploadChecksum"})
+    ] = {"$ref": "#/components/parameters/ChecksumDecoy"}
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+
+def test_nested_references_through_a_shared_response_component_still_resolve(
+    backend: dict,
+) -> None:
+    """F2: the reference-mode walk follows every nested hop it reaches.
+
+    The 204 moved into ``components.responses`` keeps its header ``$ref``, and
+    that header now rides one more alias hop before its Header Object with its
+    ``schema`` member. Resolution still reaches the target through response →
+    header → alias → object, so the required ``Upload-Offset`` is read as the
+    component declares it and the shared answer certifies clean.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    offset204 = copy.deepcopy(
+        weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["responses"]["204"]
+    )
+    weakened["components"]["responses"]["Offset204"] = offset204
+    weakened["components"]["headers"]["UploadOffsetAlias"] = {
+        "$ref": "#/components/headers/UploadOffset"
+    }
+    offset204["headers"]["Upload-Offset"] = {"$ref": "#/components/headers/UploadOffsetAlias"}
+    weakened["paths"]["/uploads/{id}/files/{name}"]["patch"]["responses"]["204"] = {
+        "$ref": "#/components/responses/Offset204"
+    }
+    assert not check_openapi("backend", weakened), [
+        violation.render() for violation in check_openapi("backend", weakened)
+    ]
+
+
+def test_reference_object_decoration_is_stripped_at_every_hop() -> None:
+    """F2: ``summary``/``description`` (and anything else) never reach the target.
+
+    A Reference Object decorates, it does not augment — and the strip is a hop
+    rule, not a first-node rule: the decoration carried by an intermediate
+    alias (here a contradicting ``required`` and a ``summary``) is gone before
+    the next hop is read, exactly as the outer node's own ``description`` is.
+    The target's own members, including its ``schema``, survive untouched.
+    """
+    document = {
+        "components": {
+            "headers": {
+                "Real": {
+                    "description": "real words",
+                    "required": True,
+                    "schema": {"type": "integer", "minimum": 3},
+                },
+                "Mid": {
+                    "$ref": "#/components/headers/Real",
+                    "required": False,
+                    "summary": "decoration",
+                },
+            }
+        }
+    }
+    resolved = resolve_reference(
+        {
+            "$ref": "#/components/headers/Mid",
+            "description": "outer",
+            "required": False,
+            "x-decoration": 1,
+        },
+        root=document,
+    )
+    assert resolved == {
+        "description": "real words",
+        "required": True,
+        "schema": {"type": "integer", "minimum": 3},
+    }
+
+
+def test_security_scheme_reference_objects_are_resolved_before_the_bearer_check(
+    device: dict,
+) -> None:
+    """F3: ``components.securitySchemes`` entries may be Reference Objects.
+
+    The authentication gate used to read ``bearerAuth`` inline, so moving the
+    unchanged HTTP bearer definition to a shared component and referencing it —
+    legal OpenAPI — charged every protected operation a ``SPEC_SECURITY_MISSING``
+    for a scheme the document does define. The name is now followed the
+    Reference-Object way (direct hop and chained hops), and the failures a
+    pointer can make answer with the named strings the gate already used,
+    never an exception: a dangling target and a cycle both say ``is not
+    defined``, and a wrong-scheme target keeps the not-an-HTTP-bearer wording.
+    """
+    assert not check_openapi("device", device)
+    bearer = device["components"]["securitySchemes"]["bearerAuth"]
+
+    direct = copy.deepcopy(device)
+    direct["components"]["securitySchemes"]["ReviewBearer"] = copy.deepcopy(bearer)
+    direct["components"]["securitySchemes"]["bearerAuth"] = {
+        "$ref": "#/components/securitySchemes/ReviewBearer"
+    }
+    assert not _security_findings(direct, "device")
+    assert not check_openapi("device", direct), [
+        violation.render() for violation in check_openapi("device", direct)
+    ]
+
+    chained = copy.deepcopy(direct)
+    chained["components"]["securitySchemes"]["ReviewBase"] = copy.deepcopy(bearer)
+    chained["components"]["securitySchemes"]["ReviewBearer"] = {
+        "$ref": "#/components/securitySchemes/ReviewBase"
+    }
+    assert not _security_findings(chained, "device")
+
+    dangling = copy.deepcopy(device)
+    dangling["components"]["securitySchemes"]["bearerAuth"] = {
+        "$ref": "#/components/securitySchemes/Gone"
+    }
+    found = _security_findings(dangling, "device")
+    assert {violation.location for violation in found} == _protected_locations("device"), [
+        violation.render() for violation in found
+    ]
+    named = next(violation for violation in found if violation.location == "GET /status")
+    assert "securitySchemes" in named.detail and "not defined" in named.detail, named.render()
+
+    cycle = copy.deepcopy(device)
+    cycle["components"]["securitySchemes"]["bearerAuth"] = {
+        "$ref": "#/components/securitySchemes/Loop"
+    }
+    cycle["components"]["securitySchemes"]["Loop"] = {
+        "$ref": "#/components/securitySchemes/bearerAuth"
+    }
+    found = _security_findings(cycle, "device")
+    assert {violation.location for violation in found} == _protected_locations("device"), [
+        violation.render() for violation in found
+    ]
+
+    wrong = copy.deepcopy(device)
+    wrong["components"]["securitySchemes"]["ApiKeyBearer"] = {
+        "type": "apiKey",
+        "in": "query",
+        "name": "token",
+    }
+    wrong["components"]["securitySchemes"]["bearerAuth"] = {
+        "$ref": "#/components/securitySchemes/ApiKeyBearer"
+    }
+    found = _security_findings(wrong, "device")
+    assert found and all(
+        "not an HTTP bearer scheme" in violation.detail for violation in found
+    ), [violation.render() for violation in found]
+
+
+def test_independent_sibling_references_are_not_a_cycle(device: dict, tmp_path: Path) -> None:
+    """F4: two assertions of one finite target are reuse, not recursion.
+
+    ``resolve_refs`` used to keep the node's own ``$ref`` on the cycle stack
+    while resolving siblings, so ``{"$ref": A, "allOf": [{"$ref": A}]}`` — two
+    independent assertions of the same non-recursive schema, which standard
+    validators accept — aborted the CLI as ``ValueError: recursive $ref``.
+    Sibling subtrees now see the stack as it stood before the node's own
+    pointer was pushed; diamond-shaped reuse of one target stays fine, and
+    genuine recursion — a target expansion reaching an enclosing in-flight
+    pointer — is still refused by name.
+    """
+    root = {"$defs": {"T": {"type": "integer"}}}
+    assert resolve_refs({"$ref": "#/$defs/T", "allOf": [{"$ref": "#/$defs/T"}]}, root=root) == {
+        "allOf": [{"type": "integer"}, {"allOf": [{"type": "integer"}]}]
+    }
+    assert resolve_refs({"allOf": [{"$ref": "#/$defs/T"}, {"$ref": "#/$defs/T"}]}, root=root) == {
+        "allOf": [{"type": "integer"}, {"type": "integer"}]
+    }
+    cyclic = {
+        "$defs": {
+            "A": {"allOf": [{"$ref": "#/$defs/B"}]},
+            "B": {"$ref": "#/$defs/A"},
+        }
+    }
+    with pytest.raises(ValueError, match=re.escape("recursive $ref '#/$defs/A'")):
+        resolve_refs({"$ref": "#/$defs/A"}, root=cyclic)
+
+    # The review's document-level case: a second, independent ``SetupSecret``
+    # assertion beside the pair-request pointer resolves, still binds both
+    # assertions, and certifies the whole corpus clean.
+    import yaml
+
+    strengthened = copy.deepcopy(device)
+    strengthened["components"]["schemas"]["PairRequest"]["properties"]["setup_secret"][
+        "allOf"
+    ] = [{"$ref": "#/components/schemas/SetupSecret"}]
+    assert not check_openapi("device", strengthened)
+    resolved = resolve_refs(
+        strengthened["components"]["schemas"]["PairRequest"], root=strengthened
+    )
+    assert not schema_error_report(
+        resolved, {"v": 1, "setup_secret": "A" * 43, "client_name": "review"}
+    )
+    assert schema_error_report(
+        resolved, {"v": 1, "setup_secret": "+" * 43, "client_name": "review"}
+    ), "both independent assertions of SetupSecret must still bind"
+    broken = tmp_path / "contracts"
+    shutil.copytree(CONTRACTS, broken)
+    (broken / "device-v1.yaml").write_text(
+        yaml.safe_dump(strengthened, sort_keys=False), encoding="utf-8"
+    )
+    report = validate_contracts(tmp_path)
+    assert report.passed and not report.violations, [
+        violation.render() for violation in report.violations
+    ]
+
+
+def test_ota_deferral_reads_a_shared_body_like_its_inline_twin_and_refuses_malformed_shapes(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """F5: one guarded, Reference-Object-aware reader for the OTA requestBody.
+
+    ``check_ota_deferral`` used to ``.get`` the raw ``requestBody`` and
+    ``set(content)``: a body legally moved into ``components.requestBodies``
+    was charged ``OTA_DEFERRAL_MISSING`` although the operation checker read
+    the same reference fine, and a null ``content`` reached the CLI as an
+    exit-2 ``TypeError``. The body now goes through the guarded resolution the
+    operation checker uses — inline and reused answer identically through the
+    complete validator — while malformed body, content and media-entry shapes
+    stay named document findings that fail the CLI at exit 1.
+    """
+    import yaml
+
+    from tools.contracts import cli
+
+    document = load_yaml(CONTRACTS / "device-v1.yaml")
+    assert not check_ota_deferral(document, CONTRACTS)
+
+    reused = copy.deepcopy(document)
+    reused["components"].setdefault("requestBodies", {})["ReviewOtaBody"] = copy.deepcopy(
+        reused["paths"]["/ota"]["post"]["requestBody"]
+    )
+    reused["paths"]["/ota"]["post"]["requestBody"] = {
+        "$ref": "#/components/requestBodies/ReviewOtaBody"
+    }
+    assert not check_ota_deferral(reused, CONTRACTS), "a reused body is the inline body"
+    scratch = tmp_path / "reused"
+    scratch.mkdir(parents=True)
+    shutil.copytree(CONTRACTS, scratch / "contracts")
+    (scratch / "contracts" / "device-v1.yaml").write_text(
+        yaml.safe_dump(reused, sort_keys=False), encoding="utf-8"
+    )
+    report = validate_contracts(scratch)
+    assert (report.fixture_total, len(report.violations), report.passed) == (441, 0, True), [
+        violation.render() for violation in report.violations
+    ]
+
+    for label, mutate, code, location, detail in (
+        (
+            "null-content",
+            lambda d: d["paths"]["/ota"]["post"]["requestBody"].__setitem__("content", None),
+            E.OTA_DEFERRAL_MISSING,
+            "POST /ota requestBody content",
+            "is NoneType, not a media-type map",
+        ),
+        (
+            "null-body",
+            lambda d: d["paths"]["/ota"]["post"].__setitem__("requestBody", None),
+            E.OTA_DEFERRAL_MISSING,
+            "POST /ota requestBody",
+            "must be exactly one application/octet-stream content entry",
+        ),
+        (
+            "null-entry",
+            lambda d: d["paths"]["/ota"]["post"]["requestBody"]["content"].__setitem__(
+                "application/octet-stream", None
+            ),
+            E.OTA_DEFERRAL_MISSING,
+            "POST /ota requestBody content",
+            "media type 'application/octet-stream' is NoneType, not a media-type object",
+        ),
+    ):
+        mutated = copy.deepcopy(document)
+        mutate(mutated)
+        found = check_ota_deferral(mutated, CONTRACTS)
+        assert [(v.code, v.location, v.detail) for v in found] == [(code, location, detail)], (
+            label,
+            [v.render() for v in found],
+        )
+        broken = tmp_path / label
+        broken.mkdir(parents=True)
+        shutil.copytree(CONTRACTS, broken / "contracts")
+        (broken / "contracts" / "device-v1.yaml").write_text(
+            yaml.safe_dump(mutated, sort_keys=False), encoding="utf-8"
+        )
+        monkeypatch.chdir(broken)
+        assert cli.main([]) == 1, label  # never 2: no internal error, only a failing check
+        captured = capsys.readouterr()
+        assert "validator internal error" not in captured.err, (label, captured.err)
+        assert "Traceback" not in captured.err, (label, captured.err)
+
+    # A dangling body reference is the named component drift the response
+    # readers already use, not a false content complaint and not a crash.
+    dangling = copy.deepcopy(document)
+    dangling["paths"]["/ota"]["post"]["requestBody"] = {
+        "$ref": "#/components/requestBodies/Gone"
+    }
+    found = check_ota_deferral(dangling, CONTRACTS)
+    assert [(v.code, v.location) for v in found] == [
+        (E.SPEC_COMPONENT_DRIFT, "POST /ota requestBody")
+    ], [v.render() for v in found]
+    # The guarded wording names the first member the document does not define
+    # — the same convention the response and header readers keep.
+    assert "requestBodies" in found[0].detail and "does not define" in found[0].detail, (
+        found[0].render()
+    )

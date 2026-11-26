@@ -302,35 +302,63 @@ def check_ota_deferral(document: Mapping[str, Any], contracts_dir: Path) -> list
                 f"expected x-deferred: {OTA_DEFERRAL_PACKAGE!r}",
             )
         )
-    body = ota.get("requestBody", {})
-    content = body.get("content", {})
-    if set(content) != {"application/octet-stream"}:
+    # The requestBody is a Reference Object position, read through the same
+    # guarded resolution the operation checker uses: a body moved into
+    # `components.requestBodies` and referenced answers identically to its
+    # inline twin, a pointer the document cannot follow earns the named
+    # component drift the response reads use, and a malformed body or content
+    # member is a document finding (exit 1) — never the `TypeError`/`AttributeError`
+    # reaching the CLI as exit 2 "validator internal error".
+    body, body_issue = _resolved_request_body_node(ota.get("requestBody", {}), document)
+    if body_issue is not None:
         found.append(
-            Violation(
-                E.OTA_DEFERRAL_MISSING,
-                "POST /ota requestBody",
-                "must be exactly one application/octet-stream content entry",
-            )
+            Violation(E.SPEC_COMPONENT_DRIFT, "POST /ota requestBody", body_issue)
         )
     else:
-        entry = content["application/octet-stream"]
-        description = str(body.get("description", ""))
-        if "deferred" not in description or OTA_DEFERRAL_PACKAGE not in description:
+        # The media-type map read is guarded too: a declared `content` of a
+        # non-map shape, or an entry that is not an object, is named here (the
+        # deferral question owns this body) and read as declaring nothing.
+        content, content_issue = _media_type_map(body)
+        if content_issue is not None:
             found.append(
                 Violation(
                     E.OTA_DEFERRAL_MISSING,
-                    "POST /ota requestBody description",
-                    "must state that the encoding and contracts/ota-v1.json are deferred to 2.10",
+                    "POST /ota requestBody content",
+                    content_issue,
                 )
             )
-        if "$ref" in entry.get("schema", {}):
+        elif set(content) != {"application/octet-stream"}:
             found.append(
                 Violation(
                     E.OTA_DEFERRAL_MISSING,
-                    "POST /ota requestBody schema",
-                    "no request schema may be referenced while the encoding is deferred",
+                    "POST /ota requestBody",
+                    "must be exactly one application/octet-stream content entry",
                 )
             )
+        else:
+            entry = content["application/octet-stream"]
+            description = str(body.get("description", ""))
+            if "deferred" not in description or OTA_DEFERRAL_PACKAGE not in description:
+                found.append(
+                    Violation(
+                        E.OTA_DEFERRAL_MISSING,
+                        "POST /ota requestBody description",
+                        "must state that the encoding and contracts/ota-v1.json are deferred to 2.10",
+                    )
+                )
+            schema = entry.get("schema", {})
+            # A non-object `schema` references nothing, and the guarded read
+            # says so as a shape the caller's own verdict covers — the `in`
+            # test over a scalar would be the exit-2 crash this check exists
+            # to avoid.
+            if isinstance(schema, Mapping) and "$ref" in schema:
+                found.append(
+                    Violation(
+                        E.OTA_DEFERRAL_MISSING,
+                        "POST /ota requestBody schema",
+                        "no request schema may be referenced while the encoding is deferred",
+                    )
+                )
     return found
 
 
@@ -1008,17 +1036,46 @@ def _resolve(node: Any, document: Mapping[str, Any]) -> Any:
     """Follow a declared node's ``$ref`` as the OpenAPI Reference Object it is.
 
     Every caller here reads a Reference-Object position — a response, header,
-    parameter or requestBody entry, possibly a ``$ref`` into ``components`` —
-    so the read is :func:`tools.contracts.schema_docs.resolve_reference`,
-    which drops non-``$ref`` siblings: decoration beside the reference may not
-    augment the target or move a gate decision. Schema positions (the shared
-    ``Error``/``Manifest`` comparisons above) keep the schema-aware
-    :func:`tools.contracts.schema_docs.resolve_refs`, where siblings are JSON
-    Schema assertions.
+    parameter, requestBody or securityScheme entry, possibly a ``$ref`` into
+    ``components`` — so the read is :func:`tools.contracts.schema_docs.resolve_reference`,
+    which strips non-``$ref`` siblings at every hop of a chain: decoration
+    beside the reference may not augment the target or move a gate decision.
+    Schema positions (the shared ``Error``/``Manifest`` comparisons above) keep
+    the schema-aware :func:`tools.contracts.schema_docs.resolve_refs`, where
+    siblings are JSON Schema assertions.
     """
     if isinstance(node, Mapping) and "$ref" in node:
         return resolve_reference(node, document)
     return node
+
+
+def _resolved_request_body_node(
+    node: Any, document: Mapping[str, Any]
+) -> tuple[Mapping[str, Any], str | None]:
+    """The request body a declared node names, or why its pointer cannot be read.
+
+    The requestBody mirror of :func:`_resolved_response_node`: a requestBody is a
+    Reference Object position, and a document whose shared component is missing
+    (or whose pointer misfires) is a document with a defect, not a validator
+    crash — following the pointer raises, which would reach the CLI as exit 2
+    "validator internal error". Resolution failure is named in the wording the
+    response reads use so one dangling component earns one finding per reader.
+    A node that *resolves* to a non-object shape is answered as the empty body
+    with no reason of its own: the shape verdict belongs to the caller's own
+    content/required checks (the OTA deferral keeps it an
+    ``OTA_DEFERRAL_MISSING``; a response's is named by its media-type guard),
+    which report a body that declares nothing rather than crashing over a
+    scalar the document declared.
+    """
+    try:
+        resolved = _resolve(node, document)
+    except KeyError as error:
+        return {}, f"$ref names {error}, a component member the document does not define"
+    except _RESOLUTION_FAILURES as error:
+        # A pointer that walks through a list index or a scalar is a document
+        # defect named here, never the exception reaching the CLI as exit 2.
+        return {}, f"$ref cannot be followed: {error!r}"
+    return (resolved, None) if isinstance(resolved, Mapping) else ({}, None)
 
 
 def _resolved_request_body(item: Mapping[str, Any], document: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1032,11 +1089,11 @@ def _resolved_request_body(item: Mapping[str, Any], document: Mapping[str, Any])
     one :func:`tools.contracts.schema_docs.check_local_refs` refuses, so a pointer that
     walks through a list index or a scalar is a finding too.
     """
-    try:
-        resolved = _resolve(item.get("requestBody", {}), document)
-    except _RESOLUTION_FAILURES:
-        return {}
-    return resolved if isinstance(resolved, Mapping) else {}
+    # The same guarded read the OTA deferral check asks, with the resolution
+    # reason folded away: this reader's callers answer an unreadable body with
+    # their own "not required"/"binds None" findings.
+    body, _ = _resolved_request_body_node(item.get("requestBody", {}), document)
+    return body
 
 
 def _resolved_response(
@@ -1331,7 +1388,18 @@ def _authentication_gap(document: Mapping[str, Any], operation: Operation) -> st
                 "one alternative may not authenticate nobody"
             )
     schemes = document.get("components", {}).get("securitySchemes", {})
-    scheme = schemes.get("bearerAuth") if isinstance(schemes, Mapping) else None
+    declared = schemes.get("bearerAuth") if isinstance(schemes, Mapping) else None
+    # OpenAPI permits a Reference Object where the Components Object defines a
+    # security scheme, so the name is followed the Reference-Object way first —
+    # the same guarded read the response/header/body positions take. A dangling
+    # target, an unsupported pointer or a reference cycle says exactly what a
+    # missing member says: the scheme the requirements name is not defined
+    # where they name it. That is the named failure below, never the exception
+    # reaching the CLI as exit 2 "validator internal error".
+    try:
+        scheme = _resolve(declared, document)
+    except _RESOLUTION_FAILURES:
+        return "components.securitySchemes.bearerAuth is not defined"
     if not isinstance(scheme, Mapping):
         return "components.securitySchemes.bearerAuth is not defined"
     if (
