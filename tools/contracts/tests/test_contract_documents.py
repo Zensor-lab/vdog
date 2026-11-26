@@ -3644,6 +3644,29 @@ def test_a_referenced_body_cannot_smuggle_a_request_schema_past_the_deferral_gat
         )
     ], [v.render() for v in found_entry]
 
+    # Its inline twin, so the entry-position rule is pinned on both spellings
+    # like the two directions above: here the un-inlined node *is* the body.
+    inline_entry = copy.deepcopy(device)
+    inline_entry["components"]["schemas"]["OtaEntryTarget"] = {
+        "schema": {"$ref": "#/components/schemas/Error"}
+    }
+    inline_entry["paths"]["/ota"]["post"]["requestBody"]["content"][
+        "application/octet-stream"
+    ] = {"$ref": "#/components/schemas/OtaEntryTarget"}
+    found_inline_entry = check_ota_deferral(inline_entry, CONTRACTS)
+    assert [(v.code, v.location, v.detail) for v in found_inline_entry] == [
+        (v.code, v.location, v.detail) for v in found_entry
+    ], [v.render() for v in found_inline_entry]
+
+    # And the legal "declares nothing" spelling — an empty Media Type Object —
+    # stays clean, so the entry-position rule reports no reference where the
+    # document spells none.
+    empty_entry = copy.deepcopy(device)
+    empty_entry["paths"]["/ota"]["post"]["requestBody"]["content"][
+        "application/octet-stream"
+    ] = {}
+    assert not check_ota_deferral(empty_entry, CONTRACTS)
+
     # And the honest shapes still certify clean both ways (the shared component
     # the probe moves verbatim; a non-mapping `schema` references nothing).
     clean = copy.deepcopy(device)
