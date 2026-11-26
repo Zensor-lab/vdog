@@ -2910,6 +2910,53 @@ def test_boolean_and_scalar_ref_targets_conjoin_the_obvious_way() -> None:
     assert resolve_refs({"$ref": "#/$defs/word"}, root=document) == "hello"
     with pytest.raises(ValueError, match=re.escape("#/$defs/word")):
         resolve_refs({"$ref": "#/$defs/word", "maxLength": 7}, root=document)
+    # A sibling that re-references the node's own target is refused like any
+    # other re-expansion: siblings resolve with the node's pointer still on
+    # the cycle stack, the same "expand once, then refuse" policy as the
+    # target walk (pinned so a future relaxation cannot silently change it).
+    with pytest.raises(ValueError, match=re.escape("recursive $ref '#/$defs/allow'")):
+        resolve_refs(
+            {"$ref": "#/$defs/allow", "patternProperties": {"x": {"$ref": "#/$defs/allow"}}},
+            root=document,
+        )
+
+
+def test_a_dangling_decoration_sibling_pointer_fails_closed_at_the_headers_read(
+    backend: dict,
+) -> None:
+    """Round 17 note: the Reference-Object probes read nested siblings — fail closed.
+
+    ``resolve_reference`` strips siblings only at the node it is handed; a
+    response whose *declared* header map is itself a ``$ref`` node is
+    full-read through the strips-then-deep-walk path, so a dangling ``$ref``
+    hiding inside a nested header node's decoration sibling can no longer be
+    ignored. That is the fail-closed direction the readability probes have
+    always taken — a document with a pointer it cannot follow earns one
+    ``SPEC_COMPONENT_DRIFT`` at the response, never a silent pass or an exit-2
+    crash — and this pins it so the asymmetry is stated behaviour, not an
+    accident a later refactor could flip either way.
+    """
+    assert not check_openapi("backend", backend)
+    weakened = copy.deepcopy(backend)
+    weakened["components"]["headers"]["SiblingProbeMap"] = {
+        "X-Probe": {
+            "$ref": "#/components/headers/ETagSha256",
+            "x-decoration": {"$ref": "#/components/headers/NoSuchHeader"},
+        }
+    }
+    weakened["paths"]["/clips/{clip_id}"]["get"]["responses"]["200"]["headers"] = {
+        "$ref": "#/components/headers/SiblingProbeMap"
+    }
+    report = check_openapi("backend", weakened)
+    drift = [
+        violation
+        for violation in report
+        if violation.code == E.SPEC_COMPONENT_DRIFT
+        and violation.location == "backend-v1 GET /clips/{clip_id} responses/200"
+    ]
+    assert drift and all("NoSuchHeader" in violation.detail for violation in drift), [
+        violation.render() for violation in report
+    ]
 
 
 def test_a_reference_object_sibling_does_not_reach_the_resolved_target() -> None:
@@ -2920,8 +2967,8 @@ def test_a_reference_object_sibling_does_not_reach_the_resolved_target() -> None
     reference are decorations that must not change a gate decision, unlike
     JSON Schema siblings which are assertions. ``resolve_reference`` is that
     read: every non-``$ref`` sibling is stripped before the pointer is
-    followed. A node without ``$ref`` is read verbatim, as ``resolve_refs``
-    reads it.
+    followed. A node without ``$ref`` is walked by the same
+    :func:`resolve_refs` read, nested references inlined.
     """
     document = {"components": {"responses": {"Ok": {"description": "target words"}}}}
     resolved = resolve_reference(

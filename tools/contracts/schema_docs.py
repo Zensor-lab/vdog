@@ -272,7 +272,11 @@ def resolve_refs(document: Any, *, root: Mapping[str, Any] | None = None, _stack
     wins a key conflict, which is what conjunction means. A boolean target
     conjoins the obvious way (``true`` leaves the siblings standing alone,
     ``false`` makes the whole node unsatisfiable); any other scalar target
-    cannot conjoin with siblings at all and is refused by its ``$ref``. Read
+    cannot conjoin with siblings at all and is refused by its ``$ref``. Sibling
+    subtrees resolve with the node's own pointer still on the cycle stack, so a
+    sibling that re-references the node's own target is refused like any other
+    re-expansion — the same deliberate "expand once, then refuse" policy as the
+    target walk. Read
     OpenAPI Reference Object positions (``components/responses``, ``headers``
     or ``parameters`` entries) through :func:`resolve_reference` instead, which
     strips non-``$ref`` siblings the way OpenAPI 3.1 defines that node.
@@ -326,7 +330,8 @@ def resolve_reference(node: Any, root: Mapping[str, Any] | None = None) -> Any:
     gate decision about the target independent of what rode along beside the
     reference. Schema positions (Schema Objects, where siblings *are*
     assertions) keep :func:`resolve_refs` directly. A node without ``$ref`` is
-    read verbatim, exactly as ``resolve_refs`` reads it.
+    walked by :func:`resolve_refs` itself — nested references in it are still
+    inlined, exactly as a plain schema read of that node would do.
     """
     if isinstance(node, Mapping) and "$ref" in node:
         node = {"$ref": node["$ref"]}

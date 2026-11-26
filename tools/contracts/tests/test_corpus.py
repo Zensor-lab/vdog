@@ -408,7 +408,9 @@ def test_a_ref_sibling_bound_fails_the_corpus_run(tmp_path: Path) -> None:
     named = [
         violation
         for violation in report.violations
-        if "setup_secret" in violation.render()
+        if violation.code == E.API_SCHEMA
+        and violation.location.endswith(" at setup_secret")
+        and "too long" in violation.detail
     ]
     assert named, [violation.render() for violation in report.violations]
 
