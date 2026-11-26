@@ -429,6 +429,31 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
             ].__setitem__("upload-offset", {"schema": {"type": "string"}})
         ),
     ),
+    # Round 13: the two document reads the review certified silently — an error
+    # response the operation table never speaks for pointing its `$ref` at a
+    # component the document does not define, and a `Content-Length` promised on
+    # a payloadless 204 (the wire half is the committed
+    # `upload-patch-response-204-content-length` vector).
+    (
+        "documents",
+        "SPEC_COMPONENT_DRIFT",
+        _backend_yaml(
+            lambda d: d["paths"]["/clips/{clip_id}"]["get"]["responses"].__setitem__(
+                "404", {"$ref": "#/components/responses/NoSuchResponse"}
+            )
+        ),
+    ),
+    (
+        "documents",
+        "SPEC_STRUCTURE_MISSING",
+        _backend_yaml(
+            lambda d: d["paths"]["/uploads/{id}/files/{name}"]["patch"]["responses"]["204"][
+                "headers"
+            ].__setitem__(
+                "Content-Length", {"description": "x", "schema": {"type": "integer"}}
+            )
+        ),
+    ),
     ("documents", "SCHEMA_DOCUMENT_INVALID", _drop_frame_schema),
     (
         "documents",
