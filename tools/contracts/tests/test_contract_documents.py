@@ -4557,9 +4557,9 @@ def test_a_self_referencing_inline_operation_schema_earns_a_named_drift_not_a_cr
     inline ``GET /derivatives/{id}`` 200 schema whose ``allOf`` points back at
     itself charges ``SPEC_COMPONENT_DRIFT`` on the vector and the body keeps
     its component verdict. The companion control is the *legal* recursion the
-    same library accepts — an instance-consuming ``$ref`` descending a
-    property — which must still evaluate and charge normally, proving the fix
-    names only the non-consuming cycle.
+    same library accepts — the self-pointer hanging off the committed
+    ``crop`` object, which the evaluation must actually follow and re-apply —
+    proving the fix names only the non-consuming cycle.
     """
     from tools.contracts.api_validate import validate_api_fixture
 
@@ -4586,6 +4586,7 @@ def test_a_self_referencing_inline_operation_schema_earns_a_named_drift_not_a_cr
     assert [(violation.code, violation.location) for violation in found] == [
         (E.SPEC_COMPONENT_DRIFT, f"{entry['id']}: operation schema")
     ], [violation.render() for violation in found]
+    assert "recursion limit" in found[0].detail, found[0].render()
     assert "reference cycle" in found[0].detail, found[0].render()
     assert "DerivativeRecord" in found[0].detail, found[0].render()
 
@@ -4604,8 +4605,12 @@ def test_a_self_referencing_inline_operation_schema_earns_a_named_drift_not_a_cr
         (E.SPEC_COMPONENT_DRIFT, f"{entry['id']}: components/schemas/DerivativeRecord"),
     }, [violation.render() for violation in found]
 
-    # The legal shape still judges: recursion that consumes the instance
-    # terminates, and the sibling assertion charges like any other.
+    # The legal shape still *descends*: the self-pointer hangs off the body's
+    # committed crop object, so evaluation must follow it (instance
+    # consumption — crop has no nested crop, so it terminates) and re-apply
+    # this very node to crop. The root and the nested crop each charge the
+    # missing required member; a nested-location finding is only producible
+    # by actually following the recursive reference.
     consuming = copy.deepcopy(backend)
     node = consuming["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
         "application/json"
@@ -4614,13 +4619,20 @@ def test_a_self_referencing_inline_operation_schema_earns_a_named_drift_not_a_cr
     node.update(
         {
             "type": "object",
-            "properties": {"child": {"$ref": self_pointer}},
-            "required": ["reviewed_round23_field"],
+            "properties": {"crop": {"$ref": self_pointer}},
+            "required": ["reviewed_round24_field"],
         }
     )
     found = validate_api_fixture(
         CONTRACTS / "fixtures", entry, {"device": device, "backend": consuming}, schemas
     )
-    assert {violation.code for violation in found} == {E.API_SCHEMA_MISSING_FIELD}, [
+    assert [(violation.code, violation.location) for violation in found] == [
+        (E.API_SCHEMA_MISSING_FIELD, entry["id"]),
+        (E.API_SCHEMA_MISSING_FIELD, f"{entry['id']} at crop"),
+    ], [violation.render() for violation in found]
+    assert all("reviewed_round24_field" in violation.detail for violation in found), [
+        violation.render() for violation in found
+    ]
+    assert not any(violation.code == E.SPEC_COMPONENT_DRIFT for violation in found), [
         violation.render() for violation in found
     ]

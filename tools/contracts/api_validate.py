@@ -730,17 +730,19 @@ def _rooted_schema_errors(
     A same-instance reference cycle — an inline schema whose ``allOf`` points
     back at itself — is the third shape the rooted validator answers by dying:
     the library follows the pointer until Python raises ``RecursionError``,
-    which names no pointer (it is deep in the unwound stack), so the reason
-    says ``reference cycle`` in words. An instance-consuming recursion, which
-    is legal JSON Schema, never reaches this branch: it terminates and simply
-    reports its errors.
+    which names no pointer and no proven diagnosis (a sufficiently deep
+    acyclic schema reaches the same limit), so the reason reports the limit
+    and names a cycle as a likely cause. An instance-consuming recursion,
+    which is legal JSON Schema, never reaches this branch: it terminates and
+    simply reports its errors.
     """
     try:
         return schema_error_report(target, instance, root=document), None
     except RecursionError:
         return [], (
-            "$ref chain revisits an in-flight schema without consuming the "
-            "instance (reference cycle); maximum recursion depth reached"
+            "$ref evaluation exceeded Python's recursion limit; a reference "
+            "cycle revisiting an in-flight schema without consuming the "
+            "instance is a likely cause"
         )
     except _RESOLUTION_REPORT_FAILURES as error:
         return [], f"$ref cannot be followed: {error!r}"
