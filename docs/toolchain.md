@@ -532,3 +532,18 @@ gate layers.
 | Documented stricter deviations | `is not set` line as last mention of a required key records None (parser resolves unset there ⇒ certainly not an explicit pin; repo file contains none); exact raw-line syntax (PR-R5/R8) still decides declaredness; leading-whitespace lines match neither anchored regex (parser: malformed, marker persists) and stay fail-closed. |
 | Round-6 correction | The round-6 rule ("preceding non-blank line matches `^\s*#\s*default\b`") was wrong in both directions: it let `# default:` + intervening comment + assignment PASS (parser: default → must fail; new p1 → 1, pre-fix 0) and rejected `# default: (some expr)` (parser: ordinary comment → explicit pin; n2 expectation CORRECTED to 0). |
 | Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1, n2 (corrected), p1, p3, p4 — 32/32 expected exits (driver out of tree, same location). |
+
+### Package 1.1 addendum — PR-review round 8 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-8 deprecated-section fidelity
+fix (plan §10 round-8 block; §11 "round 8 re-run", 35-case harness). Same
+authority chain as round 7 — kconfgen loads every `sdkconfig.defaults` via
+`config.load_config(temp_file, replace=False)` (`kconfgen/core.py:559-569`)
+with `load_deprecated` at its default `False` (`esp_kconfiglib/core.py:1151
+-1157`), plus the F-1 comment fix (tip `a6faac8`).
+
+| Item | Behaviour after round 8 |
+| --- | --- |
+| `check_board_config.py` layer 1 deprecated-section skip (PR-R14) | `last_raw_assignments()` mirrors `in_deprecated_block` (core.py:1351/1404-1411; banners `constants.py:32-33`): BEGIN/END toggle it and clear the `# default:` flag; WHILE inside, EVERY line is skipped exactly as the default-mode loader does (`if in_deprecated_block and not load_deprecated: continue`, core.py:1413-1414) — assignments inside the section are never recorded (earlier outside record survives), cannot consume the marker, and an unclosed BEGIN skips to EOF (loop-tail reset :1610 never clears `in_deprecated_block`). Marker-section edge cases documented and probe-verified (banner clears the flag; first assignment after End is a user pin). |
+| F-1 (round-7 approval nit, tip `a6faac8`) | Comment-only wording fix: leading-whitespace lines are ones the pinned parser IGNORES as malformed (core.py:1512-1513) — NOT "tolerated"; fail-closed rejection is the faithful behaviour. `grep -n tolerat` on the script: no hits. |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1, n2 (corrected), p1, p3, p4, q1, q2, q3 — 35/35 expected exits (driver out of tree, same location); q1 pre-fix bypass reproduced at a6faac8 (exit 0) before the fix. |

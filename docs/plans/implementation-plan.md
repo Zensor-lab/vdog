@@ -11,7 +11,10 @@ syntax, #error compile-flag backstop, widened header prefix class — at
 and PR-R12 (CMake-scope wording) fixed at `c34b287`,
 round-7 finding PR-R13 (marker logic unfaithful to the pinned
 esp_kconfiglib parser in both directions) fixed at `1819ef6` by
-mirroring its `value_is_default` machine, re-review pending, merge
+mirroring its `value_is_default` machine, round-7 approved with LOW docs
+nit F-1 (comment wording at `a6faac8`), round-8 finding PR-R14
+(deprecated-options section must be skipped like kconfgen's default-mode
+loader) fixed at `4b87a19`, re-review pending, merge
 pending)**, revised 2026-11-27. This is the
 master backlog, not authorization to execute every stage in one assignment. The
 minimal firmware and portable host tests exist with BUILD/HOST evidence.
@@ -299,8 +302,15 @@ stage the dependencies listed in each package override simple numeric order.
   directions vs the pinned parser) — semantics derived from the vendored
   `esp_kconfiglib` (core.py:1399-1402/1505-1514/1610, constants.py:54)
   and the gate rewritten to mirror it (p1 bypass -> 1, pre-fix 0;
-  n2 expectation corrected to 0; p3/p4 unset cases; 32/32 harness),
-  PR re-review pending; merge pending hosted CI + PR review.
+  n2 expectation corrected to 0; p3/p4 unset cases; 32/32 harness);
+  round-7 approved with LOW docs nit F-1 (comment wording reworded to
+  parser truth at `a6faac8`), then round-8 re-review requested changes
+  at `a6faac8` (PR-R14 Medium: assignments inside the auto-generated
+  `# Deprecated options …` banners counted as declared although
+  kconfgen's default-mode loader skips the section) — mirrored
+  `in_deprecated_block` skip at `4b87a19` (q1 bypass -> 1, pre-fix 0;
+  q2/q3 controls; 35/35 harness), PR re-review pending; merge pending
+  hosted CI + PR review.
   **No DEVICE evidence** (device/board checks
   stay in 1.2–1.4) and 0.3/0.7 wiring
   and bench approval remain outstanding, so every pin reference is
