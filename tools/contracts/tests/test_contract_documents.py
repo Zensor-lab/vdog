@@ -4042,3 +4042,148 @@ def test_the_ota_deferral_gate_refuses_a_schema_reference_under_any_applicator(
     ), [violation.render() for violation in result.violations]
     baseline = validate_contracts(REPO_ROOT)
     assert baseline.fixture_total == 441 and not baseline.violations and baseline.passed
+
+
+#: The one dialect a contract component may legally spell on its own: OpenAPI
+#: 3.1 schemas are 2020-12, and the round-20 finding is exactly what a
+#: component declaring that dialect must not do to the instance validator.
+_2020_12_DIALECT: Final[str] = "https://json-schema.org/draft/2020-12/schema"
+
+
+def test_a_declared_2020_12_dialect_keeps_the_exact_number_validator_through_evolution(
+    backend: dict,
+) -> None:
+    """F1 (round 20): ``$ref`` onto a dialect-spelling target keeps the Decimal branch.
+
+    Reference following evolves the validator onto the class
+    ``validator_for`` reads from the target's own ``$schema``, and at
+    225e3ba a target spelling the supported 2020-12 dialect evolved onto the
+    built-in :class:`~jsonschema.Draft202012Validator` mid-validation — the
+    exact-number integer branch went with the class, and a
+    ``parse_float=decimal.Decimal`` body lost its ``type: integer`` verdict
+    for writing ``0.0``. The class-level ``evolve`` override now keeps the
+    custom class whenever the library's selection is the built-in 2020-12
+    one, and this pins the evolved instance: same class, same Decimal
+    verdict, and the library's own state copy — schema, resolver, registry,
+    format checker — carried over intact.
+    """
+    from decimal import Decimal
+
+    from tools.contracts.schema_docs import DRAFT202012_VALIDATOR, _rooted_validator
+
+    annotated = copy.deepcopy(backend)
+    target = annotated["components"]["schemas"]["DerivativeRecord"]
+    target["$schema"] = _2020_12_DIALECT
+    validator = _rooted_validator(target, annotated)
+    assert validator.TYPE_CHECKER.is_type(Decimal("1.0"), "integer")
+
+    evolved = validator.evolve(schema=target)
+    assert isinstance(evolved, DRAFT202012_VALIDATOR), type(evolved).__name__
+    assert evolved.TYPE_CHECKER.is_type(Decimal("1.0"), "integer")
+    assert evolved.schema == target
+    assert evolved.format_checker is validator.format_checker
+    assert evolved._registry is validator._registry
+    assert evolved._resolver is validator._resolver
+
+
+def test_a_dialect_declaration_on_the_referenced_component_certifies_the_integral_float_vector(
+    device: dict, backend: dict
+) -> None:
+    """F1 (round 20) on the API path: the published integral-float vector stays valid.
+
+    The committed ``derivative-response-200-crop-integral-float-notation``
+    vector is the contract's own proof that ``0.0``/``64.0`` notation is an
+    integer window, and the review showed that annotating
+    ``components/schemas/DerivativeRecord`` — the schema that vector is
+    judged against through ``$ref`` — with the supported dialect made the
+    gate report four ``Decimal(…) is not of type 'integer'`` ``API_SCHEMA``
+    findings plus ``FIXTURE_EXPECTED_PASS`` on it. Zero findings, annotated
+    or not: the dialect declaration may not move the verdict of a valid
+    vector.
+    """
+    from tools.contracts.api_validate import validate_api_fixture
+
+    schemas, violations = load_media_schemas(CONTRACTS / "media-v1")
+    assert not violations, [violation.render() for violation in violations]
+    index = json.loads(
+        (CONTRACTS / "fixtures" / "fixtures.json").read_bytes().decode("utf-8")
+    )["fixtures"]
+    entry = next(
+        item for item in index
+        if item["id"] == "backend/valid/derivative-response-200-crop-integral-float-notation"
+    )
+    body = json.loads(
+        (CONTRACTS / "fixtures" / entry["files"][0]).read_bytes().decode("utf-8")
+    )
+    assert body["crop"] == {"x": 0.0, "y": 0.0, "width": 64.0, "height": 64.0}, (
+        "the committed vector must still carry its window in float notation, "
+        "or this test pins nothing"
+    )
+
+    # The control: the committed, un-annotated document certifies the vector.
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": device, "backend": backend}, schemas
+    )
+    assert not found, [violation.render() for violation in found]
+
+    # The annotated document must not judge it any differently.
+    annotated = copy.deepcopy(backend)
+    annotated["components"]["schemas"]["DerivativeRecord"]["$schema"] = _2020_12_DIALECT
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": device, "backend": annotated}, schemas
+    )
+    assert not found, [violation.render() for violation in found]
+
+
+def test_the_corpus_certifies_a_backend_annotated_with_the_supported_dialect(
+    backend: dict, tmp_path: Path
+) -> None:
+    """F1 (round 20) end to end: the whole corpus still certifies the annotated document.
+
+    The review's corpus-level reproduction rewrote only
+    ``contracts/backend-v1.yaml`` of a temporary copy — adding the supported
+    dialect to ``components/schemas/DerivativeRecord``, nothing else — and
+    at 225e3ba the complete validator reported ``441 / 5 / False``. The
+    same run now answers ``441 / 0 / True``: a legal dialect declaration
+    on a referenced component changes no fixture's verdict and nothing else
+    either.
+    """
+    import yaml
+
+    annotated = copy.deepcopy(backend)
+    annotated["components"]["schemas"]["DerivativeRecord"]["$schema"] = _2020_12_DIALECT
+    corpus = tmp_path / "contracts"
+    shutil.copytree(CONTRACTS, corpus)
+    (corpus / "backend-v1.yaml").write_text(
+        yaml.safe_dump(annotated, sort_keys=False), encoding="utf-8"
+    )
+    result = validate_contracts(tmp_path)
+    assert result.fixture_total == 441 and not result.violations and result.passed, (
+        result.fixture_total,
+        [violation.render() for violation in result.violations],
+        result.passed,
+    )
+
+
+def test_an_unsupported_dialect_still_evolves_onto_the_draft_validator_it_names(
+    backend: dict,
+) -> None:
+    """F1 (round 20) stays narrow: only the built-in 2020-12 selection is remapped.
+
+    The remap answers the one question — "would the library build the
+    built-in 2020-12 validator here?" — with "build ours instead". A
+    component spelling any other registered dialect still evolves onto the
+    validator that dialect names, exactly as the library has always done,
+    so the fix is provably scoped to the supported dialect and cannot leak
+    into another draft's semantics.
+    """
+    from jsonschema import Draft7Validator
+
+    from tools.contracts.schema_docs import DRAFT202012_VALIDATOR, _rooted_validator
+
+    annotated = copy.deepcopy(backend)
+    target = annotated["components"]["schemas"]["DerivativeRecord"]
+    target["$schema"] = "http://json-schema.org/draft-07/schema#"
+    evolved = _rooted_validator(target, annotated).evolve(schema=target)
+    assert isinstance(evolved, Draft7Validator), type(evolved).__name__
+    assert not isinstance(evolved, DRAFT202012_VALIDATOR)

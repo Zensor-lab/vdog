@@ -19,10 +19,11 @@ from typing import Any, Final, Mapping
 
 import referencing
 import yaml
+from attrs import fields as _attrs_fields
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema._types import draft202012_type_checker
 from jsonschema.exceptions import SchemaError, ValidationError
-from jsonschema.validators import create
+from jsonschema.validators import create, validator_for
 from referencing.jsonschema import specification_with
 
 #: Keys stripped before comparing two documents that must say the same thing.
@@ -122,12 +123,61 @@ def is_json_integer(checker: object, instance: Any) -> bool:
 
 #: :class:`~jsonschema.Draft202012Validator` with the integer branch above, which is
 #: what lets :func:`schema_error_report` judge a ``Decimal`` instance at all. Built
-#: without a ``version`` so no global validator registration happens as a side effect.
+#: without a ``version`` so no global validator registration happens as a side effect;
+#: :meth:`_evolve_preserving_exact_numbers` below keeps this class selected when
+#: reference resolution evolves onto the dialect it was built from.
 DRAFT202012_VALIDATOR: Final = create(
     meta_schema=Draft202012Validator.META_SCHEMA,
     validators=Draft202012Validator.VALIDATORS,
     type_checker=draft202012_type_checker.redefine("integer", is_json_integer),
 )
+
+#: The init arguments :meth:`_evolve_preserving_exact_numbers` copies from the
+#: evolving instance, read once from the attrs class :func:`~jsonschema.validators.create`
+#: returned. This is the same field list the library's own ``evolve`` walks; the
+#: library keeps its copy inside the ``create`` closure, which this module cannot
+#: reach, so it reads the fields through the public attrs API instead.
+_EXACT_NUMBER_EVOLVE_FIELDS: Final[tuple[tuple[str, str], ...]] = tuple(
+    (field.name, field.alias)
+    for field in _attrs_fields(DRAFT202012_VALIDATOR)
+    if field.init
+)
+
+
+def _evolve_preserving_exact_numbers(self: Any, **changes: Any) -> Any:
+    """:meth:`evolve` that keeps the exact-number integer checker on 2020-12.
+
+    Reference following is the library's own: ``$ref`` descends through
+    ``self.evolve(schema=…)``, and ``evolve`` picks the next class with
+    :func:`~jsonschema.validators.validator_for` — which answers from its
+    metaschema table whenever the target *spells* ``$schema``. For the
+    supported Draft 2020-12 dialect that answer is the **built-in**
+    :class:`~jsonschema.Draft202012Validator`, silently discarding this
+    class's :func:`is_json_integer` branch mid-validation. API bodies and
+    the media index are parsed with ``parse_float=decimal.Decimal`` by
+    design, and :func:`schema_error_report` follows ``$ref`` on the raw
+    node (JSON Schema 2020-12 §11.3 annotation scope), so a component that
+    declares the supported dialect — legal per the OpenAPI 3.1
+    ``schemaDialect`` rules — must not turn a committed ``0.0``-notation
+    ``type: integer`` value into ``is not of type 'integer'``.
+
+    The remap is exactly one class pair: whenever the library's selection
+    *is* the built-in 2020-12 validator, this class is built instead. Every
+    other selection stands as the library makes it — a ``$schema`` naming
+    draft-07 still evolves onto :class:`~jsonschema.Draft7Validator`. The
+    state copy mirrors the library's ``evolve`` field for field.
+    """
+    schema = changes.setdefault("schema", self.schema)
+    NewValidator = validator_for(schema, default=type(self))
+    if NewValidator is Draft202012Validator:
+        NewValidator = DRAFT202012_VALIDATOR
+    for attr_name, init_name in _EXACT_NUMBER_EVOLVE_FIELDS:
+        if init_name not in changes:
+            changes[init_name] = getattr(self, attr_name)
+    return NewValidator(**changes)
+
+
+DRAFT202012_VALIDATOR.evolve = _evolve_preserving_exact_numbers
 
 #: The base URI the local-reference registry of :func:`schema_error_report`
 #: registers the document root under, matching the empty base every ``#/…``
