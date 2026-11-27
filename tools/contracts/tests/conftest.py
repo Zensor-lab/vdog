@@ -625,6 +625,29 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
         "FIXTURE_INDEX_INVALID",
         _drop_entry_field("backend/valid/derivative-response-200", "kind"),
     ),
+    # Round 22: the re-review's three cases — a dangling nested $ref beside
+    # the component pointer made round 21's preflight discard the operation
+    # schema silently (the checker never reads nested references inside an
+    # inline response, so only the vector can name it), and an unhashable
+    # `kind` raised inside the index reader before the record could earn its
+    # finding.
+    (
+        "documents",
+        "SPEC_COMPONENT_DRIFT",
+        _backend_yaml_subject(
+            lambda d: d["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"].__setitem__(
+                "allOf", [{"$ref": "#/components/schemas/NotThere"}]
+            ),
+            "backend/valid/derivative-response-200",
+        ),
+    ),
+    (
+        "corpus",
+        "FIXTURE_INDEX_INVALID",
+        _set_entry_field("backend/valid/derivative-response-200", "kind", []),
+    ),
 )
 
 

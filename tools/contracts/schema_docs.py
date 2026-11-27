@@ -14,6 +14,7 @@ import re
 from collections import deque
 from collections.abc import Hashable
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Final, Mapping
 
@@ -121,14 +122,46 @@ def is_json_integer(checker: object, instance: Any) -> bool:
     return isinstance(instance, float) and instance.is_integer()
 
 
-#: :class:`~jsonschema.Draft202012Validator` with the integer branch above, which is
-#: what lets :func:`schema_error_report` judge a ``Decimal`` instance at all. Built
-#: without a ``version`` so no global validator registration happens as a side effect;
+#: The library's own ``multipleOf``, kept verbatim for every instance it can
+#: divide itself — the float/float fast path, its ``OverflowError`` fallback,
+#: and the integral-divisor ``%`` branch all stay exactly the shipped rule.
+_LIBRARY_MULTIPLE_OF: Final = Draft202012Validator.VALIDATORS["multipleOf"]
+
+
+def _exact_multiple_of(validator: Any, divisor: Any, instance: Any, schema: Any):
+    """``multipleOf`` that survives a ``Decimal`` instance against a float divisor.
+
+    API bodies and the media index are parsed with ``parse_float=decimal.Decimal``
+    by design, and the library keyword does ``instance / dB`` for a float ``dB``;
+    ``Decimal / float`` is undefined arithmetic, so a legal ``multipleOf: 0.5``
+    the body satisfies reached the CLI as ``TypeError`` — exit 2 "validator
+    internal error". A ``Decimal`` instance is judged with the exact rational the
+    library itself falls back to on overflow (``Fraction`` is exact for
+    ``int``/``float``/``Decimal`` divisors read through :func:`str`, and
+    ``64.0 / 0.5`` has denominator 1 while ``64.0 / 2.5`` does not), reporting
+    the library's own message. Every non-``Decimal`` number is handed straight
+    to the shipped keyword, so no other instance's answer — float, int or the
+    overflow case — moves; a non-number answers as the keyword already does,
+    nothing.
+    """
+    if isinstance(instance, decimal.Decimal):
+        if validator.is_type(instance, "number"):
+            failed = (Fraction(instance) / Fraction(str(divisor))).denominator != 1
+            if failed:
+                yield ValidationError(f"{instance!r} is not a multiple of {divisor}")
+        return
+    yield from _LIBRARY_MULTIPLE_OF(validator, divisor, instance, schema)
+
+
+#: :class:`~jsonschema.Draft202012Validator` with the integer branch above and the
+#: exact-number ``multipleOf`` beside it, which is what lets
+#: :func:`schema_error_report` judge a ``Decimal`` instance at all. Built without a
+#: ``version`` so no global validator registration happens as a side effect;
 #: :meth:`_evolve_preserving_exact_numbers` below keeps this class selected when
 #: reference resolution evolves onto the dialect it was built from.
 DRAFT202012_VALIDATOR: Final = create(
     meta_schema=Draft202012Validator.META_SCHEMA,
-    validators=Draft202012Validator.VALIDATORS,
+    validators={**Draft202012Validator.VALIDATORS, "multipleOf": _exact_multiple_of},
     type_checker=draft202012_type_checker.redefine("integer", is_json_integer),
 )
 

@@ -502,3 +502,40 @@ def test_cli_exits_one_when_an_index_record_is_incomplete(
     assert "FIXTURE_INDEX_INVALID" in output
     assert victim_id in output
     assert "validator internal error" not in output
+
+
+def test_cli_exits_one_when_an_index_record_is_unhashable(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A list-valued ``kind`` names itself and exits 1, not 2 (round 22 F3).
+
+    The reader tested set membership before the type, so ``"kind": []`` raised
+    ``TypeError`` inside ``_load_index`` itself — the exit-2 class round 21
+    closed for absent members, re-entering through the unhashable door. The
+    type is consulted first now: the record earns ``FIXTURE_INDEX_INVALID``,
+    stays in the run (the loop survives it through ``str()``), and the report
+    prints like any other failed check.
+    """
+    import json
+
+    broken = tmp_path / "contracts"
+    shutil.copytree(REPO_ROOT / "contracts", broken)
+    path = broken / "fixtures" / "fixtures.json"
+    document = json.loads(path.read_bytes().decode("utf-8"))
+    victim_id = "backend/valid/derivative-response-200"
+    for item in document["fixtures"]:
+        if item["id"] == victim_id:
+            item["kind"] = []
+            break
+    else:  # pragma: no cover - the id is part of the committed corpus
+        raise KeyError(victim_id)
+    path.write_bytes(json.dumps(document).encode("utf-8"))
+
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "RESULT: FAIL" in output
+    assert "FIXTURE_INDEX_INVALID" in output
+    assert victim_id in output
+    assert "validator internal error" not in output

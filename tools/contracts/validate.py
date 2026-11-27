@@ -158,6 +158,18 @@ def validate_contracts(repository_root: Path) -> Report:
     report.contract_violations.extend(index_violations)
     report.fixture_total = len(entries) + len(incomplete)
 
+    # A finding the reader recorded *about* a record that still runs belongs on
+    # that record's result too (round 22): an unhashable ``kind`` is named by
+    # the reader yet survives into the loop, whose own branches would otherwise
+    # let the vector print a verdict with nothing attributing the reader's
+    # complaint to the vector that caused it. Only findings located at a kept
+    # id attach; path-level findings (duplicates, missing ids) have no vector.
+    kept_ids = {str(entry["id"]) for entry in entries}
+    reader_findings: dict[str, list[Violation]] = {}
+    for violation in index_violations:
+        if violation.location in kept_ids:
+            reader_findings.setdefault(violation.location, []).append(violation)
+
     dimensions = clip_dimensions(fixtures, entries)
 
     for entry in entries:
@@ -171,6 +183,7 @@ def validate_contracts(repository_root: Path) -> Report:
             violations = [Violation(E.SPEC_PARSE_FAILED, fixture_id, "no OpenAPI document loaded")]
         else:
             violations = [Violation(E.SCHEMA_DOCUMENT_INVALID, fixture_id, "no media schema loaded")]
+        violations = reader_findings.get(fixture_id, []) + list(violations)
 
         expected = str(entry["expected"])
         declared = [str(code) for code in entry.get("expected_error_codes", [])]
@@ -380,7 +393,11 @@ def _load_index(fixtures: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
         # (``operation``, ``status``, ``direction``, ``schema``,
         # ``api_error_code``) stays the validators' own finding.
         crash_shape = False
-        if item.get("expected") not in {"valid", "invalid"}:
+        expected_value = item.get("expected")
+        if not isinstance(expected_value, str) or expected_value not in {"valid", "invalid"}:
+            # The type is consulted before the set: set membership against an
+            # unhashable ``list``/``dict`` raised ``TypeError`` inside the
+            # reader itself — the exit-2 class this gate exists to refuse.
             found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, "expected must be valid or invalid"))
             if "expected" not in item:
                 crash_shape = True
@@ -390,8 +407,14 @@ def _load_index(fixtures: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
                 crash_shape = True
         else:
             found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, "files must be a list"))
-        if item.get("kind") not in {"clip", "active", "api"}:
-            found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, f"unknown kind {item.get('kind')!r}"))
+        kind_value = item.get("kind")
+        if not isinstance(kind_value, str) or kind_value not in {"clip", "active", "api"}:
+            # Type before the set: an unhashable ``kind`` (a list or dict) used
+            # to raise ``TypeError`` inside this reader before the record could
+            # earn its finding. A present value survives the loop's ``str()``
+            # and lands in its honest branch, so it is named and kept; only an
+            # absent one is the round-21 crash shape that gets dropped.
+            found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, f"unknown kind {kind_value!r}"))
             if "kind" not in item:
                 crash_shape = True
         if "contract" not in item:
@@ -462,7 +485,11 @@ def _check_unreferenced_files(fixtures: Path, entries: list[dict[str, Any]]) -> 
     """AC-08: nothing may sit in the corpus without being an indexed test vector."""
     referenced = set()
     for entry in entries:
-        media = entry.get("kind") in {"clip", "active"}
+        # Type before the set (round 22 F3): an unhashable ``kind`` must reach
+        # its FIXTURE_INDEX_INVALID, not raise here. A value that is not a
+        # known kind owns no media file, which is what this walk asks.
+        kind_value = entry.get("kind")
+        media = isinstance(kind_value, str) and kind_value in {"clip", "active"}
         for name in entry.get("files", []):
             # Media vectors index bare file names inside their own directory; API
             # vectors index the corpus-relative path of each wire file.

@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Final, Mapping
 
+from referencing.exceptions import Unresolvable
+
 from . import errors as E
 from .api_model import ALL_OPERATIONS, Operation
 from .bounds import (
@@ -45,7 +47,6 @@ from .media_validate import MANIFEST_WIRE_SUPPRESSED, validate_manifest_fields
 from .schema_docs import (
     is_json_integer,
     mapping_or_empty,
-    resolve_refs,
     schema_error_report,
 )
 
@@ -658,23 +659,27 @@ def _operation_json_schema_node(
     must honour — yet neither reader saw it, and the golden fixtures stayed
     green while failing the schema they ship under. This read hands the body
     judgment to that node: the rooted :func:`tools.contracts.schema_docs.schema_error_report`
-    call is unchanged, but it evaluates what the operation publishes rather than
-    what the table names, so a sibling keyword judges the instance exactly as a
-    conformant consumer of the document would read it.
+    call evaluates what the operation publishes rather than what the table
+    names, so a sibling keyword judges the instance exactly as a conformant
+    consumer of the document would read it.
 
-    Every unreadable shape answers ``None`` and keeps the component judgment —
-    the document checker names those shapes as document findings, and the
-    vector must still be judged against the table-bound component: a
-    non-Mapping container on either side, a Reference-Object hop the document
-    cannot follow (see :func:`_follow_reference_hops` — the hop never inlines,
-    so the schema node comes back exactly as published), a missing
-    ``application/json`` entry, a media entry or schema that is not an object,
-    and a schema whose own ``$ref`` (or any nested pointer) the document
-    cannot resolve. The last question is asked by walking the node with the
-    schema-mode resolver and discarding the result: the exception set
-    ``check_local_refs`` refuses means "no readable node", never exit 2, and
-    the rooted report then follows the very pointers the document carries. A
-    node with no ``$ref`` at all (a fully inline schema) is readable too.
+    Every structurally unreadable shape answers ``None`` and keeps the
+    component judgment — the document checker names those shapes as document
+    findings, and the vector must still be judged against the table-bound
+    component: a non-Mapping container on either side, a Reference-Object hop
+    the document cannot follow (see :func:`_follow_reference_hops` — the hop
+    never inlines, so the schema node comes back exactly as published), a
+    missing ``application/json`` entry, and a media entry or schema that is not
+    an object. Whether the node's own pointers can be followed is deliberately
+    NOT asked here: a whole-node resolver probe reads ``$ref`` wherever the
+    word appears, so it refused valid schemas whose ``examples`` merely quoted
+    the key, and its silent ``None`` discarded the sibling assertions it was
+    meant to judge. The rooted report answers the question where it belongs —
+    the validator consults ``$ref`` only as a keyword, never inside
+    ``examples``/``default``/``enum`` data — and an un-followable pointer there
+    becomes a named ``SPEC_COMPONENT_DRIFT`` before the component fallback,
+    not a false pass (see :func:`_rooted_schema_errors`). A node with no
+    ``$ref`` at all (a fully inline schema) is readable too.
     """
     if direction == "request":
         declared = item.get("requestBody")
@@ -695,13 +700,34 @@ def _operation_json_schema_node(
     node = entry.get("schema")
     if not isinstance(node, Mapping):
         return None
-    try:
-        resolved = resolve_refs(node, root=document)
-    except _RESOLUTION_FAILURES:
-        return None
-    if not isinstance(resolved, Mapping):
-        return None
     return node
+
+
+#: How a rooted report can die on pointers: the set ``check_local_refs``
+#: refuses, plus the ``referencing`` family the rooted registry raises for a
+#: pointer into a document that does not carry it. Each is a named finding,
+#: never the exception reaching the CLI as exit 2.
+_RESOLUTION_REPORT_FAILURES: Final = (Unresolvable, *(_RESOLUTION_FAILURES))
+
+
+def _rooted_schema_errors(
+    target: Mapping[str, Any], instance: Mapping[str, Any], document: Mapping[str, Any]
+) -> tuple[list[tuple[str, str, str]], str | None]:
+    """The rooted report on ``target``, or the reason its ``$ref`` cannot be followed.
+
+    A schema-position question, asked of the validator itself: the rooted
+    report resolves ``$ref`` where it is a keyword and never inside data
+    members such as ``examples``, so a document that quotes the key answers
+    cleanly while a dangling pointer — at the node's top level or nested in a
+    sibling ``allOf`` — surfaces here as text the caller reports. Silence was
+    the old failure mode: the round-21 whole-node preflight answered "unreadable"
+    for both shapes alike, and the body fell back to the bare component with
+    nothing naming the defect.
+    """
+    try:
+        return schema_error_report(target, instance, root=document), None
+    except _RESOLUTION_REPORT_FAILURES as error:
+        return [], f"$ref cannot be followed: {error!r}"
 
 
 def _validate_against_component(
@@ -718,9 +744,13 @@ def _validate_against_component(
     component: the published contract is the node, ``$ref`` siblings included,
     and the rooted evaluation follows the pointer to the very component this
     call otherwise reads — so a bare-``$ref`` node answers identically and only
-    a real sibling divergence moves the verdict. The component-presence question
-    stays asked of the component either way: an index bound to a schema the
-    contract does not define is named however the operation decorates it.
+    a real sibling divergence moves the verdict. A node whose pointers cannot
+    be followed earns ``SPEC_COMPONENT_DRIFT`` on the vector *before* the
+    component judgment takes over: an unusable published schema is named, not
+    silently traded for the component the node was supposed to refine. The
+    component-presence question stays asked of the component either way: an
+    index bound to a schema the contract does not define is named however the
+    operation decorates it.
     """
     components = mapping_or_empty(mapping_or_empty(document.get("components")).get("schemas"))
     if schema_name not in components:
@@ -736,10 +766,31 @@ def _validate_against_component(
     # a sibling ``unevaluatedProperties``/``unevaluatedItems`` beside a
     # ``$ref`` only sees the referenced target's annotations when the
     # standard library evaluates the node in its document scope (§11.3).
-    target = components[schema_name] if schema_node is None else schema_node
-    for property_name, keyword, message in schema_error_report(
-        target, instance, root=document
-    ):
+    errors: list[tuple[str, str, str]] | None = None
+    if schema_node is not None:
+        errors, unresolvable = _rooted_schema_errors(schema_node, instance, document)
+        if unresolvable is not None:
+            found.append(
+                Violation(
+                    E.SPEC_COMPONENT_DRIFT,
+                    f"{entry['id']}: operation schema",
+                    f"the operation schema {unresolvable}; the body was judged "
+                    f"against the bound component {schema_name!r} instead",
+                )
+            )
+            errors = None  # the named drift owns the node; the component answers the body
+    if errors is None:
+        errors, unresolvable = _rooted_schema_errors(components[schema_name], instance, document)
+        if unresolvable is not None:
+            found.append(
+                Violation(
+                    E.SPEC_COMPONENT_DRIFT,
+                    f"{entry['id']}: components/schemas/{schema_name}",
+                    f"the bound component {unresolvable}",
+                )
+            )
+            return found
+    for property_name, keyword, message in errors:
         code = E.API_SCHEMA_MISSING_FIELD if keyword == "required" else E.API_SCHEMA
         location = f"{entry['id']}{f' at {property_name}' if property_name else ''}"
         found.append(Violation(code, location, message))
@@ -781,15 +832,35 @@ def _validate_error_vector(
     # instance with the annotations the referenced body produced, not against a
     # flattened tree. Where the operation publishes a readable schema node, it
     # is that node — ``$ref`` siblings included — that the body is judged
-    # against; the table name still chooses the diagnostic, so a missing member
-    # of the shared envelope stays ``ERROR_ENVELOPE_INVALID``.
-    target: Mapping[str, Any] = components[schema_name]
+    # against, its un-followable pointers named on the vector before the
+    # component answers; the table name still chooses the diagnostic, so a
+    # missing member of the shared envelope stays ``ERROR_ENVELOPE_INVALID``.
+    errors: list[tuple[str, str, str]] | None = None
     node = _operation_json_schema_node(item, document, "response", status)
     if node is not None:
-        target = node
-    for property_name, keyword, message in schema_error_report(
-        target, body, root=document
-    ):
+        errors, unresolvable = _rooted_schema_errors(node, body, document)
+        if unresolvable is not None:
+            found.append(
+                Violation(
+                    E.SPEC_COMPONENT_DRIFT,
+                    f"{entry['id']}: operation schema",
+                    f"the operation schema {unresolvable}; the body was judged "
+                    f"against the bound component {schema_name!r} instead",
+                )
+            )
+            errors = None
+    if errors is None:
+        errors, unresolvable = _rooted_schema_errors(components[schema_name], body, document)
+        if unresolvable is not None:
+            found.append(
+                Violation(
+                    E.SPEC_COMPONENT_DRIFT,
+                    f"{entry['id']}: components/schemas/{schema_name}",
+                    f"the bound component {unresolvable}",
+                )
+            )
+            return found
+    for property_name, keyword, message in errors:
         found.append(
             Violation(
                 schema_code,

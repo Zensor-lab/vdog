@@ -4420,3 +4420,121 @@ def test_a_malformed_servers_container_is_named_and_never_exits_two(
             and violation.detail == f"expected {expected_url!r}"
             for violation in found
         ), [violation.render() for violation in found]
+
+
+# --- Round 22: named refs, exact division -------------------------------------
+
+
+def test_an_unresolvable_operation_schema_reference_is_named_before_the_fallback(
+    device: dict, backend: dict
+) -> None:
+    """F1 (round 22): an unusable published schema is a finding, never a silent fallback.
+
+    Round 21's whole-node readability probe answered "unreadable" for a
+    dangling pointer nested in the inline ``GET /derivatives/{id}`` 200 schema
+    (a sibling ``allOf`` pointing at a component the document does not carry),
+    returned ``None``, and the vector was judged by the bare component with
+    nothing naming the defect — while no checker loop reads nested references
+    inside an inline response. The resolution question now belongs to the
+    rooted report, so the vector earns ``SPEC_COMPONENT_DRIFT`` *and* keeps
+    its component verdict. The companion control is the probe's other
+    half-bug: a schema whose ``examples`` merely quote a ``$ref`` key is
+    valid data, its siblings must still judge — pre-round-22 the probe
+    refused that node too and the missing required member passed unseen.
+    """
+    from tools.contracts.api_validate import validate_api_fixture
+
+    schemas, violations = load_media_schemas(CONTRACTS / "media-v1")
+    assert not violations, [violation.render() for violation in violations]
+    document = json.loads((CONTRACTS / "fixtures" / "fixtures.json").read_bytes().decode("utf-8"))
+    entry = next(
+        item for item in document["fixtures"]
+        if item["id"] == "backend/valid/derivative-response-200"
+    )
+
+    broken = copy.deepcopy(backend)
+    node = broken["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    node["required"] = ["reviewed_round22_field"]
+    node["allOf"] = [{"$ref": "#/components/schemas/NotThere"}]
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": device, "backend": broken}, schemas
+    )
+    assert [violation.code for violation in found] == [E.SPEC_COMPONENT_DRIFT], [
+        violation.render() for violation in found
+    ]
+    assert found[0].location == f"{entry['id']}: operation schema"
+    assert "cannot be followed" in found[0].detail, found[0].render()
+    assert "DerivativeRecord" in found[0].detail, found[0].render()
+
+    # ``examples`` data is never a pointer: the node's assertions judge, the
+    # missing required member is charged, and no drift is reported.
+    quoted = copy.deepcopy(backend)
+    node = quoted["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    node["required"] = ["reviewed_round22_field"]
+    node["examples"] = [{"$ref": "just some text"}]
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": device, "backend": quoted}, schemas
+    )
+    assert {violation.code for violation in found} == {E.API_SCHEMA_MISSING_FIELD}, [
+        violation.render() for violation in found
+    ]
+    assert any("reviewed_round22_field" in violation.detail for violation in found), [
+        violation.render() for violation in found
+    ]
+
+
+def test_a_decimal_body_survives_a_fractional_multiple_of_on_the_operation_schema(
+    device: dict, backend: dict
+) -> None:
+    """F2 (round 22): ``multipleOf`` divides exactly once bodies carry ``Decimal``.
+
+    API bodies parse with ``parse_float=decimal.Decimal`` by design and the
+    pinned library's keyword does ``instance / dB`` for a float divisor, so a
+    legal ``multipleOf: 0.5`` the vector satisfies — the committed
+    integral-float-notation window is ``Decimal(\"64.0\")`` — reached the CLI
+    as ``TypeError`` the moment the constraint rode the operation-node path.
+    The exact-number validator now divides ``Decimal`` instances through
+    ``Fraction`` (the library's own overflow fallback) and hands every other
+    instance to the shipped keyword verbatim: the passing multiple certifies,
+    the failing non-multiple earns ``API_SCHEMA`` with the library's message.
+    """
+    from tools.contracts.api_validate import validate_api_fixture
+
+    schemas, violations = load_media_schemas(CONTRACTS / "media-v1")
+    assert not violations, [violation.render() for violation in violations]
+    document = json.loads((CONTRACTS / "fixtures" / "fixtures.json").read_bytes().decode("utf-8"))
+    entry = next(
+        item for item in document["fixtures"]
+        if item["id"] == "backend/valid/derivative-response-200-crop-integral-float-notation"
+    )
+
+    passing = copy.deepcopy(backend)
+    passing["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["properties"] = {
+        "crop": {"properties": {"width": {"multipleOf": 0.5}}}
+    }
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": device, "backend": passing}, schemas
+    )
+    assert found == [], [violation.render() for violation in found]
+
+    failing = copy.deepcopy(backend)
+    failing["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["properties"] = {
+        "crop": {"properties": {"width": {"multipleOf": 2.5}}}
+    }
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": device, "backend": failing}, schemas
+    )
+    assert {violation.code for violation in found} == {E.API_SCHEMA}, [
+        violation.render() for violation in found
+    ]
+    assert any(
+        "not a multiple of 2.5" in violation.detail for violation in found
+    ), [violation.render() for violation in found]

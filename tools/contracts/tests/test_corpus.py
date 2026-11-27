@@ -494,6 +494,12 @@ def test_the_index_reader_keeps_incomplete_records_out_of_the_validation_loop(
         ("kind", "bogus", "unknown kind", False),
         ("expected", "maybe", "expected must be valid or invalid", False),
         ("files", _DROP, "files must be a list", False),
+        # Round 22 F3: unhashable values reach the set membership first — the
+        # reader must consult the type, name the record, and keep it (the loop
+        # survives them through ``str()``) instead of raising itself.
+        ("kind", [], "unknown kind", False),
+        ("expected", [], "expected must be valid or invalid", False),
+        ("kind", {}, "unknown kind", False),
     ):
         mutate(key, replacement)
         entries, incomplete_records, found = _load_index(tmp_path)
