@@ -12,6 +12,7 @@ OTA envelope still explicitly deferred instead of guessed?
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final, Mapping
 
@@ -436,7 +437,10 @@ def _subtree_spells_reference(node: Any) -> bool:
         return "$ref" in node or any(
             _subtree_spells_reference(value) for value in node.values()
         )
-    if isinstance(node, list):
+    if isinstance(node, Sequence) and not isinstance(node, (str, bytes, bytearray)):
+        # Sequences carry the applicator arrays (`allOf`, `anyOf`, …) and any
+        # other nested member list; the string/bytes exclusion keeps a scalar
+        # from being walked one character at a time.
         return any(_subtree_spells_reference(item) for item in node)
     return False
 

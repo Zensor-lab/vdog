@@ -3988,6 +3988,25 @@ def test_the_ota_deferral_gate_refuses_a_schema_reference_under_any_applicator(
             "no request schema may be referenced while the encoding is deferred",
         )
     ]
+
+    # The walk answers the verdict for every *sequence* spelling, not just
+    # the lists YAML produces: a programmatically built document smuggling the
+    # reference inside a tuple is the same refusal (the reviewer's plan-text
+    # note), and a scalar whose text merely contains ``$ref`` references
+    # nothing — strings are sequences of characters, and the walk excludes
+    # them so a scalar never membership-tests into a false refusal.
+    tupled = copy.deepcopy(device)
+    tupled["paths"]["/ota"]["post"]["requestBody"]["content"][
+        "application/octet-stream"
+    ]["schema"] = {"allOf": ({"$ref": "#/components/schemas/VersionedRequest"},)}
+    found = check_ota_deferral(tupled, CONTRACTS)
+    assert [(v.code, v.location, v.detail) for v in found] == expected
+
+    scalar = copy.deepcopy(device)
+    scalar["paths"]["/ota"]["post"]["requestBody"]["content"][
+        "application/octet-stream"
+    ]["schema"] = "all $ref strings here reference nothing"
+    assert not check_ota_deferral(scalar, CONTRACTS)
     forms = {
         "direct": {"$ref": "#/components/schemas/VersionedRequest"},
         "allOf": {"allOf": [{"$ref": "#/components/schemas/VersionedRequest"}]},
