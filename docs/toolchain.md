@@ -557,3 +557,16 @@ notes folded in at comment/docs level only — no behaviour change.
 | --- | --- |
 | INFO-1 (gate docstrings) | Provenance chain completed: kconfgen never hands the parser the raw file — `_replace_empty_assignments` (kconfgen/core.py:547-557) writes a temp file where every line is `.strip()`'d (:552) and lines ending `=` gain an `n` (:553-554), then `load_config(temp_file, replace=False)` runs on THAT. The mirror mirrors the PARSER (post-preprocessing); the preprocessing can only ever induce OVER-rejections in the gate — it strips whitespace the exact-match already rejects, its `=`-suffix completion only rescues values the strict PR-R5/PR-R8 syntax rejects anyway, and it can never create a canonical clean line or `# default:` marker the mirror misses (marker matching already strips; the transform only shortens lines or appends `n`). |
 | INFO-2 (plan §12 residual) | The deprecated-NAME-mapping branches (esp_kconfiglib core.py:1428-1440, old-name→new-name set with forced marker clear at :1440) are not mirrored; effect class is over-rejection only (mirror records under the raw key; `EXPECTED` uses canonical names; layer 2 + pin scan backstop). Consciously accepted residual. |
+
+### Package 1.1 addendum — PR-review round 9 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-9 line-boundary class fix
+(plan §10 round-9 block; §11 "round 9 re-run", 45-case harness).
+
+| Item | Behaviour after round 9 |
+| --- | --- |
+| Line model (PR-R15) | Gate line iteration mirrors the loader's universal newlines (\n/\r\n/\r ONLY — U+2028/U+2029/\v/\f/NEL are ordinary characters): `_read_text` opens with explicit `newline=None`; `_split_universal()` splits on \n and feeds the layer-1 mirror machine and the layer-4 platformio.ini fallback (configparser parity — the tool PlatformIO itself uses). NEVER `str.splitlines()` for loader-consumed text. Citations: kconfgen/core.py:547-557 (preprocessing open+iterate), esp_kconfiglib core.py:2464/2469/2533 (opens) + :1396 (parse loop). |
+| CMake-facing classes (PR-R15) | Definition regexes use CMake's argument-lexer terminators (space/TAB/newline/`(`/`)`/`;`) instead of Python `\s` (which matches U+2028..\x85): `=8388608u\u2028u` now captures the full tampered token and fails the complete-literal check; hidden separators around `=` defeat the definition match. Comment EOL (`#.*`) was already \n-only — documented parity. |
+| Purity scanner decision | Keeps `str.splitlines()` deliberately: finest split = detection superset (tokens/`#include`s contain no separator chars, so finer splitting cannot fragment matches; catches `;\u2028#include <ff.h>` the gcc \n-only model misses); separator-inside-token tampering defeats both scan models but fails loudly at compile/link (native build + `#error` guards). |
+| Parser-truth note (r3) | `CONFIG_X=y\u2028junk` is ONE line the parser accepts via the first-character bool rule (core.py:1467-1479) — user-selected `y`; the gate's exact raw-line match still rejects (documented stricter deviation). |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1, n2 (corrected), p1, p3, p4, q1–q3, r1, r1b ×4, r2, r3, r4, r4b, r4c — 45/45 expected exits; all six fail-open faces reproduced at exit 0 on 6c24739 before the fix. |

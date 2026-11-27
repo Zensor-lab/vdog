@@ -14,7 +14,12 @@ esp_kconfiglib parser in both directions) fixed at `1819ef6` by
 mirroring its `value_is_default` machine, round-7 approved with LOW docs
 nit F-1 (comment wording at `a6faac8`), round-8 finding PR-R14
 (deprecated-options section must be skipped like kconfgen's default-mode
-loader) fixed at `4b87a19`, re-review pending, merge
+loader) fixed at `4b87a19`, round-8 approved with non-blocking
+notes INFO-1/INFO-2 folded in at `6c24739`, round-9 finding PR-R15
+(line boundaries: gate `splitlines()` vs loader universal newlines —
+U+2028-hidden assignments fail-open) fixed at `6abd27e` by mirroring
+the loader/CMake/configparser line models via `_split_universal`,
+re-review pending, merge
 pending)**, revised 2026-11-27. This is the
 master backlog, not authorization to execute every stage in one assignment. The
 minimal firmware and portable host tests exist with BUILD/HOST evidence.
