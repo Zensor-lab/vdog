@@ -160,7 +160,33 @@ def check_openapi(contract: str, document: Mapping[str, Any]) -> list[Violation]
         )
     servers = document.get("servers", [])
     expected_server = _EXPECTED_SERVERS[contract]
-    if not servers or servers[0].get("url") != expected_server:
+    if "servers" in document and not isinstance(servers, list):
+        # A declared ``servers`` of any other shape names the container once and
+        # then reads as declaring nothing, the way the round-11 non-list
+        # ``parameters`` member does: the expected-server finding below still
+        # speaks for the contract's own URL, and the CLI exits 1 on the
+        # malformed document instead of dying under ``servers[0]`` as the
+        # exit-2 "validator internal error" it is not.
+        found.append(
+            Violation(
+                E.SPEC_STRUCTURE_MISSING,
+                f"{contract}-v1.yaml servers",
+                f"servers is {type(servers).__name__}, not a server array",
+            )
+        )
+        servers = []
+    if servers and not isinstance(servers[0], Mapping):
+        # A first entry that is not a server object carries no URL to compare;
+        # the shape is named here and the same expected-server finding follows,
+        # exactly as an entry declaring a different URL earns it today.
+        found.append(
+            Violation(
+                E.SPEC_STRUCTURE_MISSING,
+                f"{contract}-v1.yaml servers/0",
+                f"servers/0 is {type(servers[0]).__name__}, not a server object",
+            )
+        )
+    if not servers or not isinstance(servers[0], Mapping) or servers[0].get("url") != expected_server:
         found.append(
             Violation(
                 E.SPEC_STRUCTURE_MISSING,
@@ -473,6 +499,23 @@ def _check_operation(
 
     documented = set(operation.documented_statuses)
     responses = item.get("responses", {})
+    if "responses" in item and not isinstance(responses, Mapping):
+        # A declared ``responses`` member of any other shape names the container
+        # once, here, and every reader below — the documented-status walk, the
+        # undocumented-status walk, both binding loops and the all-response
+        # scan — asks its question of an empty map: the statuses the spec
+        # assigns report the answers they are missing, the bindings report what
+        # they cannot see, and none of it reaches the CLI over ``in`` or
+        # ``.items()`` as the exit-2 "validator internal error" it is not. An
+        # absent member says exactly what it always said, with no new finding.
+        found.append(
+            Violation(
+                E.SPEC_STRUCTURE_MISSING,
+                f"{where} responses",
+                f"responses is {type(responses).__name__}, not a response object",
+            )
+        )
+        responses = {}
     for status in sorted(documented):
         if str(status) not in responses:
             found.append(Violation(E.SPEC_STATUS_MISSING, f"{where} responses/{status}", "the spec assigns it"))

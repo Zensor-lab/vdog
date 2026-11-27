@@ -428,3 +428,77 @@ def test_cli_exits_one_when_schemas_is_not_a_container(
     assert "validator internal error" not in captured.err
     assert "RESULT: FAIL" in captured.out
     assert "reusable envelope missing" in captured.out
+
+
+# --- Round 21: containers and index records report, they do not abort --------
+
+
+@pytest.mark.parametrize(
+    ("mutate", "needles"),
+    [
+        (
+            lambda d: d["paths"]["/derivatives/{id}"]["get"].__setitem__("responses", None),
+            ["SPEC_STRUCTURE_MISSING", "responses is NoneType, not a response object"],
+        ),
+        (
+            lambda d: d.__setitem__("servers", [None]),
+            ["SPEC_STRUCTURE_MISSING", "servers/0 is NoneType, not a server object"],
+        ),
+    ],
+    ids=["responses-null", "servers-entry-null"],
+)
+def test_cli_exits_one_on_a_malformed_container(
+    mutate, needles, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A malformed container is a printed contract finding, never exit 2 (round 21 F2).
+
+    Both shapes raised inside the checker — the documented-status ``in`` test
+    over a null ``responses``, the URL read over a null ``servers`` entry —
+    and the CLI returned 2 as "validator internal error" before the report
+    printed. Each now earns its named ``SPEC_STRUCTURE_MISSING`` and a normal
+    exit 1.
+    """
+    _broken_yaml_document(tmp_path, "backend", mutate)
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "RESULT: FAIL" in output
+    for needle in needles:
+        assert needle in output
+    assert "validator internal error" not in output
+
+
+def test_cli_exits_one_when_an_index_record_is_incomplete(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A record missing ``kind`` names itself and exits 1, not 2 (round 21 F3).
+
+    The reader recorded the finding but enqueued the record; the validation
+    loop's ``entry["kind"]`` then died with ``KeyError`` before the finding
+    printed or regeneration was checked. The record now stays out of the loop
+    and the run reports like any other failed check.
+    """
+    import json
+
+    broken = tmp_path / "contracts"
+    shutil.copytree(REPO_ROOT / "contracts", broken)
+    path = broken / "fixtures" / "fixtures.json"
+    document = json.loads(path.read_bytes().decode("utf-8"))
+    victim_id = "backend/valid/derivative-response-200"
+    for item in document["fixtures"]:
+        if item["id"] == victim_id:
+            del item["kind"]
+            break
+    else:  # pragma: no cover - the id is part of the committed corpus
+        raise KeyError(victim_id)
+    path.write_bytes(json.dumps(document).encode("utf-8"))
+
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "RESULT: FAIL" in output
+    assert "FIXTURE_INDEX_INVALID" in output
+    assert victim_id in output
+    assert "validator internal error" not in output

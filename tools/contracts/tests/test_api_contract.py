@@ -1978,6 +1978,7 @@ def test_a_refusal_with_a_body_of_its_own_reports_its_own_schema(by_id: dict, sp
 
     operation = ALL_OPERATIONS["device.put_settings"]
     entry = {"id": "unit:settings-409"}
+    item = specs["device"]["paths"][operation.path][operation.method.lower()]
     stale = {
         "v": 1,
         "error": {
@@ -1987,23 +1988,39 @@ def test_a_refusal_with_a_body_of_its_own_reports_its_own_schema(by_id: dict, sp
             "request_id": "req-1",
         },
     }
-    found = _validate_error_vector(operation, entry, specs["device"], stale, 409)
+    found = _validate_error_vector(operation, entry, specs["device"], item, stale, 409)
     assert found and {v.code for v in found} == {E.API_SCHEMA}, [v.render() for v in found]
     assert any("current_revision" in v.detail for v in found), [v.render() for v in found]
 
     accepted = {**stale, "current_revision": 7}
-    assert _validate_error_vector(operation, entry, specs["device"], accepted, 409) == []
+    assert (
+        _validate_error_vector(operation, entry, specs["device"], item, accepted, 409) == []
+    )
 
-    # Without the override the same body is judged as the shared envelope, which it is.
+    # Without the override the table names the shared envelope, but the document
+    # still publishes the dedicated 409 body — and it is the published node that
+    # judges (round 21 F1): the stale body is charged the member that node
+    # demands, under the code the table's name selects.
     plain = replace(operation, response_schemas={200: "PutSettingsResponse"})
-    assert _validate_error_vector(plain, entry, specs["device"], stale, 409) == []
+    found = _validate_error_vector(plain, entry, specs["device"], item, stale, 409)
+    assert found and {v.code for v in found} == {E.ERROR_ENVELOPE_INVALID}, [
+        v.render() for v in found
+    ]
+    assert any("current_revision" in v.detail for v in found), [v.render() for v in found]
+
+    # An unreadable operation node (no item to read it from) keeps the
+    # table-bound component judgment.
+    assert (
+        _validate_error_vector(plain, entry, specs["device"], {}, stale, 409) == []
+    )
 
     # An override naming a component the document never defines is a finding about the
     # document, never a silent pass on the body.
     ghost = replace(operation, response_schemas={200: "PutSettingsResponse", 409: "NoSuch"})
-    assert [v.code for v in _validate_error_vector(ghost, entry, specs["device"], stale, 409)] == [
-        E.SPEC_STRUCTURE_MISSING
-    ]
+    assert [
+        v.code
+        for v in _validate_error_vector(ghost, entry, specs["device"], item, stale, 409)
+    ] == [E.SPEC_STRUCTURE_MISSING]
 
 
 def test_the_revision_conflict_names_the_revision_it_demands(specs: dict) -> None:

@@ -24,7 +24,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Final, Mapping
 
 from . import errors as E
 from .api_model import ALL_OPERATIONS, Operation
@@ -42,7 +42,18 @@ from .bounds import (
 )
 from .errors import Violation
 from .media_validate import MANIFEST_WIRE_SUPPRESSED, validate_manifest_fields
-from .schema_docs import is_json_integer, mapping_or_empty, schema_error_report
+from .schema_docs import (
+    is_json_integer,
+    mapping_or_empty,
+    resolve_refs,
+    schema_error_report,
+)
+
+#: The way a declared pointer can misfire — the same set
+#: :func:`tools.contracts.schema_docs.check_local_refs` refuses. Reading through
+#: one of them is a document defect the document checker names; here it simply
+#: means the operation publishes no readable schema node.
+_RESOLUTION_FAILURES: Final = (ValueError, KeyError, IndexError, TypeError)
 
 _UUID = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 _QUOTED_SHA = re.compile(r'\A"[0-9a-f]{64}"\Z')
@@ -280,9 +291,19 @@ def validate_api_fixture(
             return violations
 
         if direction == "response" and isinstance(status, int) and status >= 400:
-            violations.extend(_validate_error_vector(operation, entry, document, body, status))
+            violations.extend(
+                _validate_error_vector(operation, entry, document, item, body, status)
+            )
         elif expected_schema is not None:
-            violations.extend(_validate_against_component(document, expected_schema, body, entry))
+            violations.extend(
+                _validate_against_component(
+                    document,
+                    expected_schema,
+                    body,
+                    entry,
+                    _operation_json_schema_node(item, document, direction, status),
+                )
+            )
         elif direction == "response" and status in operation.response_schemas:
             pass  # documented as a non-JSON body (binary or multipart): headers carry the rules
         elif direction == "request":
@@ -586,13 +607,121 @@ def _lookup_header(headers: Mapping[str, str], name: str) -> str | None:
     return None
 
 
+def _follow_reference_hops(node: Any, document: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Follow a Reference Object chain by raw pointer hops, without inlining anything.
+
+    :func:`tools.contracts.schema_docs.resolve_reference` walks the whole target
+    — and its schema-mode inlining replaces each nested schema ``$ref`` with the
+    target's contents, which is precisely what a rooted :func:`schema_error_report`
+    must never see (§11.3 annotations live in the node's own document scope).
+    Reading a ``responses`` or ``requestBody`` member therefore needs the hop
+    without the walk: each ``$ref`` node's own pointer is resolved (Reference
+    Object decoration beside it is inert, so only the target is kept), a chain
+    that re-visits a pointer is a cycle refused, and every un-followable shape
+    — a non-string pointer, a non-local URI reference, a member the document
+    does not carry, a pointer that walks through a scalar — answers ``None``.
+    """
+    seen: set[str] = set()
+    while isinstance(node, Mapping) and "$ref" in node:
+        ref = node["$ref"]
+        if not isinstance(ref, str) or not ref.startswith("#/") or ref in seen:
+            return None
+        seen.add(ref)
+        target: Any = document
+        for token in ref[2:].split("/"):
+            token = token.replace("~1", "/").replace("~0", "~")
+            if isinstance(target, Mapping) and token in target:
+                target = target[token]
+            elif isinstance(target, list) and token.isdigit() and int(token) < len(target):
+                target = target[int(token)]
+            else:
+                return None
+        node = target
+    return node if isinstance(node, Mapping) else None
+
+
+def _operation_json_schema_node(
+    item: Mapping[str, Any],
+    document: Mapping[str, Any],
+    direction: str,
+    status: int | None,
+) -> Mapping[str, Any] | None:
+    """The ``application/json`` schema node the operation itself publishes, or ``None``.
+
+    The binding loop in :mod:`tools.contracts.openapi_check` answers "which
+    component does the operation bind" by reading the schema's ``$ref`` text, and
+    this validator answered "does the body satisfy the bound component" by
+    evaluating ``components/schemas/{name}`` alone. Between those two reads sits
+    the node the published document actually carries: siblings of the ``$ref``
+    are JSON Schema assertions (spec §8.2.3.1), so a ``required: [new_field]``
+    written beside the ``$ref`` becomes part of the contract every consumer
+    must honour — yet neither reader saw it, and the golden fixtures stayed
+    green while failing the schema they ship under. This read hands the body
+    judgment to that node: the rooted :func:`tools.contracts.schema_docs.schema_error_report`
+    call is unchanged, but it evaluates what the operation publishes rather than
+    what the table names, so a sibling keyword judges the instance exactly as a
+    conformant consumer of the document would read it.
+
+    Every unreadable shape answers ``None`` and keeps the component judgment —
+    the document checker names those shapes as document findings, and the
+    vector must still be judged against the table-bound component: a
+    non-Mapping container on either side, a Reference-Object hop the document
+    cannot follow (see :func:`_follow_reference_hops` — the hop never inlines,
+    so the schema node comes back exactly as published), a missing
+    ``application/json`` entry, a media entry or schema that is not an object,
+    and a schema whose own ``$ref`` (or any nested pointer) the document
+    cannot resolve. The last question is asked by walking the node with the
+    schema-mode resolver and discarding the result: the exception set
+    ``check_local_refs`` refuses means "no readable node", never exit 2, and
+    the rooted report then follows the very pointers the document carries. A
+    node with no ``$ref`` at all (a fully inline schema) is readable too.
+    """
+    if direction == "request":
+        declared = item.get("requestBody")
+    else:
+        responses = item.get("responses")
+        if not isinstance(responses, Mapping) or status is None:
+            return None
+        declared = responses.get(str(status))
+    container = _follow_reference_hops(declared, document)
+    if container is None:
+        return None
+    content = container.get("content")
+    if not isinstance(content, Mapping):
+        return None
+    entry = content.get("application/json")
+    if not isinstance(entry, Mapping):
+        return None
+    node = entry.get("schema")
+    if not isinstance(node, Mapping):
+        return None
+    try:
+        resolved = resolve_refs(node, root=document)
+    except _RESOLUTION_FAILURES:
+        return None
+    if not isinstance(resolved, Mapping):
+        return None
+    return node
+
+
 def _validate_against_component(
     document: Mapping[str, Any],
     schema_name: str,
     instance: Mapping[str, Any],
     entry: Mapping[str, Any],
+    schema_node: Mapping[str, Any] | None = None,
 ) -> list[Violation]:
-    """Validate a body against one ``components/schemas`` entry."""
+    """Validate a body against one ``components/schemas`` entry.
+
+    When the operation publishes a readable schema node (see
+    :func:`_operation_json_schema_node`), that node is judged instead of the bare
+    component: the published contract is the node, ``$ref`` siblings included,
+    and the rooted evaluation follows the pointer to the very component this
+    call otherwise reads — so a bare-``$ref`` node answers identically and only
+    a real sibling divergence moves the verdict. The component-presence question
+    stays asked of the component either way: an index bound to a schema the
+    contract does not define is named however the operation decorates it.
+    """
     components = mapping_or_empty(mapping_or_empty(document.get("components")).get("schemas"))
     if schema_name not in components:
         return [
@@ -607,8 +736,9 @@ def _validate_against_component(
     # a sibling ``unevaluatedProperties``/``unevaluatedItems`` beside a
     # ``$ref`` only sees the referenced target's annotations when the
     # standard library evaluates the node in its document scope (§11.3).
+    target = components[schema_name] if schema_node is None else schema_node
     for property_name, keyword, message in schema_error_report(
-        components[schema_name], instance, root=document
+        target, instance, root=document
     ):
         code = E.API_SCHEMA_MISSING_FIELD if keyword == "required" else E.API_SCHEMA
         location = f"{entry['id']}{f' at {property_name}' if property_name else ''}"
@@ -620,6 +750,7 @@ def _validate_error_vector(
     operation: Operation,
     entry: Mapping[str, Any],
     document: Mapping[str, Any],
+    item: Mapping[str, Any],
     body: Mapping[str, Any],
     status: int,
 ) -> list[Violation]:
@@ -646,10 +777,18 @@ def _validate_error_vector(
     found: list[Violation] = []
     # Raw node plus document root, as in :func:`_validate_against_component`:
     # the shared envelope's ``$ref`` members must keep their JSON Schema scope
-    # so a sibling ``unevaluatedProperties`` judges the instance with the
-    # annotations the referenced body produced, not against a flattened tree.
+    # so a sibling ``unevaluatedProperties``/``unevaluatedItems`` judges the
+    # instance with the annotations the referenced body produced, not against a
+    # flattened tree. Where the operation publishes a readable schema node, it
+    # is that node — ``$ref`` siblings included — that the body is judged
+    # against; the table name still chooses the diagnostic, so a missing member
+    # of the shared envelope stays ``ERROR_ENVELOPE_INVALID``.
+    target: Mapping[str, Any] = components[schema_name]
+    node = _operation_json_schema_node(item, document, "response", status)
+    if node is not None:
+        target = node
     for property_name, keyword, message in schema_error_report(
-        components[schema_name], body, root=document
+        target, body, root=document
     ):
         found.append(
             Violation(

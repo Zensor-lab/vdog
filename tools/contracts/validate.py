@@ -154,9 +154,9 @@ def validate_contracts(repository_root: Path) -> Report:
         check_ota_deferral(documents.get("device", {}), contracts)
     )
 
-    entries, index_violations = _load_index(fixtures)
+    entries, incomplete, index_violations = _load_index(fixtures)
     report.contract_violations.extend(index_violations)
-    report.fixture_total = len(entries)
+    report.fixture_total = len(entries) + len(incomplete)
 
     dimensions = clip_dimensions(fixtures, entries)
 
@@ -269,26 +269,86 @@ def validate_contracts(repository_root: Path) -> Report:
         else:
             report.api_total += 1
 
-    report.contract_violations.extend(_check_unreferenced_files(fixtures, entries))
+    # An incomplete record is never validated — that is exactly what used to
+    # abort the run — but it does not vanish from the verdict either. Each
+    # gets one line that can never read PASS, so the report says what was
+    # dropped and why, and a corpus scenario that breaks an index member can
+    # point at the record it broke. The reader's finding stays in the tree
+    # findings; this line restates the defect on the record itself. The kind
+    # counters do not count these records: their ``kind`` is precisely what
+    # may be missing.
+    for item in incomplete:
+        fixture_id = str(item.get("id"))
+        reasons = "; ".join(
+            violation.detail
+            for violation in index_violations
+            if violation.code == E.FIXTURE_INDEX_INVALID and violation.location == fixture_id
+        )
+        declared = (
+            [str(value) for value in item["expected_error_codes"]]
+            if isinstance(item.get("expected_error_codes"), list)
+            else []
+        )
+        report.results.append(
+            FixtureResult(
+                id=fixture_id,
+                kind=str(item.get("kind")),
+                contract=str(item.get("contract")),
+                category=str(item.get("category")),
+                expected=str(item.get("expected")),
+                expected_codes=tuple(sorted(set(declared))),
+                observed_codes=(str(E.FIXTURE_INDEX_INVALID),),
+                violations=[
+                    Violation(
+                        E.FIXTURE_INDEX_INVALID,
+                        fixture_id,
+                        f"incomplete index record kept out of the validation loop: {reasons}",
+                    )
+                ],
+                failures=[
+                    Violation(
+                        E.FIXTURE_INDEX_INVALID,
+                        fixture_id,
+                        "an incomplete index record must never print PASS",
+                    )
+                ],
+            )
+        )
+
+    report.contract_violations.extend(
+        _check_unreferenced_files(
+            fixtures,
+            entries
+            + [item for item in incomplete if isinstance(item.get("files", []), list)],
+        )
+    )
     report.contract_violations.extend(_check_regeneration(fixtures))
     return report
 
 
-def _load_index(fixtures: Path) -> tuple[list[dict[str, Any]], list[Violation]]:
-    """Read ``fixtures.json`` and reject any malformed or duplicated record."""
+def _load_index(fixtures: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[Violation]]:
+    """Read ``fixtures.json`` and reject any malformed or duplicated record.
+
+    Returns ``(entries, incomplete, violations)``. ``entries`` are the records
+    the validation loop may safely subscript and iterate; ``incomplete`` holds
+    the records that earned a ``FIXTURE_INDEX_INVALID`` precisely because one
+    of those members is absent or un-iterable — they must never enter the
+    loop, and the caller surfaces each as a verdict that cannot read PASS.
+    """
     path = fixtures / "fixtures.json"
     if not path.is_file():
-        return [], [Violation(E.FIXTURE_INDEX_INVALID, str(path), "index absent")]
+        return [], [], [Violation(E.FIXTURE_INDEX_INVALID, str(path), "index absent")]
     try:
         document = load_json(path)
     except (ValueError, UnicodeDecodeError) as error:
-        return [], [Violation(E.FIXTURE_INDEX_INVALID, str(path), str(error))]
+        return [], [], [Violation(E.FIXTURE_INDEX_INVALID, str(path), str(error))]
     if not isinstance(document, dict) or document.get("v") != 1:
-        return [], [Violation(E.FIXTURE_INDEX_INVALID, str(path), "must be an object with v: 1")]
+        return [], [], [Violation(E.FIXTURE_INDEX_INVALID, str(path), "must be an object with v: 1")]
     raw = document.get("fixtures")
     if not isinstance(raw, list):
-        return [], [Violation(E.FIXTURE_INDEX_INVALID, str(path), "fixtures must be a list")]
+        return [], [], [Violation(E.FIXTURE_INDEX_INVALID, str(path), "fixtures must be a list")]
     entries: list[dict[str, Any]] = []
+    incomplete: list[dict[str, Any]] = []
     found: list[Violation] = []
     seen: set[str] = set()
     for item in raw:
@@ -303,14 +363,51 @@ def _load_index(fixtures: Path) -> tuple[list[dict[str, Any]], list[Violation]]:
             found.append(Violation(E.FIXTURE_DUPLICATE, fixture_id, "listed twice in fixtures.json"))
             continue
         seen.add(fixture_id)
+        # A record enters the validation loop only when nothing the loop
+        # subscripts or iterates is absent or un-iterable: the loop reads
+        # ``kind``, ``expected``, ``contract`` and ``category`` by subscript,
+        # and ``files`` and ``expected_error_codes`` are iterated. Such a
+        # record was named here and enqueued anyway, and the loop's first
+        # subscript aborted the run with ``KeyError`` — exit 2 "validator
+        # internal error" — before this very finding could print or
+        # regeneration was checked. A record defecting on one of those shapes
+        # is named *and* returned incomplete (the caller still gives it a
+        # verdict line that can never read PASS); every other defect —
+        # a present-but-unknown ``kind``, a present-but-bogus ``expected``,
+        # an absent ``files`` — keeps its record-and-keep behaviour, because
+        # there the loop's own branches already report the defect on the
+        # record instead of crashing, and everything reached through ``.get``
+        # (``operation``, ``status``, ``direction``, ``schema``,
+        # ``api_error_code``) stays the validators' own finding.
+        crash_shape = False
         if item.get("expected") not in {"valid", "invalid"}:
             found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, "expected must be valid or invalid"))
-        if not isinstance(item.get("files"), list):
+            if "expected" not in item:
+                crash_shape = True
+        if "files" in item:
+            if not isinstance(item["files"], list):
+                found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, "files must be a list"))
+                crash_shape = True
+        else:
             found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, "files must be a list"))
         if item.get("kind") not in {"clip", "active", "api"}:
             found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, f"unknown kind {item.get('kind')!r}"))
+            if "kind" not in item:
+                crash_shape = True
+        if "contract" not in item:
+            found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, "contract missing"))
+            crash_shape = True
+        if "category" not in item:
+            found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, "category missing"))
+            crash_shape = True
+        if "expected_error_codes" in item and not isinstance(item["expected_error_codes"], list):
+            found.append(Violation(E.FIXTURE_INDEX_INVALID, fixture_id, "expected_error_codes must be a list"))
+            crash_shape = True
+        if crash_shape:
+            incomplete.append(item)
+            continue
         entries.append(item)
-    return entries, found
+    return entries, incomplete, found
 
 
 def clip_dimensions(

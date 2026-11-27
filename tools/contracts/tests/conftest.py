@@ -201,6 +201,29 @@ def _set_entry_field(fixture_id: str, field: str, value: object) -> Mutator:
     return mutate
 
 
+def _drop_entry_field(fixture_id: str, field: str) -> Mutator:
+    """Remove one field of one record, as a generator bug or bad edit would.
+
+    Distinct from ``_set_entry_field`` because the defect is the *absence*:
+    the reader must name the incomplete record and keep it out of the
+    validation loop, whose first subscript used to abort the whole run.
+    """
+
+    def mutate(fixtures: Path) -> str:
+        path = fixtures / "fixtures.json"
+        document = json.loads(path.read_bytes().decode("utf-8"))
+        for item in document["fixtures"]:
+            if item["id"] == fixture_id:
+                del item[field]
+                break
+        else:  # pragma: no cover - the id is part of the committed corpus
+            raise KeyError(fixture_id)
+        path.write_bytes(json.dumps(document).encode("utf-8"))
+        return fixture_id
+
+    return mutate
+
+
 def _duplicate_first_index_entry(fixtures: Path) -> str:
     path = fixtures / "fixtures.json"
     document = json.loads(path.read_bytes().decode("utf-8"))
@@ -249,6 +272,23 @@ def _edit_backend_yaml(fixtures: Path, mutate: Callable[[dict], None]) -> None:
 def _backend_yaml(mutate: Callable[[dict], None]) -> Mutator:
     def run(fixtures: Path) -> None:
         _edit_backend_yaml(fixtures, mutate)
+
+    return run
+
+
+def _backend_yaml_subject(mutate: Callable[[dict], None], subject: str) -> Mutator:
+    """The same document rewrite, but naming the vector whose verdict must move.
+
+    A document defect that only the fixture validator can see — a sibling
+    assertion beside the bound ``$ref`` changes what the published schema
+    demands of a body while every contract-level read still sees the pointer
+    it expects — earns its evidence on the damaged vector, so the scenario
+    has to return that vector's id.
+    """
+
+    def run(fixtures: Path) -> str:
+        _edit_backend_yaml(fixtures, mutate)
+        return subject
 
     return run
 
@@ -551,6 +591,39 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
         "documents",
         "OTA_DEFERRAL_MISSING",
         _device_yaml(lambda d: d["paths"]["/ota"]["post"].pop("x-deferred")),
+    ),
+    # Round 21: the four review notes the fixes reproduce — a sibling `required`
+    # beside the bound `$ref` (both readers saw only the pointer, while the
+    # published schema demanded a member no fixture carries), a null `responses`
+    # and a null `servers` entry (both raised past the CLI as exit 2), and an
+    # index record with no `kind` (named, then enqueued, and the loop's
+    # subscript died before the finding printed).
+    (
+        "documents",
+        "FIXTURE_EXPECTED_PASS",
+        _backend_yaml_subject(
+            lambda d: d["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"].__setitem__("required", ["reviewed_round21_field"]),
+            "backend/valid/derivative-response-200",
+        ),
+    ),
+    (
+        "documents",
+        "SPEC_STRUCTURE_MISSING",
+        _backend_yaml(
+            lambda d: d["paths"]["/derivatives/{id}"]["get"].__setitem__("responses", None)
+        ),
+    ),
+    (
+        "documents",
+        "SPEC_STRUCTURE_MISSING",
+        _backend_yaml(lambda d: d.__setitem__("servers", [None])),
+    ),
+    (
+        "corpus",
+        "FIXTURE_INDEX_INVALID",
+        _drop_entry_field("backend/valid/derivative-response-200", "kind"),
     ),
 )
 

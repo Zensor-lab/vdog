@@ -4119,6 +4119,22 @@ def test_a_dialect_declaration_on_the_referenced_component_certifies_the_integra
         "the committed vector must still carry its window in float notation, "
         "or this test pins nothing"
     )
+    # Equality cannot tell 0 from 0.0 (round 21 F4): a regeneration that wrote
+    # the window with integer literals would satisfy the assertion above while
+    # nothing on the path parsed decimal notation any more. Every member must
+    # decode as a float under this test's plain loader.
+    assert all(type(value) is float for value in body["crop"].values()), (
+        "the committed vector must carry its window in decimal notation, "
+        f"not integer literals: {body['crop']!r}"
+    )
+    # And the pin discriminates: the same window written with integer literals
+    # decodes to ``int`` members, which the assertion above refuses.
+    integer_regen = json.loads(
+        json.dumps({**body, "crop": {"x": 0, "y": 0, "width": 64, "height": 64}})
+    )
+    assert not all(type(value) is float for value in integer_regen["crop"].values()), (
+        "the type pin must refuse an integer-literal regeneration of the window"
+    )
 
     # The control: the committed, un-annotated document certifies the vector.
     found = validate_api_fixture(
@@ -4187,3 +4203,220 @@ def test_an_unsupported_dialect_still_evolves_onto_the_draft_validator_it_names(
     evolved = _rooted_validator(target, annotated).evolve(schema=target)
     assert isinstance(evolved, Draft7Validator), type(evolved).__name__
     assert not isinstance(evolved, DRAFT202012_VALIDATOR)
+
+
+# --- Round 21: the published operation schema, guarded containers ------------
+
+
+def _derivative_200_index_entry() -> dict:
+    """The committed golden answer of ``GET /derivatives/{id}`` (round 21 F1)."""
+    document = json.loads((CONTRACTS / "fixtures" / "fixtures.json").read_bytes().decode("utf-8"))
+    return next(
+        item for item in document["fixtures"]
+        if item["id"] == "backend/valid/derivative-response-200"
+    )
+
+
+def test_a_sibling_assertion_beside_the_bound_ref_is_part_of_the_published_contract(
+    device: dict, backend: dict
+) -> None:
+    """F1 (round 21): the operation schema node is judged, not just its ``$ref``.
+
+    The binding loop reads the ``$ref`` text and the fixture validator judged
+    the bare component, so ``required: [reviewed_round21_field]`` written
+    *beside* the ``$ref`` on the ``GET /derivatives/{id}`` 200 schema was part
+    of no one's contract while being part of the published one (JSON Schema
+    §8.2.3.1: siblings of ``$ref`` are assertions). The validator now
+    evaluates the node the document carries with the document as root, so the
+    committed golden answer is refused the member the document demands — and
+    the three controls keep the read honest: the unannotated document still
+    certifies it, a satisfied sibling still certifies it, and an unreadable
+    node (a dangling response hop) keeps the component judgment the checker
+    already owns.
+    """
+    from tools.contracts.api_validate import validate_api_fixture
+
+    schemas, violations = load_media_schemas(CONTRACTS / "media-v1")
+    assert not violations, [violation.render() for violation in violations]
+    entry = _derivative_200_index_entry()
+    assert (
+        validate_api_fixture(CONTRACTS / "fixtures", entry, {"device": device, "backend": backend}, schemas)
+        == []
+    )
+
+    strict = copy.deepcopy(backend)
+    node = strict["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    assert node == {"$ref": "#/components/schemas/DerivativeRecord"}
+    node["required"] = ["reviewed_round21_field"]
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": device, "backend": strict}, schemas
+    )
+    assert {violation.code for violation in found} == {E.API_SCHEMA_MISSING_FIELD}, [
+        violation.render() for violation in found
+    ]
+    assert any("reviewed_round21_field" in violation.detail for violation in found), [
+        violation.render() for violation in found
+    ]
+
+    # A sibling the body satisfies certifies the vector: the node is read as a
+    # schema, not refused as an annotation.
+    satisfied = copy.deepcopy(backend)
+    satisfied["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["required"] = ["derivative_id"]
+    assert (
+        validate_api_fixture(
+            CONTRACTS / "fixtures", entry, {"device": device, "backend": satisfied}, schemas
+        )
+        == []
+    )
+
+    # An unreadable operation node falls back to the component judgment: the
+    # all-response scan names the dangling hop as a document finding, and the
+    # vector is no worse off for a defect the checker owns.
+    dangling = copy.deepcopy(backend)
+    dangling["paths"]["/derivatives/{id}"]["get"]["responses"]["200"] = {
+        "$ref": "#/components/responses/NotThere"
+    }
+    assert (
+        validate_api_fixture(
+            CONTRACTS / "fixtures", entry, {"device": device, "backend": dangling}, schemas
+        )
+        == []
+    )
+
+
+def test_a_sibling_assertion_on_the_request_schema_node_is_part_of_the_published_contract(
+    device: dict, backend: dict
+) -> None:
+    """F1 (round 21) on the request side: ``requestBody`` siblings are contract too.
+
+    The same gap sat under ``item["requestBody"]``: a ``required`` written
+    beside the chunk of pointers the request body binds was invisible to both
+    readers, so the committed ``device/valid/settings-put-request`` would have
+    stayed valid under a document that demands a member its body does not
+    carry.
+    """
+    from tools.contracts.api_validate import validate_api_fixture
+
+    schemas, violations = load_media_schemas(CONTRACTS / "media-v1")
+    assert not violations, [violation.render() for violation in violations]
+    document = json.loads((CONTRACTS / "fixtures" / "fixtures.json").read_bytes().decode("utf-8"))
+    entry = next(
+        item for item in document["fixtures"] if item["id"] == "device/valid/settings-put-request"
+    )
+    assert (
+        validate_api_fixture(CONTRACTS / "fixtures", entry, {"device": device, "backend": backend}, schemas)
+        == []
+    )
+
+    strict = copy.deepcopy(device)
+    node = strict["paths"]["/settings"]["put"]["requestBody"]["content"]["application/json"]["schema"]
+    assert node == {"$ref": "#/components/schemas/PutSettingsRequest"}
+    node["required"] = ["reviewed_round21_field"]
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": strict, "backend": backend}, schemas
+    )
+    assert {violation.code for violation in found} == {E.API_SCHEMA_MISSING_FIELD}, [
+        violation.render() for violation in found
+    ]
+    assert any("reviewed_round21_field" in violation.detail for violation in found), [
+        violation.render() for violation in found
+    ]
+
+
+def test_a_null_responses_container_is_named_and_read_as_declaring_nothing(
+    device: dict, backend: dict
+) -> None:
+    """F2 (round 21): a non-Mapping ``responses`` is a finding, never exit 2.
+
+    The first documented-status lookup asked ``str(status) not in responses``
+    over a declared ``None`` and died as the CLI's exit-2 "validator internal
+    error" before a single contract finding printed. The container is now
+    named once at ``responses`` and every reader — both status walks, both
+    binding loops and the all-response scan — reads it as declaring nothing:
+    the statuses the spec assigns report the answers they are missing.
+    """
+    broken = copy.deepcopy(backend)
+    broken["paths"]["/derivatives/{id}"]["get"]["responses"] = None
+    found = check_openapi("backend", broken)
+    named = [
+        violation
+        for violation in found
+        if violation.code == E.SPEC_STRUCTURE_MISSING
+        and violation.location == "backend-v1 GET /derivatives/{id} responses"
+        and violation.detail == "responses is NoneType, not a response object"
+    ]
+    assert named, [violation.render() for violation in found]
+    # The read-as-empty consequence: every documented status reports its answer
+    # missing, which is what an operation carrying no responses means.
+    assert any(
+        violation.code == E.SPEC_STATUS_MISSING
+        and violation.location == "backend-v1 GET /derivatives/{id} responses/200"
+        for violation in found
+    ), [violation.render() for violation in found]
+    assert not any(
+        violation.detail == "responses is NoneType, not a response object"
+        for violation in check_openapi("backend", backend)
+    )
+
+    # A list is just as unreadable as a null — and it used to die differently
+    # (the all-response scan's ``.items()`` over the list).
+    broken = copy.deepcopy(device)
+    broken["paths"]["/settings"]["put"]["responses"] = []
+    found = check_openapi("device", broken)
+    assert any(
+        violation.code == E.SPEC_STRUCTURE_MISSING
+        and violation.location == "device-v1 PUT /settings responses"
+        and violation.detail == "responses is list, not a response object"
+        for violation in found
+    ), [violation.render() for violation in found]
+
+
+def test_a_malformed_servers_container_is_named_and_never_exits_two(
+    device: dict, backend: dict
+) -> None:
+    """F2 (round 21): ``servers: [null]`` and a bare-string ``servers`` are findings.
+
+    Both shapes reached ``servers[0].get("url")`` (or ``"a".get``) and raised
+    past the CLI as exit 2. Each now names its container once — and the
+    expected-server finding still speaks for the contract's own URL, the same
+    two truthful statements ``servers: null`` already produced.
+    """
+    for contract, document, expected_url in (
+        ("backend", backend, "https://backend.local/api/v1"),
+        ("device", device, "https://vdog.local/api/v1"),
+    ):
+        broken = copy.deepcopy(document)
+        broken["servers"] = [None]
+        found = check_openapi(contract, broken)
+        assert any(
+            violation.code == E.SPEC_STRUCTURE_MISSING
+            and violation.location == f"{contract}-v1.yaml servers/0"
+            and violation.detail == "servers/0 is NoneType, not a server object"
+            for violation in found
+        ), [violation.render() for violation in found]
+        assert any(
+            violation.code == E.SPEC_STRUCTURE_MISSING
+            and violation.location == f"{contract}-v1.yaml servers"
+            and violation.detail == f"expected {expected_url!r}"
+            for violation in found
+        ), [violation.render() for violation in found]
+
+        broken = copy.deepcopy(document)
+        broken["servers"] = expected_url  # a str: today's AttributeError at servers[0]
+        found = check_openapi(contract, broken)
+        assert any(
+            violation.code == E.SPEC_STRUCTURE_MISSING
+            and violation.location == f"{contract}-v1.yaml servers"
+            and violation.detail == "servers is str, not a server array"
+            for violation in found
+        ), [violation.render() for violation in found]
+        assert any(
+            violation.code == E.SPEC_STRUCTURE_MISSING
+            and violation.location == f"{contract}-v1.yaml servers"
+            and violation.detail == f"expected {expected_url!r}"
+            for violation in found
+        ), [violation.render() for violation in found]

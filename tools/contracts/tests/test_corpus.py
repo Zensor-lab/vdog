@@ -25,6 +25,9 @@ from conftest import (
     TREE_LEVEL_CORPUS_CODES,
 )
 
+#: Sentinel for the round-21 index tests: mutate by removing the key.
+_DROP = object()
+
 
 @pytest.mark.parametrize(
     "index,code",
@@ -444,3 +447,69 @@ def test_repository_root_discovery_walks_upwards() -> None:
     from tools.contracts.cli import repository_root
 
     assert repository_root(str(REPO_ROOT / "tools" / "contracts")) == REPO_ROOT
+
+
+# --- Round 21: the index reader is the single gate ----------------------------
+
+
+def test_the_index_reader_keeps_incomplete_records_out_of_the_validation_loop(
+    tmp_path: Path,
+) -> None:
+    """F3 (round 21): a record that would crash the loop is named and dropped.
+
+    ``_load_index`` recorded ``FIXTURE_INDEX_INVALID`` and enqueued the record
+    anyway; the validation loop's first subscript (``entry["kind"]``) aborted
+    the run with ``KeyError`` — exit 2 "validator internal error" — before the
+    recorded finding could print or regeneration was checked. An absent
+    ``kind``, ``expected``, ``contract`` or ``category``, an un-iterable
+    ``files`` or ``expected_error_codes``, is now a named finding that also
+    keeps the record out of ``entries``; the shapes the loop's own branches
+    already survive (present-but-unknown ``kind``, present-but-bogus
+    ``expected``, absent ``files``) stay record-and-keep, and the intact
+    committed index still queues all 441.
+    """
+    from tools.contracts.validate import _load_index
+
+    committed = json.loads((FIXTURES / "fixtures.json").read_bytes().decode("utf-8"))
+    victim_id = "backend/valid/derivative-response-200"
+
+    def mutate(key: str, replacement: object) -> None:
+        document = json.loads(json.dumps(committed))
+        entry = next(item for item in document["fixtures"] if item["id"] == victim_id)
+        if replacement is _DROP:
+            del entry[key]
+        else:
+            entry[key] = replacement
+        (tmp_path / "fixtures.json").write_text(json.dumps(document), encoding="utf-8")
+
+    # (key, replacement, needle, dropped): the crash shapes leave the loop,
+    # the shapes the loop survives stay.
+    for key, replacement, needle, dropped in (
+        ("kind", _DROP, "unknown kind", True),
+        ("expected", _DROP, "expected must be valid or invalid", True),
+        ("contract", _DROP, "contract missing", True),
+        ("category", _DROP, "category missing", True),
+        ("files", 5, "files must be a list", True),
+        ("expected_error_codes", "FIXTURE_DUPLICATE", "expected_error_codes must be a list", True),
+        ("kind", "bogus", "unknown kind", False),
+        ("expected", "maybe", "expected must be valid or invalid", False),
+        ("files", _DROP, "files must be a list", False),
+    ):
+        mutate(key, replacement)
+        entries, incomplete_records, found = _load_index(tmp_path)
+        assert (victim_id not in {item["id"] for item in entries}) is dropped, key
+        assert (victim_id in {item["id"] for item in incomplete_records}) is dropped, key
+        assert [
+            violation
+            for violation in found
+            if violation.code == E.FIXTURE_INDEX_INVALID
+            and violation.location == victim_id
+            and needle in violation.detail
+        ], (key, [violation.render() for violation in found])
+
+    # The intact committed index queues everything with no findings at all:
+    # the gate refuses crash shapes, not the corpus.
+    entries, incomplete_records, found = _load_index(FIXTURES)
+    assert not found, [violation.render() for violation in found]
+    assert not incomplete_records
+    assert len(entries) == 441
