@@ -6,15 +6,18 @@
 # findings PR-R1..PR-R3):
 #
 #  1. SOURCE DECLARATION — every required key must be EXPLICITLY declared in
-#     firmware/sdkconfig.defaults (KEY=y / KEY="value"). A key that only shows
-#     up in the resolved config is rejected as "resolved value may be an SDK
-#     default" (PR-R1).
+#     firmware/sdkconfig.defaults in a form Kconfig HONOURS (PR-R5, strict
+#     full-token): bool keys only as `CONFIG_KEY=y` (lowercase y; `Y`/`1` are
+#     parsed by Kconfig but ignored, silently leaving the SDK default),
+#     string keys only as `CONFIG_KEY="value"` (quotes required). Anything
+#     else counts as undeclared: "resolved value may be an SDK default".
 #  2. RESOLVED PRESENT-AND-EQUAL — the generated config/sdkconfig.json holds
 #     each required key with exactly the expected value (type-strict).
 #  3. COMPONENT DEFINITIONS — components/vdog_board/CMakeLists.txt declares
-#     VDOG_BOARD_ID_STR == expected board id and VDOG_BOARD_PSRAM_SIZE_BYTES ==
-#     expected 8 MiB, so what is actually compiled into the image cannot
-#     disagree with the gate (PR-R2).
+#     VDOG_BOARD_ID_STR == expected board id and VDOG_BOARD_PSRAM_SIZE_BYTES
+#     == expected 8 MiB, validated as COMPLETE tokens (PR-R6) over ALL
+#     occurrences after comment stripping (PR-N1), so what is actually
+#     compiled into the image cannot disagree with the gate (PR-R2).
 #  4. EFFECTIVE PARTITION TABLE — PlatformIO's board_build.partitions, the
 #     resolved CONFIG_PARTITION_TABLE_CUSTOM_FILENAME and the expected CSV are
 #     the same file; any mismatch names all three (PR-R3).
@@ -101,10 +104,15 @@ EXPECTED_PARTITION_CSV = dict(EXPECTED_KEYS)["PARTITION_TABLE_CUSTOM_FILENAME"]
 COMPONENT_CMAKE_RELPATH = os.path.join("components", "vdog_board",
                                        "CMakeLists.txt")
 
-_BOOL_DECL_RE = re.compile(r"\A([A-Za-z])\Z")
-_COMPONENT_BOARD_RE = re.compile(r"VDOG_BOARD_ID_STR\s*=\s*\"([^\"]*)\"")
+# Layer 3 captures the ENTIRE definition token (PR-R6): everything after '='
+# up to whitespace or the closing paren. Validation is full-token, never a
+# leading-prefix capture, so `=8388608u/2u` (the compiler receives the whole
+# expression) cannot masquerade as the expected literal.
+_COMPONENT_BOARD_RE = re.compile(r"VDOG_BOARD_ID_STR\s*=\s*([^\s)]+)")
 _COMPONENT_PSRAM_RE = re.compile(
-    r"VDOG_BOARD_PSRAM_SIZE_BYTES\s*=\s*([0-9][0-9]*[uUlL]*)")
+    r"VDOG_BOARD_PSRAM_SIZE_BYTES\s*=\s*([^\s)]+)")
+# A complete unsigned-decimal literal with optional C integer suffixes.
+_PSRAM_LITERAL_RE = re.compile(r"\A[0-9]+[uUlL]*\Z")
 # CMake comments run from '#' to end of line (PR-N1): a commented-out
 # definition must never count as a definition, in either direction.
 _CMAKE_COMMENT_RE = re.compile(r"#.*")
@@ -195,36 +203,42 @@ def parse_sdkconfig_defaults(text):
     return declared
 
 
-def evaluate_source_declarations(defaults_path):
-    """Every required key must be EXPLICITLY declared in sdkconfig.defaults.
+def _declaration_is_effective(raw, expected):
+    """True only when `KEY=<raw>` is the exact form Kconfig actually honours.
 
-    A key absent there but present in the resolved config may simply be an
-    ESP-IDF default, which acceptance §7.3 forbids (PR-R1)."""
+    STRICT full-token semantics (PR-review round 4, PR-R5): Kconfig bool
+    symbols are assigned ONLY by lowercase `y`/`n` — `Y`/`N`/`1` are parsed
+    but IGNORED, so the resolved key silently falls back to the SDK default
+    and "explicitly declared" would be a lie. String symbols must be exactly
+    double-quoted and equal (quotes required). Anything else behaves exactly
+    like an absent line, so the caller reports it as undeclared. Whitespace
+    around key/value was already stripped (Kconfig strips too). NOTE: on
+    duplicate lines the LAST assignment is what is checked (fail-closed:
+    a malformed last line fails even if an earlier line was valid, which is
+    stricter than Kconfig and only reachable by pathological files)."""
+    if isinstance(expected, bool):
+        return raw == ("y" if expected else "n")
+    return raw == '"%s"' % expected
+
+
+def evaluate_source_declarations(defaults_path):
+    """Every required key must be EXPLICITLY declared in sdkconfig.defaults
+    in a form Kconfig honours (strict; PR-R1 + PR-R5).
+
+    A key absent there — or present only in a form Kconfig ignores, such as
+    `KEY=Y` — but visible in the resolved config may simply be an ESP-IDF
+    default, which acceptance §7.3 forbids."""
     declared = parse_sdkconfig_defaults(
         _read_text(defaults_path, "sdkconfig.defaults"))
     where = _rel(defaults_path)
     failures = []
     for key, expected in EXPECTED_KEYS:
         name = "CONFIG_%s" % key
-        if name not in declared:
+        raw = declared.get(name)
+        if raw is None or not _declaration_is_effective(raw, expected):
             failures.append(
                 "%s: not declared in %s (resolved value may be an SDK default)"
                 % (name, where))
-            continue
-        raw = declared[name]
-        if isinstance(expected, bool):
-            match = _BOOL_DECL_RE.match(raw)
-            letter = match.group(1).lower() if match else None
-            want = "y" if expected else "n"
-            if letter != want:
-                failures.append(
-                    "%s: declared as %r in %s but expected %r"
-                    % (name, raw, where, want))
-        else:
-            if raw.strip().strip("\"'") != expected:
-                failures.append(
-                    "%s: declared as %r in %s but expected %r"
-                    % (name, raw, where, expected))
     return failures
 
 
@@ -282,38 +296,54 @@ def evaluate_component_definitions(cmake_path):
     Matching happens after CMake comments (# ... EOL) are stripped, and every
     occurrence is checked (finditer), not just the first: CMake/the compiler
     ultimately take the LAST -D definition, so a second tampered block must
-    never hide behind a correct first one (PR-review round 3, PR-N1)."""
+    never hide behind a correct first one (PR-review round 3, PR-N1). Each
+    occurrence is validated as a COMPLETE token (PR-review round 4, PR-R6):
+    the board id token must be exactly "seeed_xiao_esp32s3" (quotes part of
+    the token), the PSRAM token must be a full unsigned-decimal literal
+    (optional u/l suffixes) equal to the expected capacity — a partial
+    capture of an expression like 8388608u/2u (which the compiler receives
+    in full) is never accepted."""
     text = _CMAKE_COMMENT_RE.sub("", _read_text(cmake_path,
                                                 "component CMakeLists.txt"))
     where = _rel(cmake_path)
     failures = []
 
+    board_token = '"%s"' % EXPECTED_BOARD
     board_values = [m.group(1) for m in _COMPONENT_BOARD_RE.finditer(text)]
     if not board_values:
         failures.append(
             "VDOG_BOARD_ID_STR: not defined in %s (the image would carry no "
-            "board id; expected %r)" % (where, EXPECTED_BOARD))
+            "board id; expected %r)" % (where, board_token))
     else:
-        wrong = [v for v in board_values if v != EXPECTED_BOARD]
+        wrong = [v for v in board_values if v != board_token]
         if wrong:
             failures.append(
-                "VDOG_BOARD_ID_STR (%s): expected %r, got %r (%d occurrence(s)"
-                ", %d wrong)" % (where, EXPECTED_BOARD, wrong[0],
-                                 len(board_values), len(wrong)))
+                "VDOG_BOARD_ID_STR (%s): expected %r, got %r (%d "
+                "occurrence(s), %d wrong)" % (where, board_token, wrong[0],
+                                              len(board_values), len(wrong)))
 
-    psram_values = [int(re.sub(r"[uUlL]", "", m.group(1)))
+    psram_tokens = [m.group(1)
                     for m in _COMPONENT_PSRAM_RE.finditer(text)]
-    if not psram_values:
+    if not psram_tokens:
         failures.append("VDOG_BOARD_PSRAM_SIZE_BYTES: not defined in %s "
                         "(expected %d)" % (where, EXPECTED_PSRAM_SIZE_BYTES))
     else:
-        wrong = [v for v in psram_values if v != EXPECTED_PSRAM_SIZE_BYTES]
+        def _psram_ok(token):
+            return (_PSRAM_LITERAL_RE.match(token)
+                    and int(re.sub(r"[uUlL]", "", token))
+                    == EXPECTED_PSRAM_SIZE_BYTES)
+        wrong = [t for t in psram_tokens if not _psram_ok(t)]
         if wrong:
+            detail = ""
+            if not _PSRAM_LITERAL_RE.match(wrong[0]):
+                detail = ("; not a complete unsigned-decimal literal "
+                          "(expression characters are passed to the "
+                          "compiler verbatim)")
             failures.append(
-                "VDOG_BOARD_PSRAM_SIZE_BYTES (%s): expected %d, got %d "
+                "VDOG_BOARD_PSRAM_SIZE_BYTES (%s): expected %d, got %r%s "
                 "(%d occurrence(s), %d wrong)"
-                % (where, EXPECTED_PSRAM_SIZE_BYTES, wrong[0],
-                   len(psram_values), len(wrong)))
+                % (where, EXPECTED_PSRAM_SIZE_BYTES, wrong[0], detail,
+                   len(psram_tokens), len(wrong)))
     return failures
 
 

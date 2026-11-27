@@ -69,9 +69,14 @@ FORBIDDEN = (
     # f_readdir/f_rewinddir/f_findfirst/f_findnext instead of the bare DIR
     # type; every entry keeps the f_/disk_ prefix, so plain stdio names
     # (printf, fputs, rewind, utime) never match.
+    # PR-R7 (round 4): BASENAME-anchored, no substring matching. A directory
+    # prefix is allowed (esp_port/ff.h still hits), but the file name must be
+    # exactly one of the FatFs headers. The previous form matched any header
+    # whose tail happened to contain e.g. "ff" (buffer.h, my_effective_
+    # settings.h were false positives).
     (re.compile(
-        r"#[ \t]*include[ \t]*[<\"][^\">]*"
-        r"(?:ff|ffconf|diskio|integer|ccsbcs)[a-z0-9_/]*\.h"
+        r"#[ \t]*include[ \t]*[<\"]"
+        r"(?:[A-Za-z0-9_/]*/)?(?:ff|ffconf|diskio|integer|ccsbcs)\.h"
         r"[\">]", re.IGNORECASE),
      "FatFs/disk-io header (ff.h, ffconf.h, diskio.h)"),
     (re.compile(
