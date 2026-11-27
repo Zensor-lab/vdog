@@ -12,7 +12,10 @@
 #     (quotes required). Raw-line validation with NO trimming: any space
 #     around `=` or in the value, or leading whitespace (rejected
 #     fail-closed; Kconfig tolerates it), counts as undeclared (PR-R5,
-#     PR-R8). Offending forms report "resolved value may be an SDK default".
+#     PR-R8). An assignment preceded by ESP-IDF's `# default:` provenance
+#     marker is NOT a user selection and also counts as undeclared
+#     (PR-R11). Offending forms report "resolved value may be an SDK
+#     default".
 #  2. RESOLVED PRESENT-AND-EQUAL — the generated config/sdkconfig.json holds
 #     each required key with exactly the expected value (type-strict).
 #  3. COMPONENT DEFINITIONS — components/vdog_board/CMakeLists.txt declares
@@ -199,9 +202,17 @@ def _norm_path(value):
 # Layer 1: source declarations in sdkconfig.defaults (PR-R1)
 # ---------------------------------------------------------------------------
 
+# ESP-IDF's generated-config provenance marker: `# default:` (optionally
+# followed by an expression) above an assignment means "this value came from
+# Kconfig's own default, NOT from a user selection" — the pinned Kconfig
+# parser does not count such an assignment as a user choice (PR-R11).
+_DEFAULT_MARKER_RE = re.compile(r"\A\s*#\s*default\b")
+
+
 def last_raw_assignments(text):
-    """{KEY: LAST raw assignment line} — validated WITHOUT any trimming
-    (PR-review round 5, PR-R8).
+    """{KEY: LAST raw assignment line, or None} — validated WITHOUT any
+    trimming (PR-review round 5, PR-R8), with provenance filtering
+    (PR-review round 6, PR-R11).
 
     Only two normalisations happen, both harmless against Kconfig: rstrip of
     trailing whitespace/CRLF, and rejection of whole-line `#`/`;` comments
@@ -209,13 +220,29 @@ def last_raw_assignments(text):
     candidate, so the exact-match in evaluate_source_declarations sees what
     Kconfig's parser sees. On duplicate keys Kconfig applies last-wins, so
     only the LAST raw line is judged; a malformed last line fails even if an
-    earlier line was valid (fail-closed; the repo file has no duplicates)."""
+    earlier line was valid (fail-closed; the repo file has no duplicates).
+
+    PROVENANCE (PR-R11): if the PRECEDING non-blank line of an assignment
+    matches `^\\s*#\\s*default\\b` (covers `# default:`, `# default: <expr>`,
+    extra spaces/tabs), the assignment carries ESP-IDF's own
+    default-provenance signal — the pinned Kconfig treats it as NOT
+    user-selected and resolves the SDK default. Counting it as an explicit
+    pin is exactly what the acceptance criterion ("settings never silently
+    taken from defaults") forbids, so such a line is recorded as None and
+    can never satisfy evaluate_source_declarations' exact match; the
+    standard 'not declared ... (resolved value may be an SDK default)'
+    message reports it."""
     last = {}
+    prev_nonblank = None
     for raw in text.splitlines():
         line = raw.rstrip()
-        if not line or line[0] in "#;" or "=" not in line:
+        if not line:
             continue
-        last[line.split("=", 1)[0]] = line
+        if line[0] not in "#;" and "=" in line:
+            marked = (prev_nonblank is not None
+                      and _DEFAULT_MARKER_RE.match(prev_nonblank) is not None)
+            last[line.split("=", 1)[0]] = None if marked else line
+        prev_nonblank = line
     return last
 
 
@@ -309,9 +336,16 @@ def evaluate_resolved(config, observed_board):
 
 def _block_scope(body):
     """None when the block is scoped PRIVATE; else a label for the problem
-    (PR-review round 5, PR-R9: definitions must reach the compiler via
-    PRIVATE target_compile_definitions; INTERFACE/PUBLIC silently omit the
-    -D from this component's own sources)."""
+    (PR-review round 5, PR-R9; wording corrected in round 6, PR-R12).
+
+    CMake semantics: PRIVATE applies definitions to the target's OWN
+    compilation only (our policy: definitions stay local to the component
+    that consumes them); PUBLIC applies to the target AND its consumers;
+    INTERFACE applies to CONSUMERS ONLY. All three non-PRIVATE scopes are
+    rejected by this check: the adapter must receive the macros via its OWN
+    compilation, and only PRIVATE keeps that fact local to the consuming
+    component — the compile-time backstop for "did the macros actually
+    arrive" is the #error guard in vdog_board_idf.c regardless of scope."""
     if re.search(r"\bINTERFACE\b", body):
         return "INTERFACE"
     if re.search(r"\bPUBLIC\b", body):
@@ -334,11 +368,14 @@ def evaluate_component_definitions(cmake_path):
     (optional u/l suffixes) equal to the expected capacity — a partial
     capture of an expression like 8388608u/2u (which the compiler receives
     in full) is never accepted. Finally, each occurrence must sit inside a
-    target_compile_definitions() block scoped PRIVATE: INTERFACE/PUBLIC
-    scopes keep the literals but silently remove the -D from this
-    component's own translation units, and definitions outside such a block
-    (e.g. smuggled through set()) never reach the compiler at all (PR-R9;
-    the structural backstop is the #error guards in vdog_board_idf.c)."""
+    target_compile_definitions() block scoped PRIVATE (PR-R9; CMake
+    semantics per PR-R12: PRIVATE = target's own compilation only — our
+    policy, definitions stay local to the consuming component; PUBLIC =
+    target AND consumers, rejected as scope creep; INTERFACE = consumers
+    only, rejected because our own compilation would lose the -D while the
+    literals stay in the file). Definitions outside any such block (e.g.
+    smuggled through set()) never reach the compiler at all. Either way
+    the structural backstop is the #error guard in vdog_board_idf.c."""
     text = _CMAKE_COMMENT_RE.sub("", _read_text(cmake_path,
                                                 "component CMakeLists.txt"))
     where = _rel(cmake_path)
