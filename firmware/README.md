@@ -62,7 +62,11 @@ build id.
 ## Build gates (proto environment only)
 
 `[env:vdog_xiao_sense_proto]` wires four extra scripts; none of them may ever
-load in `native` (each hard-fails if it does):
+be wired into `native`. Three of them (`gen_build_meta.py`,
+`check_core_purity.py`, `check_board_config.py`) hard-fail the build if they
+are ever loaded in another environment; `test_build_isolation.py` instead
+returns silently (a no-op) when its `$PIOENV` is not the proto environment —
+its own defensive guard from package 0.9, not a gate:
 
 | Script | When | Fails the build when |
 | --- | --- | --- |

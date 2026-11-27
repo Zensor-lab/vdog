@@ -326,7 +326,7 @@ monitored or erased**, and nothing here is DEVICE evidence.
 | `firmware/components/vdog_board/` | IDF component wrapper + target-side `vdog_board_profile_from_sdkconfig()` adapter (`#ifdef CONFIG_*`, so an unset key means "field not set", never an inherited default) |
 | `firmware/scripts/check_board_config.py` | post-build gate: required `config/sdkconfig.json` keys present **and** equal, plus `$BOARD == seeed_xiao_esp32s3` |
 | `firmware/scripts/check_core_purity.py` | post-parse gate: `firmware/core/**` stays free of SDK/RTOS/camera/SD/SPI-SD/NVS tokens and SDK-style includes |
-| `firmware/test/test_vdog_board/` | 14 Unity host cases + `cpp_smoke_board.cpp` C++ consumer TU |
+| `firmware/test/test_vdog_board/` | 15 Unity host cases + `cpp_smoke_board.cpp` C++ consumer TU |
 | `firmware/src/main.c`, `src/CMakeLists.txt` | board report / `board config rejected: … (field …)` log line; `REQUIRES vdog_board` |
 | `firmware/platformio.ini` | two new `post:` entries on `[env:vdog_xiao_sense_proto]` **only** — no `platform_packages`, platform/board or Unity/native pin changed |
 | `firmware/README.md` | environments, root commands, gate behaviour, BUILD/HOST discipline |
@@ -341,12 +341,12 @@ lock** (`git diff 7839610 -- firmware/sdkconfig.defaults firmware/dependencies.l
 | --- | --- | --- | --- |
 | `pio --version` | 0 | host inventory | PlatformIO Core 6.2.0 |
 | `pio run -d firmware -e vdog_xiao_sense_proto -t clean` | 0 | **BUILD** | `[SUCCESS]` 0.55 s |
-| `pio run -d firmware -e vdog_xiao_sense_proto` (after clean) | 0 | **BUILD** | `[SUCCESS]` 43.26 s, 1105 compile actions, **0 `warning:`/`error:` lines** with `-Wall -Wextra`; `RAM 19116/327680 B`, `Flash 210413/3145728 B` |
+| `pio run -d firmware -e vdog_xiao_sense_proto` (after clean) | 0 | **BUILD** | `[SUCCESS]` 45.29 s, 1105 compile actions, **0 `warning:`/`error:` lines** with `-Wall -Wextra`; `RAM 19116/327680 B`, `Flash 210413/3145728 B` (re-run after the review fixes; the first round measured 43.26 s with identical compile count and zero warnings) |
 | `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | **BUILD** | `text 149597 / data 61124 / bss 376865`; `firmware.bin` 210,832 B (image grew by the board-report code); slot margin vs the 3 MB OTA slot stays ≈14.9× (≥4× requirement, §5) |
-| `pio test -d firmware -e native` | 0 | **HOST** | `native:test_vdog_board [PASSED]` **14/14** + `native:test_vdog_core [PASSED]` **7/7** → **21 test cases: 21 succeeded, 0 failed** |
+| `pio test -d firmware -e native` | 0 | **HOST** | `native:test_vdog_board [PASSED]` **15/15** + `native:test_vdog_core [PASSED]` **7/7** → **22 test cases: 22 succeeded, 0 failed** |
 | `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | **BUILD-only** | `vdog_xiao_sense_proto:test_vdog_board [SKIPPED]` and `…:test_vdog_core [SKIPPED]` — both embedded test images compile and link (incl. `cpp_smoke_board.cpp`); **no test executed** (never described as execution). Build stayed isolated in `.pio/build/vdog_xiao_sense_proto_test/` |
 | `~/.platformio/packages/tool-esptool/esptool --chip esp32s3 image-info firmware/.pio/build/vdog_xiao_sense_proto/firmware.bin` | 0 | **BUILD** (host-side image analysis, no device I/O) | `Image size: 210832 bytes / Flash size: 8MB / Flash freq: 80m / Chip ID: 9 (ESP32-S3)` |
-| `python3 firmware/scripts/check_core_purity.py` | 0 | HOST (gate, standalone) | `5 portable-core files scanned, no camera/SD/RTOS/SDK tokens` |
+| `python3 firmware/scripts/check_core_purity.py` | 0 | host-side gate run (not an evidence level: **HOST** means the `native` Unity run only) | `5 portable-core files scanned, no camera/SD/RTOS/SDK tokens` |
 | `git diff --check` | 0 | hygiene | clean |
 
 The 0.2 command set is unchanged and still green; no new root command was
@@ -364,6 +364,12 @@ run` is what was used; the subsequent build was a genuine full rebuild (1105
 compile actions) and picked up the new `components/vdog_board` component.
 
 ### Gate evidence (package 1.1 §5.4/§6)
+
+Taxonomy note (F7): the standalone `python3 firmware/scripts/check_*.py`
+invocations below are **host-side gate runs** — they show the gate logic
+behaves, but they are neither a BUILD nor a HOST result. **BUILD** = the
+cross-compile rows above; **HOST** = the `pio test -e native` Unity run only;
+**DEVICE** = nothing here.
 
 Green inside the BUILD above (proto environment only):
 
@@ -391,7 +397,18 @@ present and equal" line. Additional tampered fixtures (key deleted,
 `SPIRAM=false`, `PARTITION_TABLE_CUSTOM_FILENAME` swapped, wrong `--board`)
 each exit **1** naming every offending key with expected and actual values; a
 missing fixture exits 1 naming the path. Type-strict comparison means `1` or
-`"y"` cannot satisfy an expected `True`.
+`"y"` cannot satisfy an expected `True`. Exit-code contract (review F3): **0**
+pass, **1** gate failure *or* an unreadable/malformed/missing fixture (a config
+that cannot be read is never a pass), **2** argparse usage error only —
+verified: missing option → 2, unknown option → 2, malformed JSON → 1, missing
+file → 1.
+
+The purity gate's FreeRTOS coverage (review F5) was verified the same way with
+scratch copies of `core/`: `xTaskCreate`, `xQueueSend`, `xSemaphoreGive`,
+`pdTRUE`, `portMAX_DELAY`, `TickType_t` and `vTaskDelay` each exit **1** naming
+file:line, while the real `core/` and an ordinary-prose control containing
+"portable", "porting" and "pdq" stay clean (the kernel-symbol patterns are
+deliberately case-sensitive so English words are not flagged).
 
 The gates' SCons-mode behaviour was additionally exercised with a stub SCons
 environment (outside the tree, no tracked file added): normal build registers
