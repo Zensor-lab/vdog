@@ -3,8 +3,10 @@
 Status: **IN PROGRESS — 0.2 qualified; 0.9 implemented on
 `opencode/0.9-ci-release`, hosted run pending; 1.1 reviewed and verified on
 `opencode/1.1-fw-bootstrap` (BUILD/HOST evidence only; PR #5 open — PR-review
-round 2 findings PR-R1..R4 fixed at `9becabf`, round-3 notes PR-N1/PR-N2 fixed
-at `e0de4ec` (PR-N3 skipped per plan §12), re-review pending, merge
+round 2 findings PR-R1..R4 fixed at `9becabf`, round-3 notes PR-N1/PR-N2 at
+`e0de4ec`, round-4 findings PR-R5/R6/R7 (strict Kconfig/CMake full-token
+parsing; PR-N3 substring leniency replaced by basename anchoring) at
+`599d1c8`, re-review pending, merge
 pending)**, revised 2026-11-27. This is the
 master backlog, not authorization to execute every stage in one assignment. The
 minimal firmware and portable host tests exist with BUILD/HOST evidence.
@@ -271,7 +273,12 @@ stage the dependencies listed in each package override simple numeric order.
   approved with notes, whose fix-now findings (PR-N1 all-occurrences/comment-
   aware CMake matching, PR-N2 extended FatFs API list) landed at `e0de4ec`
   (17/17 regressions, plan §10/§11; PR-N3 nit consciously skipped
-  per §12), PR re-review pending; merge pending hosted CI + PR review.
+  per §12); round-4 re-review then requested changes at `5151666`
+  (PR-R5/R6/R7 — uppercase-Y Kconfig declarations accepted, partial capture
+  of `8388608u/2u`, `buffer.h` substring false positive), all fixed with
+  strict full-token/basename-anchored parsing at `599d1c8` (22/22
+  regressions incl. pre-fix false-pass reproductions; PR-N3 skip superseded
+  by the k1 fix, plan §10/§11/§12), PR re-review pending; merge pending hosted CI + PR review.
   **No DEVICE evidence** (device/board checks
   stay in 1.2–1.4) and 0.3/0.7 wiring
   and bench approval remain outstanding, so every pin reference is

@@ -472,3 +472,17 @@ scripts (plan §10 round-3 block; evidence in §11 "PR-review round 3 re-run",
 | `check_core_purity.py` FatFs API list (PR-N2) | Extended with `f_size`, `f_rewinddir`, `f_rewind`, `f_chdrive`, `f_utime`, `f_printf`, `f_fputs`, `f_findfirst`, `f_findnext` (all keep the mandatory `f_` prefix, so plain `printf`/`fputs`/`rewind`/`utimbuf` stay clean — regression control i2). |
 | PR-N3 (skipped by agreement) | The header rule may over-match unrelated `*integer.h`/`*ccsbcs.h`-style includes; accepted because over-match is fail-closed and no such includes exist in `core/` — rationale in plan §12. |
 | Size observation discipline | Clean-build `data`/`bss`/`firmware.bin` fluctuate by ≤16 B run-to-run (ESP-IDF metadata/padding non-determinism; `text` stable at 149597) — single-run sizes are quoted as snapshots with the observed range, never as stability claims. |
+
+### Package 1.1 addendum — PR-review round 4 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-4 strict-parsing fixes to the
+gate scripts (plan §10 round-4 block; §11 "PR-review round 4 re-run", 22/22
+fixture cases). Root-cause pattern: never parse Kconfig/CMake semantics with
+substring or lenient regexes — match COMPLETE tokens.
+
+| Item | Behaviour after round 4 |
+| --- | --- |
+| `check_board_config.py` layer 1 strictness (PR-R5) | Source declarations are honoured only in the exact form Kconfig accepts: bool keys `CONFIG_KEY=y` (lowercase; `Y`/`1`/`0` are parsed by Kconfig but IGNORED ⇒ treated as undeclared), string keys `CONFIG_KEY="value"` (double quotes required, exact). Offending forms report the standard `not declared in sdkconfig.defaults (resolved value may be an SDK default)`. |
+| `check_board_config.py` layer 3 full tokens (PR-R6) | Definition captures take the entire token after `=` (up to whitespace/paren, post comment-strip): PSRAM must wholly match `^[0-9]+[uUlL]*$` and equal 8388608 (expression characters fail naming the raw token — the compiler receives them verbatim), board id must be exactly `"seeed_xiao_esp32s3"` including quotes. All-occurrences checking (PR-N1) unchanged. |
+| `check_core_purity.py` header rule (PR-R7) | BASENAME-anchored: `[<"](?:[dir/]*)?(ff\|ffconf\|diskio\|integer\|ccsbcs)\.h[>"]` — `esp_port/ff.h` hits, `buffer.h`/`my_effective_settings.h` stay clean. Supersedes the round-3 PR-N3 skip; §12 records the lesson. |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1/j2/j3, k1/k2 — 22/22 expected exits (driver out of tree, same location). |
