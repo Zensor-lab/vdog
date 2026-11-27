@@ -1,66 +1,88 @@
 # vdog board-configuration gate (package 1.1; plan docs/plans/1.1-assignment.md
-# §4.2). Build-time identity gate for the Seeed XIAO ESP32S3 prototype:
-# after a successful build it re-reads the generated sdkconfig and asserts
-# that every required key is PRESENT and EQUAL to the expected value, so no
-# PSRAM/flash/console/partition setting can be silently inherited from a
-# default (acceptance §7.3).
+# §4.2). Build-time identity gate for the Seeed XIAO ESP32S3 prototype.
+#
+# FOUR independent layers must all agree, because a resolved value alone can be
+# an inherited SDK default or a stale compiled-in definition (PR-review round 2,
+# findings PR-R1..PR-R3):
+#
+#  1. SOURCE DECLARATION — every required key must be EXPLICITLY declared in
+#     firmware/sdkconfig.defaults (KEY=y / KEY="value"). A key that only shows
+#     up in the resolved config is rejected as "resolved value may be an SDK
+#     default" (PR-R1).
+#  2. RESOLVED PRESENT-AND-EQUAL — the generated config/sdkconfig.json holds
+#     each required key with exactly the expected value (type-strict).
+#  3. COMPONENT DEFINITIONS — components/vdog_board/CMakeLists.txt declares
+#     VDOG_BOARD_ID_STR == expected board id and VDOG_BOARD_PSRAM_SIZE_BYTES ==
+#     expected 8 MiB, so what is actually compiled into the image cannot
+#     disagree with the gate (PR-R2).
+#  4. EFFECTIVE PARTITION TABLE — PlatformIO's board_build.partitions, the
+#     resolved CONFIG_PARTITION_TABLE_CUSTOM_FILENAME and the expected CSV are
+#     the same file; any mismatch names all three (PR-R3).
 #
 # Wiring: `extra_scripts = post:scripts/check_board_config.py` of
 # [env:vdog_xiao_sense_proto] ONLY (same wiring style as
 # scripts/gen_build_meta.py). Loading it in any other environment is a hard
-# error, and the `native` environment must never load it.
+# error, and `native` must never load it.
 #
-# Thin by design: this script only READS the configuration and COMPARES it
-# against the EXPECTED table below. The DECISION LOGIC (what "supported"
-# means, missing-field vs wrong-value, which field is to blame) lives in the
-# portable C validator, firmware/core/vdog_board.c — the single source of
-# truth for semantics. Keep it that way.
+# Thin by design: this script only READS configuration sources and COMPARES
+# them against the EXPECTED table below (the single source of truth for
+# expected values). The DECISION LOGIC (supported vs not, missing-field vs
+# wrong-value, which field is to blame) lives in the portable C validator,
+# firmware/core/vdog_board.c. Keep it that way.
 #
-# Timing model (PlatformIO Core 6.2.0 / espressif32 8.0.0): `post:` scripts
-# are parsed BEFORE SCons executes any build action, so the check cannot run
-# inline; it is registered as a build post action on the AlwaysBuild
-# `checkprogsize` alias (fires on every successful default build, cache
-# included) and on $BUILD_DIR/${PROGNAME}.bin (the last action of a default
-# build), mirroring scripts/gen_build_meta.py. A failure calls env.Exit(1),
-# which fails the build with a non-zero exit code.
+# Timing model (PlatformIO Core 6.2.0 / espressif32 8.0.0): `post:` scripts are
+# parsed BEFORE SCons executes any build action, so the check is registered as a
+# build post action on the AlwaysBuild `checkprogsize` alias and on
+# $BUILD_DIR/${PROGNAME}.bin, mirroring scripts/gen_build_meta.py. A failure
+# calls env.Exit(1) and fails the build. Layers 1/3/4 read tracked sources, so
+# they are enforced whenever the gate runs, not only after a link.
 #
-# Test-build compatibility: `pio test` builds of this environment are
-# redirected to .pio/build/vdog_xiao_sense_proto_test by the pre-script
-# scripts/test_build_isolation.py, where config/sdkconfig.json may be absent
-# or partial. This script therefore follows the SAME policy as
-# gen_build_meta.py: it registers no gate for `__test`/`nobuild` command-line
-# targets (and, defensively, for `clean`), and additionally never fails on a
-# missing/partial sdkconfig inside a `*_test` build directory.
+# Test-build compatibility: `pio test` builds are redirected to
+# .pio/build/vdog_xiao_sense_proto_test by scripts/test_build_isolation.py,
+# where config/sdkconfig.json may be absent or partial. Following
+# gen_build_meta.py's policy, no gate is registered for `__test`/`nobuild`
+# command-line targets (defensively also `clean`), and a missing/partial
+# sdkconfig inside a `*_test` build directory never fails.
 #
-# `board` note: `board` is NOT an ESP-IDF sdkconfig key. The board identity is
-# observed from the PlatformIO build environment ($BOARD, i.e. the
-# `board = seeed_xiao_esp32s3` line of firmware/platformio.ini). If a fixture
-# does carry a `board` key it is compared as well, so neither source can be
-# silently wrong.
+# `board` note: `board` is NOT an ESP-IDF sdkconfig key. Board identity is
+# observed from three sources that must agree: the PlatformIO build environment
+# ($BOARD), the compiled-in VDOG_BOARD_ID_STR, and EXPECTED_BOARD. A fixture
+# carrying a `board` key is compared as well.
 #
-# Standalone (documented override, used by the negative demo in plan §5.4):
+# Standalone (documented override flags; negative demo in plan §5.4 and the
+# PR-R regression fixtures in plan §11):
 #   python3 firmware/scripts/check_board_config.py \
-#       --sdkconfig <path-to-sdkconfig.json> --board <board-id>
-# Exit codes: 0 = every required key present and equal; 1 = gate failure
-# (absent/mismatched key, wrong board, or an unreadable/malformed/missing
-# fixture — a config that cannot be read is never a pass); 2 = argparse usage
-# error only (missing/unknown option, e.g. no --sdkconfig).
+#       --sdkconfig <generated sdkconfig.json> --board <board-id> \
+#       [--defaults firmware/sdkconfig.defaults] \
+#       [--component-cmake firmware/components/vdog_board/CMakeLists.txt] \
+#       [--platformio-ini firmware/platformio.ini]
+# Optional paths default to the real repository files, so tampered copies can
+# be exercised without touching the repo.
+# Exit codes: 0 = all layers agree; 1 = gate failure (undeclared/mismatched
+# key, wrong board or component definition, partition disagreement, or an
+# unreadable/malformed/missing input — a source that cannot be read is never a
+# pass); 2 = argparse usage error only.
+#
+# Debug: VDOG_GATE_DEBUG=1 prints the candidate sources probed for the
+# effective PlatformIO partition option (diagnostics only; no behaviour change).
 
 import argparse
 import json
 import os
+import re
 import sys
 
 ENVIRONMENT = "vdog_xiao_sense_proto"
 EXPECTED_BOARD = "seeed_xiao_esp32s3"
+EXPECTED_PSRAM_SIZE_BYTES = 8 * 1024 * 1024
 TEST_BUILD_SUFFIX = "_test"
 
-# Skip the gate for these command-line targets (gen_build_meta.py policy).
 SKIP_TARGETS = frozenset(("__test", "nobuild", "clean"))
 
-# REQUIRED sdkconfig keys and their expected values. Absent key != default:
-# absence is its own failure. Booleans are compared type-strictly so 1/"y"
-# can never satisfy `True`.
+# REQUIRED keys and expected values (single source of truth). An absent
+# resolved key is its own failure; booleans compare type-strictly so 1/"y" can
+# never satisfy True. Every one of these must ALSO be declared in
+# sdkconfig.defaults (layer 1).
 EXPECTED_KEYS = (
     ("IDF_TARGET", "esp32s3"),
     ("ESPTOOLPY_FLASHSIZE_8MB", True),
@@ -74,11 +96,37 @@ EXPECTED_KEYS = (
     ("ESP_CONSOLE_USB_CDC", True),
     ("ESP_CONSOLE_SECONDARY_NONE", True),
 )
+EXPECTED_PARTITION_CSV = dict(EXPECTED_KEYS)["PARTITION_TABLE_CUSTOM_FILENAME"]
+
+COMPONENT_CMAKE_RELPATH = os.path.join("components", "vdog_board",
+                                       "CMakeLists.txt")
+
+_BOOL_DECL_RE = re.compile(r"\A([A-Za-z])\Z")
+_COMPONENT_BOARD_RE = re.compile(r"VDOG_BOARD_ID_STR\s*=\s*\"([^\"]*)\"")
+_COMPONENT_PSRAM_RE = re.compile(
+    r"VDOG_BOARD_PSRAM_SIZE_BYTES\s*=\s*([0-9][0-9]*[uUlL]*)")
 
 _PREFIX = "*** vdog board-config gate:"
 
-# Set to the SCons environment when running under PlatformIO; None in
-# standalone CLI mode (selects env.Exit(1) vs sys.exit(1)).
+# firmware/ directory, resolved per mode. NEVER at import time: SCons runs
+# extra scripts via ExecScript, where __file__ is undefined (same reason
+# gen_build_meta.py avoids it). _scons_main() sets it from $PROJECT_DIR,
+# _cli_main() from __file__.
+FIRMWARE_DIR = None
+
+
+def _firmware_dir_from_script():
+    """Resolve firmware/ from the script location (CLI mode only)."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _repo_path(*parts):
+    """Path inside firmware/; FIRMWARE_DIR must be resolved by the caller."""
+    return os.path.join(FIRMWARE_DIR, *parts)
+
+
+# Set to the SCons environment under PlatformIO; None in CLI mode (selects
+# env.Exit(1) vs sys.exit(1)).
 _SCONS_ENV = None
 
 
@@ -97,44 +145,89 @@ def _same(expected, actual):
     return type(actual) is type(expected) and actual == expected
 
 
-def evaluate(config, observed_board):
-    """Return a list of human-readable failures (empty list == gate passes).
+def _rel(path):
+    """Repo-relative path for messages; absolute when outside firmware/."""
+    if FIRMWARE_DIR is None:
+        return os.path.abspath(path)
+    absolute = os.path.abspath(path)
+    if absolute == FIRMWARE_DIR or absolute.startswith(FIRMWARE_DIR + os.sep):
+        return os.path.relpath(absolute, FIRMWARE_DIR)
+    return absolute
 
-    `config` is the parsed sdkconfig.json mapping; `observed_board` is the
-    board id from the build environment (may be None when unavailable)."""
-    failures = []
 
-    if not isinstance(config, dict):
-        return ["sdkconfig.json must contain a JSON object, got %s"
-                % type(config).__name__]
+def _read_text(path, label):
+    if not os.path.isfile(path):
+        _fail("cannot read %s: %s does not exist" % (label, path))
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            return fp.read()
+    except OSError as exc:
+        _fail("cannot read %s %s: %s" % (label, path, exc))
 
-    for key, expected in EXPECTED_KEYS:
-        if key not in config:
-            failures.append(
-                "%s: expected %r but the key is ABSENT (never configured "
-                "\u2014 absent is not a default)" % (key, expected)
-            )
+
+def _norm_path(value):
+    """Normalize a partition-table path for comparison."""
+    if value is None:
+        return None
+    text = str(value).strip().strip("\"'").replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Layer 1: source declarations in sdkconfig.defaults (PR-R1)
+# ---------------------------------------------------------------------------
+
+def parse_sdkconfig_defaults(text):
+    """{KEY: raw_value} for `KEY=value` lines; #/; comments and blanks
+    ignored. The CONFIG_ prefix is kept exactly as written."""
+    declared = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line[0] in "#;" or "=" not in line:
             continue
-        actual = config[key]
-        if not _same(expected, actual):
-            failures.append(
-                "%s: expected %r, got %r" % (key, expected, actual)
-            )
+        key, _, value = line.partition("=")
+        declared[key.strip()] = value.strip()
+    return declared
 
-    # Board identity: the sdkconfig fixture (if it carries one) AND the build
-    # environment must both agree with the expected board id.
-    observed = []
-    if "board" in config:
-        observed.append(("sdkconfig.json board key", config["board"]))
-    observed.append(("build environment $BOARD", observed_board))
-    for source, actual in observed:
-        if not _same(EXPECTED_BOARD, actual):
+
+def evaluate_source_declarations(defaults_path):
+    """Every required key must be EXPLICITLY declared in sdkconfig.defaults.
+
+    A key absent there but present in the resolved config may simply be an
+    ESP-IDF default, which acceptance §7.3 forbids (PR-R1)."""
+    declared = parse_sdkconfig_defaults(
+        _read_text(defaults_path, "sdkconfig.defaults"))
+    where = _rel(defaults_path)
+    failures = []
+    for key, expected in EXPECTED_KEYS:
+        name = "CONFIG_%s" % key
+        if name not in declared:
             failures.append(
-                "board (%s): expected %r, got %r" % (source, EXPECTED_BOARD,
-                                                     actual)
-            )
+                "%s: not declared in %s (resolved value may be an SDK default)"
+                % (name, where))
+            continue
+        raw = declared[name]
+        if isinstance(expected, bool):
+            match = _BOOL_DECL_RE.match(raw)
+            letter = match.group(1).lower() if match else None
+            want = "y" if expected else "n"
+            if letter != want:
+                failures.append(
+                    "%s: declared as %r in %s but expected %r"
+                    % (name, raw, where, want))
+        else:
+            if raw.strip().strip("\"'") != expected:
+                failures.append(
+                    "%s: declared as %r in %s but expected %r"
+                    % (name, raw, where, expected))
     return failures
 
+
+# ---------------------------------------------------------------------------
+# Layer 2: resolved sdkconfig.json present-and-equal + board identity
+# ---------------------------------------------------------------------------
 
 def load_sdkconfig(path):
     if not os.path.isfile(path):
@@ -148,27 +241,188 @@ def load_sdkconfig(path):
         _fail("sdkconfig %s is not valid JSON: %s" % (path, exc))
 
 
-def run_check(sdkconfig_path, observed_board, board_source):
-    """Compare one generated sdkconfig against EXPECTED_KEYS; exit non-zero
-    with the offending keys named on any mismatch."""
-    config = load_sdkconfig(sdkconfig_path)
-    failures = evaluate(config, observed_board)
-    if failures:
-        sys.stderr.write(
-            "%s ERROR: build configuration rejected "
-            "(%d problem(s), %s, board from %s):\n"
-            % (_PREFIX, len(failures), sdkconfig_path, board_source)
-        )
-        for item in failures:
-            sys.stderr.write("%s   - %s\n" % (_PREFIX, item))
+def evaluate_resolved(config, observed_board):
+    """Failures for the resolved config and the build-environment board."""
+    if not isinstance(config, dict):
+        return ["sdkconfig.json must contain a JSON object, got %s"
+                % type(config).__name__]
+
+    failures = []
+    for key, expected in EXPECTED_KEYS:
+        if key not in config:
+            failures.append(
+                "%s: expected %r but the key is ABSENT (never configured "
+                "\u2014 absent is not a default)" % (key, expected))
+            continue
+        actual = config[key]
+        if not _same(expected, actual):
+            failures.append("%s: expected %r, got %r" % (key, expected, actual))
+
+    observed = []
+    if "board" in config:
+        observed.append(("sdkconfig.json board key", config["board"]))
+    observed.append(("build environment $BOARD", observed_board))
+    for source, actual in observed:
+        if not _same(EXPECTED_BOARD, actual):
+            failures.append("board (%s): expected %r, got %r"
+                            % (source, EXPECTED_BOARD, actual))
+    return failures
+
+
+# ---------------------------------------------------------------------------
+# Layer 3: component compile definitions actually built in (PR-R2)
+# ---------------------------------------------------------------------------
+
+def evaluate_component_definitions(cmake_path):
+    """The definitions in the component CMakeLists.txt must equal EXPECTED."""
+    text = _read_text(cmake_path, "component CMakeLists.txt")
+    where = _rel(cmake_path)
+    failures = []
+
+    board_match = _COMPONENT_BOARD_RE.search(text)
+    if board_match is None:
+        failures.append(
+            "VDOG_BOARD_ID_STR: not defined in %s (the image would carry no "
+            "board id; expected %r)" % (where, EXPECTED_BOARD))
+    elif board_match.group(1) != EXPECTED_BOARD:
+        failures.append("VDOG_BOARD_ID_STR (%s): expected %r, got %r"
+                        % (where, EXPECTED_BOARD, board_match.group(1)))
+
+    psram_match = _COMPONENT_PSRAM_RE.search(text)
+    if psram_match is None:
+        failures.append("VDOG_BOARD_PSRAM_SIZE_BYTES: not defined in %s "
+                        "(expected %d)" % (where, EXPECTED_PSRAM_SIZE_BYTES))
+    else:
+        actual = int(re.sub(r"[uUlL]", "", psram_match.group(1)))
+        if actual != EXPECTED_PSRAM_SIZE_BYTES:
+            failures.append(
+                "VDOG_BOARD_PSRAM_SIZE_BYTES (%s): expected %d, got %d"
+                % (where, EXPECTED_PSRAM_SIZE_BYTES, actual))
+    return failures
+
+
+# ---------------------------------------------------------------------------
+# Layer 4: effective partition table agreement across the three sources (R3)
+# ---------------------------------------------------------------------------
+
+def parse_platformio_partitions(text, environment=ENVIRONMENT):
+    """board_build.partitions of [env:<environment>] in platformio.ini text."""
+    section = "env:%s" % environment
+    inside = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            inside = (line[1:-1].strip() == section)
+            continue
+        if not inside or not line or line[0] in ";#":
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            if key.strip() == "board_build.partitions":
+                return value.strip()
+    return None
+
+
+def platformio_partitions_from_env(env):
+    """(label, value) for the effective board_build.partitions option.
+
+    Tries the PlatformIO project-option accessor first, then the merged
+    BOARD_BUILD board-manifest dict, then the ini file on disk."""
+    candidates = []
+    try:
+        candidates.append(("platformio.ini [env:%s] board_build.partitions "
+                           "(GetProjectOption)" % ENVIRONMENT,
+                           env.GetProjectOption("board_build.partitions",
+                                                None)))
+    except Exception:  # pragma: no cover - defensive: API availability
+        pass
+    board_build = env.get("BOARD_BUILD") or {}
+    if isinstance(board_build, dict):
+        candidates.append(("BOARD_BUILD['partitions']",
+                           board_build.get("partitions")))
+    ini_path = os.path.join(os.path.normpath(env.subst("$PROJECT_DIR")),
+                            "platformio.ini")
+    if os.path.isfile(ini_path):
+        candidates.append(("parsed %s" % _rel(ini_path),
+                           parse_platformio_partitions(
+                               _read_text(ini_path, "platformio.ini"))))
+    if os.environ.get("VDOG_GATE_DEBUG"):
+        sys.stderr.write("%s debug: partition candidates %r\n"
+                         % (_PREFIX, [(label, value)
+                                       for label, value in candidates]))
         sys.stderr.flush()
-        if _SCONS_ENV is not None:
-            _SCONS_ENV.Exit(1)
-        sys.exit(1)
+    for label, value in candidates:
+        if value:
+            return (label, str(value))
+    return ("no board_build.partitions found", None)
+
+
+def evaluate_partitions(partition_sources, resolved_config):
+    """platformio option vs resolved filename vs expected CSV (PR-R3)."""
+    resolved = None
+    if isinstance(resolved_config, dict):
+        resolved = resolved_config.get("PARTITION_TABLE_CUSTOM_FILENAME")
+    wanted = _norm_path(EXPECTED_PARTITION_CSV)
+    failures = []
+    for label, value in list(partition_sources):
+        if _norm_path(value) != wanted:
+            failures.append(
+                "partition table mismatch: %s = %r | resolved "
+                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME = %r | expected = %r"
+                % (label, value, resolved, EXPECTED_PARTITION_CSV))
+    if _norm_path(resolved) != wanted:
+        failures.append(
+            "partition table mismatch: resolved "
+            "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME = %r | expected = %r "
+            "(PlatformIO option must agree too)" % (resolved,
+                                                    EXPECTED_PARTITION_CSV))
+    return failures
+
+
+# ---------------------------------------------------------------------------
+# Combined check + reporting
+# ---------------------------------------------------------------------------
+
+def collect_failures(sdkconfig_path, observed_board, defaults_path,
+                     component_cmake_path, partition_sources):
+    config = load_sdkconfig(sdkconfig_path)
+    failures = []
+    failures.extend(evaluate_source_declarations(defaults_path))
+    failures.extend(evaluate_resolved(config, observed_board))
+    failures.extend(evaluate_component_definitions(component_cmake_path))
+    failures.extend(evaluate_partitions(partition_sources, config))
+    return config, failures
+
+
+def _reject(failures, context):
+    sys.stderr.write(
+        "%s ERROR: build configuration rejected (%d problem(s), %s):\n"
+        % (_PREFIX, len(failures), context))
+    for item in failures:
+        sys.stderr.write("%s   - %s\n" % (_PREFIX, item))
+    sys.stderr.flush()
+    if _SCONS_ENV is not None:
+        _SCONS_ENV.Exit(1)
+    sys.exit(1)
+
+
+def run_check(sdkconfig_path, observed_board, board_source, defaults_path,
+              component_cmake_path, partition_sources):
+    """Run all four layers; exit non-zero naming every problem."""
+    config, failures = collect_failures(
+        sdkconfig_path, observed_board, defaults_path, component_cmake_path,
+        partition_sources)
+    if failures:
+        _reject(failures, "%s; board from %s; declarations from %s; component "
+                         "definitions from %s"
+                % (sdkconfig_path, board_source, _rel(defaults_path),
+                   _rel(component_cmake_path)))
     print(
-        "vdog board-config gate: %d required keys present and equal + board=%s"
-        " (%s)" % (len(EXPECTED_KEYS), EXPECTED_BOARD, sdkconfig_path)
-    )
+        "vdog board-config gate: %d keys declared in sdkconfig.defaults and "
+        "present-and-equal in the resolved config, board=%s (env + component "
+        "definition), partition table %s agreed by all three sources (%s)"
+        % (len(EXPECTED_KEYS), EXPECTED_BOARD, EXPECTED_PARTITION_CSV,
+           sdkconfig_path))
     return 0
 
 
@@ -180,43 +434,39 @@ def _gate_action(source, target, env):  # SCons calls post actions with these
     build_dir = os.path.normpath(env.subst("$BUILD_DIR"))
     sdkconfig_path = os.path.join(build_dir, "config", "sdkconfig.json")
     board = env.subst("$BOARD") or None
+    partition_sources = [platformio_partitions_from_env(env)]
     if not os.path.isfile(sdkconfig_path) and build_dir.endswith(
             TEST_BUILD_SUFFIX):
-        # Defence in depth alongside the __test skip below: a redirected test
-        # build (scripts/test_build_isolation.py) may legitimately have no or
-        # a partial config, and the release gate must not fire there.
-        print(
-            "vdog board-config gate: skipped (test build dir %s has no "
-            "config/sdkconfig.json)" % build_dir
-        )
+        # Defence in depth alongside the __test skip: a redirected test build
+        # may legitimately lack a config, and the release gate must not fire.
+        print("vdog board-config gate: skipped (test build dir %s has no "
+              "config/sdkconfig.json)" % build_dir)
         return
-    run_check(sdkconfig_path, board, "$BOARD of [env:%s]" % ENVIRONMENT)
+    run_check(sdkconfig_path, board, "$BOARD of [env:%s]" % ENVIRONMENT,
+              _repo_path("sdkconfig.defaults"),
+              _repo_path(COMPONENT_CMAKE_RELPATH), partition_sources)
 
 
 def _scons_main():
-    global _SCONS_ENV
+    global _SCONS_ENV, FIRMWARE_DIR
 
     from SCons.Script import COMMAND_LINE_TARGETS
 
     Import("env")  # injected into module globals by SCons
     _SCONS_ENV = env
+    FIRMWARE_DIR = os.path.normpath(env.subst("$PROJECT_DIR"))
 
     if env.subst("$PIOENV") != ENVIRONMENT:
-        _fail(
-            "check_board_config.py may only be wired to [env:%s] (loaded in "
-            "%r)" % (ENVIRONMENT, env.subst("$PIOENV"))
-        )
+        _fail("check_board_config.py may only be wired to [env:%s] (loaded in "
+              "%r)" % (ENVIRONMENT, env.subst("$PIOENV")))
 
     command_targets = set(COMMAND_LINE_TARGETS or [])
     skipped = command_targets & SKIP_TARGETS
     if skipped:
-        # Same policy as scripts/gen_build_meta.py: test/nobuild/clean runs
-        # never (re)validate the release configuration, so the redirected
-        # `pio test` build directory can never break `pio test`.
-        print(
-            "vdog board-config gate: skipped (targets: %s)"
-            % ", ".join(sorted(skipped))
-        )
+        # gen_build_meta.py policy: test/nobuild/clean runs never (re)validate
+        # the release configuration, so `pio test` cannot be broken by it.
+        print("vdog board-config gate: skipped (targets: %s)"
+              % ", ".join(sorted(skipped)))
         return
 
     # Registered, not executed: see the timing model in the header.
@@ -225,23 +475,47 @@ def _scons_main():
 
 
 # ---------------------------------------------------------------------------
-# Standalone entry point (documented override flag)
+# Standalone entry point (documented override flags)
 # ---------------------------------------------------------------------------
 
 def _cli_main(argv):
+    global FIRMWARE_DIR
+    FIRMWARE_DIR = _firmware_dir_from_script()
+
     parser = argparse.ArgumentParser(
         prog="check_board_config.py",
-        description="Compare a generated ESP-IDF sdkconfig.json against the "
-                    "vdog %s expected board configuration." % ENVIRONMENT,
-    )
+        description="Compare a generated ESP-IDF sdkconfig.json, "
+                    "sdkconfig.defaults, the vdog_board component "
+                    "definitions and platformio.ini against the vdog %s "
+                    "expected board configuration." % ENVIRONMENT)
     parser.add_argument("--sdkconfig", required=True,
                         help="path to a generated config/sdkconfig.json")
     parser.add_argument("--board", required=True,
                         help="board id to compare (PlatformIO board id, "
                              "e.g. seeed_xiao_esp32s3)")
+    parser.add_argument("--defaults", default=_repo_path("sdkconfig.defaults"),
+                        help="sdkconfig.defaults to require declarations from "
+                             "(default: the repository file)")
+    parser.add_argument("--component-cmake",
+                        default=_repo_path(COMPONENT_CMAKE_RELPATH),
+                        help="vdog_board component CMakeLists.txt to check "
+                             "compile definitions against (default: the "
+                             "repository file)")
+    parser.add_argument("--platformio-ini", default=_repo_path("platformio.ini"),
+                        help="platformio.ini to read the effective "
+                             "board_build.partitions from (default: the "
+                             "repository file)")
     args = parser.parse_args(argv)
-    return run_check(os.path.normpath(args.sdkconfig), args.board,
-                     "--board argument")
+
+    ini_path = os.path.normpath(args.platformio_ini)
+    partition_value = parse_platformio_partitions(
+        _read_text(ini_path, "platformio.ini"))
+    return run_check(
+        os.path.normpath(args.sdkconfig), args.board, "--board argument",
+        os.path.normpath(args.defaults),
+        os.path.normpath(args.component_cmake),
+        [("platformio.ini [%s] board_build.partitions"
+          % ("env:" + ENVIRONMENT), partition_value)])
 
 
 if "Import" in globals():

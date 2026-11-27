@@ -60,6 +60,28 @@ FORBIDDEN = (
                 r"\bport[A-Z][A-Za-z0-9_]*\b|\bTickType_t\b"),
      "FreeRTOS kernel API/type symbol (xTask*/xQueue*/xSemaphore*/pd*/port*/"
      "TickType_t)"),
+    # FatFs / disk-io layer (PR-review round 2, PR-R4). Also case-SENSITIVE,
+    # and deliberately limited to FatFs-specific identifiers: the generic
+    # FatFs typedefs BYTE/WORD/DWORD/UINT/WCHAR (and DIR) are ordinary words or
+    # collide with stdio usage, so they are NOT in this list — "FILE",
+    # "portable" and similar must keep scanning clean. Directory access is
+    # covered by f_opendir/f_readdir instead of the bare DIR type.
+    (re.compile(
+        r"#[ \t]*include[ \t]*[<\"][^\">]*"
+        r"(?:ff|ffconf|diskio|integer|ccsbcs)[a-z0-9_/]*\.h"
+        r"[\">]", re.IGNORECASE),
+     "FatFs/disk-io header (ff.h, ffconf.h, diskio.h)"),
+    (re.compile(
+        r"\bf_(?:mount|open|read|write|close|mkfs|opendir|readdir|unlink|"
+        r"rename|stat|getfree|chmod|chdir|mkdir|sync|lseek|tell|eof|forward|"
+        r"truncate|expand|getlabel|setlabel|puts|gets|putc|getc)\b"),
+     "FatFs file API (f_mount/f_open/f_read/f_write/f_close/f_mkfs/"
+     "f_opendir/...)"),
+    (re.compile(r"\b(?:FIL|FILINFO|FATFS|FRESULT)\b"),
+     "FatFs type (FIL/FILINFO/FATFS/FRESULT)"),
+    (re.compile(r"\bdisk_(?:initialize|status|read|write|ioctl)\b"),
+     "FatFs disk-io driver entry (disk_initialize/disk_read/disk_write/"
+     "disk_ioctl)"),
     (re.compile(r"\bwifi[a-z0-9_]*\b", re.IGNORECASE), "Wi-Fi API symbol"),
     (re.compile(r"\barduino\b", re.IGNORECASE), "Arduino framework token"),
     (re.compile(
