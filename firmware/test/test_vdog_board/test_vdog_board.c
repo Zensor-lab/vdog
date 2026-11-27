@@ -95,6 +95,30 @@ static void test_validate_rejects_null_profile(void)
     TEST_ASSERT_EQUAL_STRING("profile", vdog_board_error_field());
 }
 
+/* An unknown field_set bit is a caller bug: it must be rejected and named,
+ * never silently ignored (core/vdog_board.c unknown-bit branch). */
+static void test_validate_rejects_unknown_field_set_bit(void)
+{
+    vdog_board_profile_t p = expected_ok();
+
+    /* All real fields set + one unknown bit -> named as field_set. */
+    p.field_set |= 0x80000000u;
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_BOARD_MISSING_FIELD, vdog_board_validate(&p));
+    TEST_ASSERT_EQUAL_STRING("field_set", vdog_board_error_field());
+
+    p = expected_ok();
+    p.field_set |= (VDOG_BOARD_FIELD_ALL << 1);
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_BOARD_MISSING_FIELD, vdog_board_validate(&p));
+    TEST_ASSERT_EQUAL_STRING("field_set", vdog_board_error_field());
+
+    /* A required field missing outranks the unknown bit: pass 1 runs first,
+     * so the diagnosis is the unconfigured field, not field_set. */
+    vdog_board_profile_init(&p);
+    p.field_set = 0x10000000u;
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_BOARD_MISSING_FIELD, vdog_board_validate(&p));
+    TEST_ASSERT_EQUAL_STRING("target", vdog_board_error_field());
+}
+
 /* Wrong values (field IS set) must be a specific area error, not "missing". */
 static void test_validate_rejects_unsupported_target_and_board(void)
 {
@@ -329,6 +353,7 @@ void app_main(void)
     RUN_TEST(test_profile_init_marks_nothing);
     RUN_TEST(test_validate_rejects_each_missing_field);
     RUN_TEST(test_validate_rejects_null_profile);
+    RUN_TEST(test_validate_rejects_unknown_field_set_bit);
     RUN_TEST(test_validate_rejects_unsupported_target_and_board);
     RUN_TEST(test_validate_rejects_flash_variants);
     RUN_TEST(test_validate_rejects_psram_variants);
@@ -349,6 +374,7 @@ int main(void)
     RUN_TEST(test_profile_init_marks_nothing);
     RUN_TEST(test_validate_rejects_each_missing_field);
     RUN_TEST(test_validate_rejects_null_profile);
+    RUN_TEST(test_validate_rejects_unknown_field_set_bit);
     RUN_TEST(test_validate_rejects_unsupported_target_and_board);
     RUN_TEST(test_validate_rejects_flash_variants);
     RUN_TEST(test_validate_rejects_psram_variants);

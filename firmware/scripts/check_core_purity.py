@@ -52,6 +52,14 @@ FORBIDDEN = (
     (re.compile(r"\bnvs[a-z0-9_]*\b", re.IGNORECASE), "NVS API symbol"),
     (re.compile(r"\bfreertos\b|\btaskhandle\b|\bvTask[A-Za-z]", re.IGNORECASE),
      "RTOS symbol"),
+    # Case-SENSITIVE on purpose: these are FreeRTOS identifier shapes. A
+    # case-insensitive read would false-positive on ordinary words such as
+    # "portable" (the core is described as portable throughout).
+    (re.compile(r"\bxTask[A-Za-z0-9_]*\b|\bxQueue[A-Za-z0-9_]*\b|"
+                r"\bxSemaphore[A-Za-z0-9_]*\b|\bpd[A-Z][A-Za-z0-9_]*\b|"
+                r"\bport[A-Z][A-Za-z0-9_]*\b|\bTickType_t\b"),
+     "FreeRTOS kernel API/type symbol (xTask*/xQueue*/xSemaphore*/pd*/port*/"
+     "TickType_t)"),
     (re.compile(r"\bwifi[a-z0-9_]*\b", re.IGNORECASE), "Wi-Fi API symbol"),
     (re.compile(r"\barduino\b", re.IGNORECASE), "Arduino framework token"),
     (re.compile(

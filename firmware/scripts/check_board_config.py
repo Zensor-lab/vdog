@@ -41,8 +41,10 @@
 # Standalone (documented override, used by the negative demo in plan §5.4):
 #   python3 firmware/scripts/check_board_config.py \
 #       --sdkconfig <path-to-sdkconfig.json> --board <board-id>
-# Exit codes: 0 = every required key present and equal; 1 = gate failure;
-# 2 = usage / unreadable or malformed fixture.
+# Exit codes: 0 = every required key present and equal; 1 = gate failure
+# (absent/mismatched key, wrong board, or an unreadable/malformed/missing
+# fixture — a config that cannot be read is never a pass); 2 = argparse usage
+# error only (missing/unknown option, e.g. no --sdkconfig).
 
 import argparse
 import json
