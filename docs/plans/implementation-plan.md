@@ -7,7 +7,9 @@ round 2 findings PR-R1..R4 fixed at `9becabf`, round-3 notes PR-N1/PR-N2 at
 `e0de4ec`, round-4 findings PR-R5/R6/R7 (strict Kconfig/CMake full-token
 parsing) at `599d1c8`, round-5 findings PR-R8/R9/R10 — raw-line Kconfig
 syntax, #error compile-flag backstop, widened header prefix class — at
-`7ff0244`, re-review pending, merge
+`7ff0244`, round-6 findings PR-R11 (`# default:` provenance marker)
+and PR-R12 (CMake-scope wording) fixed at `c34b287`,
+re-review pending, merge
 pending)**, revised 2026-11-27. This is the
 master backlog, not authorization to execute every stage in one assignment. The
 minimal firmware and portable host tests exist with BUILD/HOST evidence.
@@ -285,7 +287,12 @@ stage the dependencies listed in each package override simple numeric order.
   fixed at `7ff0244` with raw-line exact syntax, an #error compile-flag
   backstop in vdog_board_idf.c (proved by a stripped-`-D` syntax-only
   compile failing with both #errors) plus gate scope checks (27/27
-  regressions, plan §10/§11/§12), PR re-review pending; merge pending hosted CI + PR review.
+  regressions, plan §10/§11/§12); round-6 re-review then requested
+  changes at `4a5c3fb` (PR-R11 `# default:` provenance marker counted
+  as an explicit pin; PR-R12 CMake-scope docstring misstatement) — fixed
+  with preceding-non-blank-line marker tracking (n1/n2 regressions,
+  29/29 harness) and corrected PRIVATE/PUBLIC/INTERFACE semantics wording
+  (enforcement unchanged), PR re-review pending; merge pending hosted CI + PR review.
   **No DEVICE evidence** (device/board checks
   stay in 1.2–1.4) and 0.3/0.7 wiring
   and bench approval remain outstanding, so every pin reference is

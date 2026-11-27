@@ -501,3 +501,15 @@ re-run", 27-case harness + compile proof).
 | `check_board_config.py` layer 3 scope (PR-R9 belt-and-braces) | Every definition occurrence must sit inside a `target_compile_definitions()` block containing `PRIVATE` and no `INTERFACE`/`PUBLIC`; occurrences outside any such block (e.g. via `set()`) fail. |
 | `check_core_purity.py` header prefixes (PR-R10) | Prefix class `(?:[^">]*/)?`: `./ff.h`, `fat-fs/diskio.h`, `a/b/c/ff.h` hit; basename stays anchored after the LAST slash so `my_ff.h`, `ffbuffer.h`, `buffer.h` stay clean. |
 | Evidence levels | Unchanged taxonomy (BUILD/HOST only; zero DEVICE). The m2 syntax-only compile proof is BUILD-class evidence (compiler invocation, no device, no outputs written). |
+
+### Package 1.1 addendum — PR-review round 6 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-6 layer-1 provenance fix and the
+scope-wording correction (plan §10 round-6 block; §11 "round 6 re-run",
+29-case harness).
+
+| Item | Behaviour after round 6 |
+| --- | --- |
+| `check_board_config.py` layer 1 provenance (PR-R11) | An assignment whose PRECEDING non-blank line matches `^\s*#\s*default\b` (covers `# default:`, `# default: <expr>`, extra spaces/tabs) is ESP-IDF's own default-provenance signal — the pinned Kconfig does not count it as user selection — and therefore does NOT satisfy the explicit-declaration check; it fails with the standard `not declared ... (resolved value may be an SDK default)` message. Last-wins duplicates keep working (an unmarked later line overrides a marked earlier one). |
+| Scope-check wording (PR-R12, wording only) | Corrected CMake semantics documented in `_block_scope`/`evaluate_component_definitions`: PRIVATE = target's own compilation only (policy: definitions stay local to the consuming component); PUBLIC = target AND consumers (rejected as scope creep); INTERFACE = consumers only (rejected: own compilation would silently lose the `-D`). Enforcement unchanged — all non-PRIVATE rejected; the `#error` guards enforce macro arrival at compile time regardless of scope. |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1/n2 — 29/29 expected exits (driver out of tree, same location). |
