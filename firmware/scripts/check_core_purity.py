@@ -127,6 +127,25 @@ def _scan_file(path, relative):
     """Return a list of "relative:line: reason -> text" findings."""
     findings = []
     try:
+        # PR-R15 line-model DECISION (reviewer round 9): deliberately KEEP
+        # str.splitlines() here, unlike check_board_config.py's loader-model
+        # _split_universal.  This scanner's consumer is the C compiler /
+        # preprocessor (gcc: only \n ends a line; accepts \r\n), and a
+        # forbidden token or #include directive NEVER contains a line-
+        # separator character -- so splitting at MORE boundaries than the
+        # compiler (splitlines also splits at \v \f \x1c-\x1e \x85 U+2028
+        # U+2029) cannot fragment a legitimate match, while it DOES catch
+        # smuggling the \n-only model would miss: `junk;\u2028#include
+        # <ff.h>` is one line to gcc (where the anchored #include pattern
+        # would not match) but its second split-line matches here.
+        # Over-splitting is therefore a detection SUPERSET (strictest of
+        # the two models).  The residual face -- a separator INSIDE a
+        # token (`f_\x0bmount`, `<ff\u2028.h>`) -- defeats BOTH scan
+        # models but cannot compile silently either: \v/\f are C
+        # whitespace (two unknown identifiers -> compile/link error) and
+        # such an include path does not exist (preprocessor error); the
+        # native build + #error guards fail it loudly.  Deliberate,
+        # documented; k3b (buffer.h/my_ff.h controls) unaffected.
         with open(path, "r", encoding="utf-8", errors="replace") as fp:
             lines = fp.read().splitlines()
     except OSError as exc:

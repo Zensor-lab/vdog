@@ -28,7 +28,12 @@
 #     every line and appends `n` to lines ending `=` (kconfgen/
 #     core.py:547-557) -- and that preprocessing can only ever make
 #     this check OVER-reject, never miss a declaration (INFO-1).
-#     Offending forms report "resolved value may be an SDK default".
+#     Line boundaries mirror the loader: universal newlines (\n,
+#     \r\n, \r ONLY) via _read_text/_split_universal -- NEVER
+#     str.splitlines(), whose extra U+2028/U+2029/\v/\f/NEL splits
+#     would let a comment hide an assignment on one loader-line
+#     (PR-R15).  Offending forms report "resolved value may be an SDK
+#     default".
 #  2. RESOLVED PRESENT-AND-EQUAL — the generated config/sdkconfig.json holds
 #     each required key with exactly the expected value (type-strict).
 #  3. COMPONENT DEFINITIONS — components/vdog_board/CMakeLists.txt declares
@@ -128,18 +133,38 @@ COMPONENT_CMAKE_RELPATH = os.path.join("components", "vdog_board",
 # up to whitespace or the closing paren. Validation is full-token, never a
 # leading-prefix capture, so `=8388608u/2u` (the compiler receives the whole
 # expression) cannot masquerade as the expected literal.
-_COMPONENT_BOARD_RE = re.compile(r"VDOG_BOARD_ID_STR\s*=\s*([^\s)]+)")
+# PR-R15: CMake's lexer breaks arguments at space/TAB/newline, `(`,
+# `)` and unquoted `;` ONLY -- U+2028/U+2029/\v/\f/NEL are ordinary
+# characters that JOIN the argument (e.g. `=8388608u\u2028u` is ONE
+# argument 8388608uu to CMake, and a hidden separator around `=`
+# changes the definition NAME). Python's \s includes those
+# characters, so the old \s*/[^\s)]+ classes let the gate see a
+# clean token where CMake (and the compiler, and the #error guards)
+# see a tampered one: fail-open.  The explicit classes below are
+# the faithful continuation set; newline around `=` stays tolerated
+# (documented acceptance -- a bare-name definition then trips the
+# structural #error backstop, so this face is structurally closed).
+_CONT = r"[^ \t\r\n();]+"
+_COMPONENT_BOARD_RE = re.compile(
+    r"VDOG_BOARD_ID_STR[ \t\r\n]*=[ \t\r\n]*(" + _CONT + ")")
 _COMPONENT_PSRAM_RE = re.compile(
-    r"VDOG_BOARD_PSRAM_SIZE_BYTES\s*=\s*([^\s)]+)")
+    r"VDOG_BOARD_PSRAM_SIZE_BYTES[ \t\r\n]*=[ \t\r\n]*(" + _CONT
+    + ")")
 # Full target_compile_definitions(...) blocks (post comment-strip) for the
 # PRIVATE-scope provenance check (PR-R9); definition tokens never contain
 # parentheses, so [^()]* safely captures a block body.
+# PR-R15: same argument-lexer model for the command head -- a
+# hidden separator between the command name and `(` is NOT a
+# command to CMake, so it must not open a block here either.
 _COMPILE_DEFS_BLOCK_RE = re.compile(
-    r"target_compile_definitions\s*\(([^()]*)\)", re.DOTALL)
+    r"target_compile_definitions[ \t\r\n]*\(([^()]*)\)", re.DOTALL)
 # A complete unsigned-decimal literal with optional C integer suffixes.
 _PSRAM_LITERAL_RE = re.compile(r"\A[0-9]+[uUlL]*\Z")
 # CMake comments run from '#' to end of line (PR-N1): a commented-out
 # definition must never count as a definition, in either direction.
+# PR-R15 parity note: `.` matches everything but \n, so a comment
+# swallows U+2028..\x85 and ends exactly where CMake ends it (\n) --
+# `# x\u2028VDOG_BOARD_ID_STR="..."` is ONE comment line for both.
 _CMAKE_COMMENT_RE = re.compile(r"#.*")
 
 _PREFIX = "*** vdog board-config gate:"
@@ -195,10 +220,38 @@ def _read_text(path, label):
     if not os.path.isfile(path):
         _fail("cannot read %s: %s does not exist" % (label, path))
     try:
-        with open(path, "r", encoding="utf-8") as fp:
+        # newline=None (explicit, PR-R15): Python universal-newline
+        # translation -- \n, \r\n and \r become \n, and NOTHING else
+        # is a line boundary (U+2028/U+2029/\v/\f/NEL stay ordinary
+        # characters), matching open() in kconfgen/core.py:547-557 and
+        # esp_kconfiglib/core.py:2464/2469/2533 -- the model the loader
+        # uses to iterate the file it then parses (core.py:1396).
+        with open(path, "r", encoding="utf-8", newline=None) as fp:
             return fp.read()
     except OSError as exc:
         _fail("cannot read %s %s: %s" % (label, path, exc))
+
+
+def _split_universal(text):
+    """Lines EXACTLY as the pinned tools see them (PR-R15).
+
+    Input must be text from _read_text (open with newline=None, so \n,
+    \r\n and \r already became \n).  Splitting on "\n" reproduces the
+    line stream of open()+iteration in kconfgen (_replace_empty_assignments,
+    kconfgen/core.py:547-557) and esp_kconfiglib (_open/_load_config,
+    core.py:2464/2469/2533 + the enumerate(f, 1) loop at :1396) -- Python's
+    universal newlines are \n/\r\n/\r ONLY.
+
+    NEVER use str.splitlines() for loader-consumed text: it additionally
+    splits on \v \f \x1c-\x1e NEL(\x85) U+2028 U+2029, so
+    `# comment\u2028CONFIG_X=y` is ONE comment line to the parser (value
+    resolves from the SDK default) but looked like a clean assignment to
+    the gate -- the PR-R15 fail-open (regressions r1/r1b).  Over-splitting
+    that direction is fail-open; matching the consumer is the only sound
+    model.  (A trailing "" element after a final newline is a blank line
+    the state machines skip without state change, exactly like the parser
+    skipping blank lines at core.py:1512.)"""
+    return text.split("\n")
 
 
 def _norm_path(value):
@@ -273,6 +326,21 @@ def last_raw_assignments(text):
     still strip-match identically after its `.strip()` (pragma matching
     already strips), and it only ever shortens lines or appends `n`.
 
+    LINES (PR-R15).  Iteration is _split_universal(text): the loader's
+    universal-newline view (\n, \r\n, \r ONLY -- U+2028/U+2029/\v/\f/NEL
+    are ordinary characters; open() defaults to newline=None at
+    esp_kconfiglib/core.py:2464/2469/2533, kconfgen's preprocessing open at
+    kconfgen/core.py:547-557, parse loop at :1396), NOT str.splitlines().
+    One loader-line is one gate-line, so `# SPI clock frequency\u2028
+    CONFIG_ESPTOOLPY_FLASHFREQ_80M=y` is ONE comment line here -- undeclared
+    (regression r1; str.splitlines() saw a clean assignment: fail-open).
+    Same model, trailing-junk face: `CONFIG_X=y\u2028junk` is ONE line
+    whose value the PARSER accepts via its first-character bool rule
+    (core.py:1467-1479: after startswith(("y","n")), val = val[0]), so the
+    symbol WOULD resolve as user-selected `y`; our exact raw-line match
+    still rejects the combined line -- a documented stricter deviation,
+    same class as `CONFIG_X=yes` (PR-R5/PR-R8; regression r3).
+
     The machine mirrors `value_is_default` and `in_deprecated_block` in
     esp_kconfiglib/core.py (Kconfig._load_config loop):
 
@@ -328,7 +396,7 @@ def last_raw_assignments(text):
     last = {}
     value_is_default = False       # core.py:1394
     in_deprecated_block = False    # core.py:1351
-    for raw in text.splitlines():
+    for raw in _split_universal(text):
         line = raw.rstrip()  # parser rstrips too: core.py:1398
         if line and line.strip() == _KCONFIG_DEFAULT_PRAGMA:  # core.py:1399-1402
             value_is_default = True
@@ -576,10 +644,19 @@ def evaluate_component_definitions(cmake_path):
 # ---------------------------------------------------------------------------
 
 def parse_platformio_partitions(text, environment=ENVIRONMENT):
-    """board_build.partitions of [env:<environment>] in platformio.ini text."""
+    """board_build.partitions of [env:<environment>] in platformio.ini text.
+
+    PR-R15 parity: text arrives through _split_universal (loader model,
+    \n/\r\n/\r only).  PlatformIO resolves board_build.partitions
+    through configparser, which reads files with universal newlines as
+    well -- the old str.splitlines() here split MORE than the consuming
+    tool, so `board_build.partitions=x\u2028j...` could have looked like
+    a clean value to the fallback parser while configparser saw `x...`
+    as one value (fail-open class).  Same-semantics parity with the
+    tool that resolves the value is the correct target."""
     section = "env:%s" % environment
     inside = False
-    for raw in text.splitlines():
+    for raw in _split_universal(text):
         line = raw.strip()
         if line.startswith("[") and line.endswith("]"):
             inside = (line[1:-1].strip() == section)
