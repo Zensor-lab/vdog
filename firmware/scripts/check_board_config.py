@@ -12,10 +12,14 @@
 #     (quotes required). Raw-line validation with NO trimming: any space
 #     around `=` or in the value, or leading whitespace (rejected
 #     fail-closed; Kconfig tolerates it), counts as undeclared (PR-R5,
-#     PR-R8). An assignment preceded by ESP-IDF's `# default:` provenance
-#     marker is NOT a user selection and also counts as undeclared
-#     (PR-R11). Offending forms report "resolved value may be an SDK
-#     default".
+#     PR-R8). Assignments sourced by ESP-IDF's `# default:` provenance
+#     pragma are NOT user selections and also count as undeclared --
+#     mirroring the pinned esp_kconfiglib loader's `value_is_default`
+#     machine exactly: pragma is `line.strip() == "# default:"` (no
+#     expression suffix), the state persists across intervening
+#     comments/blanks and is consumed by the next assignment (PR-R11,
+#     corrected per PR-R13). Offending forms report "resolved value may
+#     be an SDK default".
 #  2. RESOLVED PRESENT-AND-EQUAL — the generated config/sdkconfig.json holds
 #     each required key with exactly the expected value (type-strict).
 #  3. COMPONENT DEFINITIONS — components/vdog_board/CMakeLists.txt declares
@@ -202,47 +206,98 @@ def _norm_path(value):
 # Layer 1: source declarations in sdkconfig.defaults (PR-R1)
 # ---------------------------------------------------------------------------
 
-# ESP-IDF's generated-config provenance marker: `# default:` (optionally
-# followed by an expression) above an assignment means "this value came from
-# Kconfig's own default, NOT from a user selection" — the pinned Kconfig
-# parser does not count such an assignment as a user choice (PR-R11).
-_DEFAULT_MARKER_RE = re.compile(r"\A\s*#\s*default\b")
+# ---------------------------------------------------------------------------
+# Mirrors of the pinned parser's provenance state machine (PR-review round 7,
+# PR-R13).  Authority: the Kconfig loader the pinned build ACTUALLY runs --
+# ESP-IDF v6.1.0's `esp_kconfiglib` fork of kconfiglib (esp_idf_kconfig
+# 3.13.0), installed at
+#   ~/.platformio/penv/.espidf-6.1.0/lib/python3.12/site-packages/esp_kconfiglib/
+# kconfgen drives it from the CMake configure step (framework-espidf
+# tools/cmake/kconfig.cmake:211-212 `${python} -m kconfgen`, :230-237
+# `--output json ${build}/config/sdkconfig.json`), so this is both the
+# `# default:` semantics we must honour AND the tool that produced the
+# layer-2 resolved sdkconfig.json.  All citations below are into that
+# package (file:line as installed).
+# ---------------------------------------------------------------------------
+
+_KCONFIG_DEFAULT_PRAGMA = "# default:"  # esp_kconfiglib/constants.py:54
+_KCONFIG_SET_RE = re.compile(r"\ACONFIG_([^=]+)=(.*)", re.ASCII)            # core.py:778 set_match
+_KCONFIG_UNSET_RE = re.compile(r"\A# CONFIG_([^ ]+) is not set", re.ASCII)  # core.py:779 unset_match
+_KCONFIG_DEP_BEGIN = "# Deprecated options for backward compatibility"       # constants.py:32
+_KCONFIG_DEP_END = "# End of deprecated options"                              # constants.py:33
 
 
 def last_raw_assignments(text):
-    """{KEY: LAST raw assignment line, or None} — validated WITHOUT any
-    trimming (PR-review round 5, PR-R8), with provenance filtering
-    (PR-review round 6, PR-R11).
+    """{CONFIG_KEY: LAST raw assignment line, or None} -- a faithful mirror
+    of the pinned parser's assignment-area state machine (PR-review round 7,
+    PR-R13; supersedes the round-6 "immediately preceding non-blank line"
+    heuristic, which was wrong in BOTH directions).
 
-    Only two normalisations happen, both harmless against Kconfig: rstrip of
-    trailing whitespace/CRLF, and rejection of whole-line `#`/`;` comments
-    (as today). Leading whitespace and spaces around `=` SURVIVE into the
-    candidate, so the exact-match in evaluate_source_declarations sees what
-    Kconfig's parser sees. On duplicate keys Kconfig applies last-wins, so
-    only the LAST raw line is judged; a malformed last line fails even if an
-    earlier line was valid (fail-closed; the repo file has no duplicates).
+    A value of None means "this mention is NOT an explicit user
+    declaration"; it can never satisfy evaluate_source_declarations' exact
+    match, and the standard 'not declared ... (resolved value may be an SDK
+    default)' message reports it.
 
-    PROVENANCE (PR-R11): if the PRECEDING non-blank line of an assignment
-    matches `^\\s*#\\s*default\\b` (covers `# default:`, `# default: <expr>`,
-    extra spaces/tabs), the assignment carries ESP-IDF's own
-    default-provenance signal — the pinned Kconfig treats it as NOT
-    user-selected and resolves the SDK default. Counting it as an explicit
-    pin is exactly what the acceptance criterion ("settings never silently
-    taken from defaults") forbids, so such a line is recorded as None and
-    can never satisfy evaluate_source_declarations' exact match; the
-    standard 'not declared ... (resolved value may be an SDK default)'
-    message reports it."""
+    The machine mirrors `value_is_default` in esp_kconfiglib/core.py
+    (Kconfig.load_config loop):
+
+      * lines are rstrip()'d only (core.py:1398);
+      * the flag is set iff a line equals the pragma EXACTLY after strip():
+        `line.strip() == "# default:"` (core.py:1399-1402; pragma
+        constants.py:54).  `# default: (some expr)`, `#  default:` and
+        `#default:` are therefore ORDINARY comments and the assignment
+        below them stays an explicit pin (the round-6 n2 expectation was
+        wrong and is corrected);
+      * the flag PERSISTS across comments, blank and malformed lines --
+        they `continue` at core.py:1505-1514 without touching it -- so
+        `# default:` + `# any comment` + `CONFIG_X=y` is still a
+        default-sourced assignment (round 6's immediate-preceding-line
+        check let this through: fail-open bypass);
+      * the FIRST subsequent assignment consumes and clears the flag, on
+        every code path: set lines (anchored `CONFIG_([^=]+)=`,
+        core.py:778/1416) and `is not set` lines (core.py:779/1506) clear
+        it at core.py:1422/1440/1444/1476/1500/1520/1539/1543/1552 and via
+        the unconditional loop-tail reset at core.py:1610;
+      * the auto-generated deprecated-block banner lines also clear it
+        (core.py:1404-1411; constants.py:32-33).
+
+    Documented deviations from the parser, all STRICTER (fail-closed):
+      * an `is not set` line records None for its key -- the parser's
+        last-mention-wins resolves the symbol to unset there (core.py:1516
+        ff.), so the key is certainly not an explicit pin once that line
+        is the last mention (the repo file contains no such lines);
+      * exact raw-line syntax (PR-R5/PR-R8) still decides declaredness: a
+        set line the parser would accept loosely (`CONFIG_X =y`,
+        `CONFIG_X=yes`) is recorded for last-wins bookkeeping but fails
+        the exact match;
+      * a leading-whitespace line matches neither anchored regex (the
+        parser warns "ignoring malformed line", core.py:1512-1513, and
+        the marker PERSISTS across it); we likewise never record such a
+        line, so it stays fail-closed as before."""
     last = {}
-    prev_nonblank = None
+    value_is_default = False  # core.py:1394
     for raw in text.splitlines():
-        line = raw.rstrip()
-        if not line:
+        line = raw.rstrip()  # parser rstrips too: core.py:1398
+        if line and line.strip() == _KCONFIG_DEFAULT_PRAGMA:  # core.py:1399-1402
+            value_is_default = True
             continue
-        if line[0] not in "#;" and "=" in line:
-            marked = (prev_nonblank is not None
-                      and _DEFAULT_MARKER_RE.match(prev_nonblank) is not None)
-            last[line.split("=", 1)[0]] = None if marked else line
-        prev_nonblank = line
+        if line and line.strip() in (_KCONFIG_DEP_BEGIN,
+                                     _KCONFIG_DEP_END):  # core.py:1404-1411
+            value_is_default = False
+            continue
+        m = _KCONFIG_SET_RE.match(line)  # core.py:1416, regex at :778
+        if m:
+            # Flag set => the parser records this as default-sourced, not
+            # user-selected (core.py:1561/1577 ff.): never an explicit pin.
+            last["CONFIG_" + m.group(1)] = None if value_is_default else line
+            value_is_default = False  # consumes the marker: core.py:1610 et al.
+            continue
+        m = _KCONFIG_UNSET_RE.match(line)  # core.py:1506, regex at :779
+        if m:
+            last["CONFIG_" + m.group(1)] = None  # stricter: last mention unset
+            value_is_default = False  # unset assignments consume too
+            continue
+        # comment / blank / malformed line: state PERSISTS (core.py:1505-1514)
     return last
 
 
