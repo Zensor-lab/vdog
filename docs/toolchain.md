@@ -485,4 +485,19 @@ substring or lenient regexes — match COMPLETE tokens.
 | `check_board_config.py` layer 1 strictness (PR-R5) | Source declarations are honoured only in the exact form Kconfig accepts: bool keys `CONFIG_KEY=y` (lowercase; `Y`/`1`/`0` are parsed by Kconfig but IGNORED ⇒ treated as undeclared), string keys `CONFIG_KEY="value"` (double quotes required, exact). Offending forms report the standard `not declared in sdkconfig.defaults (resolved value may be an SDK default)`. |
 | `check_board_config.py` layer 3 full tokens (PR-R6) | Definition captures take the entire token after `=` (up to whitespace/paren, post comment-strip): PSRAM must wholly match `^[0-9]+[uUlL]*$` and equal 8388608 (expression characters fail naming the raw token — the compiler receives them verbatim), board id must be exactly `"seeed_xiao_esp32s3"` including quotes. All-occurrences checking (PR-N1) unchanged. |
 | `check_core_purity.py` header rule (PR-R7) | BASENAME-anchored: `[<"](?:[dir/]*)?(ff\|ffconf\|diskio\|integer\|ccsbcs)\.h[>"]` — `esp_port/ff.h` hits, `buffer.h`/`my_effective_settings.h` stay clean. Supersedes the round-3 PR-N3 skip; §12 records the lesson. |
-| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1/j2/j3, k1/k2 — 22/22 expected exits (driver out of tree, same location). |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1/j2/j3, k1/k2, l1/l2, m1, k3a/k3b — 27/27 expected exits (driver out of tree, same location). |
+
+### Package 1.1 addendum — PR-review round 5 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-5 fixes — the first STRUCTURAL
+one (compile-time enforcement of compile flags) plus raw-line Kconfig syntax
+and the widened header prefix class (plan §10 round-5 block; §11 "round 5
+re-run", 27-case harness + compile proof).
+
+| Item | Behaviour after round 5 |
+| --- | --- |
+| `check_board_config.py` layer 1 raw syntax (PR-R8) | The RAW assignment line is validated before any trimming (only trailing-WS/CRLF rstrip and whole-line-comment rejection): it must equal `CONFIG_KEY=y` (bool, lowercase) or `CONFIG_KEY="value"` (string, double-quoted) character-for-character — no spaces around `=`, no interior whitespace; duplicates judged on the LAST raw line; leading whitespace rejected fail-closed (deliberate, documented; Kconfig tolerates it, the repo file uses none). Offences report the standard undeclared message. |
+| `vdog_board_idf.c` structural guards (PR-R9) | `#if !defined(VDOG_BOARD_ID_STR)` / `#if !defined(VDOG_BOARD_PSRAM_SIZE_BYTES)` `#error` guards: the adapter refuses to compile when the PRIVATE `target_compile_definitions` don't reach the compiler (PRIVATE→INTERFACE flip, deleted definitions). Compile proof: stripped-`-D` syntax-only compile with the build's own `xtensa-esp-elf-gcc` fails with both `#error`s (exit 1); with the flags it compiles (exit 0); the green BUILD proves the guards satisfied. |
+| `check_board_config.py` layer 3 scope (PR-R9 belt-and-braces) | Every definition occurrence must sit inside a `target_compile_definitions()` block containing `PRIVATE` and no `INTERFACE`/`PUBLIC`; occurrences outside any such block (e.g. via `set()`) fail. |
+| `check_core_purity.py` header prefixes (PR-R10) | Prefix class `(?:[^">]*/)?`: `./ff.h`, `fat-fs/diskio.h`, `a/b/c/ff.h` hit; basename stays anchored after the LAST slash so `my_ff.h`, `ffbuffer.h`, `buffer.h` stay clean. |
+| Evidence levels | Unchanged taxonomy (BUILD/HOST only; zero DEVICE). The m2 syntax-only compile proof is BUILD-class evidence (compiler invocation, no device, no outputs written). |
