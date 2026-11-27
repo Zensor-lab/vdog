@@ -307,3 +307,123 @@ identified authorized unit. The upstream PlatformIO board entry alone was
 project build. No upload, monitor, erase, flash, eFuse, OTA or network
 runtime operation was performed in package 0.2, and the microphone stayed
 uninitialized.
+
+## Package 1.1 addendum (append-only, 2026-11-27)
+
+This addendum records package 1.1 (firmware bootstrap + portable board-profile
+core) and **does not modify §1–§9**: the 0.2 lock matrix above is exactly what
+package 1.1 inherits and re-ran green. Produced by `firmware/` on branch
+`opencode/1.1-fw-bootstrap` via
+[plan 1.1](plans/1.1-assignment.md). **No device was connected, flashed,
+monitored or erased**, and nothing here is DEVICE evidence.
+
+### What package 1.1 added to the firmware project
+
+| Path | Role |
+| --- | --- |
+| `firmware/core/vdog_board.{h,c}` | portable pure-C11 board profile + identity gate (explicit `field_set` per field, `vdog_board_validate()`, `vdog_board_error_field()`, `vdog_board_report()`); single source of truth for the supported-configuration semantics |
+| `firmware/core/library.json` | exposes both portable headers to the `native` environment (`vdog-core@1.1.0`) |
+| `firmware/components/vdog_board/` | IDF component wrapper + target-side `vdog_board_profile_from_sdkconfig()` adapter (`#ifdef CONFIG_*`, so an unset key means "field not set", never an inherited default) |
+| `firmware/scripts/check_board_config.py` | post-build gate: required `config/sdkconfig.json` keys present **and** equal, plus `$BOARD == seeed_xiao_esp32s3` |
+| `firmware/scripts/check_core_purity.py` | post-parse gate: `firmware/core/**` stays free of SDK/RTOS/camera/SD/SPI-SD/NVS tokens and SDK-style includes |
+| `firmware/test/test_vdog_board/` | 14 Unity host cases + `cpp_smoke_board.cpp` C++ consumer TU |
+| `firmware/src/main.c`, `src/CMakeLists.txt` | board report / `board config rejected: … (field …)` log line; `REQUIRES vdog_board` |
+| `firmware/platformio.ini` | two new `post:` entries on `[env:vdog_xiao_sense_proto]` **only** — no `platform_packages`, platform/board or Unity/native pin changed |
+| `firmware/README.md` | environments, root commands, gate behaviour, BUILD/HOST discipline |
+
+`sdkconfig.defaults` and `dependencies.lock` are **byte-identical to the 0.2
+lock** (`git diff 7839610 -- firmware/sdkconfig.defaults firmware/dependencies.lock`
+→ empty): no key was added or relaxed, and no dependency/version changed.
+
+### Commands run from the repository root (macOS arm64 host, 2026-11-27)
+
+| Command | Exit | Evidence level | Result summary |
+| --- | --- | --- | --- |
+| `pio --version` | 0 | host inventory | PlatformIO Core 6.2.0 |
+| `pio run -d firmware -e vdog_xiao_sense_proto -t clean` | 0 | **BUILD** | `[SUCCESS]` 0.55 s |
+| `pio run -d firmware -e vdog_xiao_sense_proto` (after clean) | 0 | **BUILD** | `[SUCCESS]` 43.26 s, 1105 compile actions, **0 `warning:`/`error:` lines** with `-Wall -Wextra`; `RAM 19116/327680 B`, `Flash 210413/3145728 B` |
+| `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | **BUILD** | `text 149597 / data 61124 / bss 376865`; `firmware.bin` 210,832 B (image grew by the board-report code); slot margin vs the 3 MB OTA slot stays ≈14.9× (≥4× requirement, §5) |
+| `pio test -d firmware -e native` | 0 | **HOST** | `native:test_vdog_board [PASSED]` **14/14** + `native:test_vdog_core [PASSED]` **7/7** → **21 test cases: 21 succeeded, 0 failed** |
+| `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | **BUILD-only** | `vdog_xiao_sense_proto:test_vdog_board [SKIPPED]` and `…:test_vdog_core [SKIPPED]` — both embedded test images compile and link (incl. `cpp_smoke_board.cpp`); **no test executed** (never described as execution). Build stayed isolated in `.pio/build/vdog_xiao_sense_proto_test/` |
+| `~/.platformio/packages/tool-esptool/esptool --chip esp32s3 image-info firmware/.pio/build/vdog_xiao_sense_proto/firmware.bin` | 0 | **BUILD** (host-side image analysis, no device I/O) | `Image size: 210832 bytes / Flash size: 8MB / Flash freq: 80m / Chip ID: 9 (ESP32-S3)` |
+| `python3 firmware/scripts/check_core_purity.py` | 0 | HOST (gate, standalone) | `5 portable-core files scanned, no camera/SD/RTOS/SDK tokens` |
+| `git diff --check` | 0 | hygiene | clean |
+
+The 0.2 command set is unchanged and still green; no new root command was
+introduced, so `docs/project-profile.md` needs no command-list edit. `pio test
+-e native` remains the only host harness (no Python test framework added under
+`firmware/`).
+
+**Plan command-form note:** the plan's clean step
+`pio run -d firmware -e vdog_xiao_sense_proto -t run --target clean` passes two
+SCons targets and SCons aborts the *clean* run with
+`*** Do not know how to make File target 'run'` (**exit 1**, no build
+performed). The equivalent supported form `pio run -d firmware -e
+vdog_xiao_sense_proto -t clean` (exit 0, above) followed by the normal `pio
+run` is what was used; the subsequent build was a genuine full rebuild (1105
+compile actions) and picked up the new `components/vdog_board` component.
+
+### Gate evidence (package 1.1 §5.4/§6)
+
+Green inside the BUILD above (proto environment only):
+
+```text
+vdog core-purity gate: 5 portable-core files scanned, no camera/SD/RTOS/SDK tokens
+vdog board-config gate: 11 required keys present and equal + board=seeed_xiao_esp32s3
+  (.../.pio/build/vdog_xiao_sense_proto/config/sdkconfig.json)   # fired on checkprogsize AND on firmware.bin
+```
+
+Negative demo on a **tampered copy** of the generated `sdkconfig.json`
+(`SPIRAM_MODE_OCT` flipped `true → false` in the copy only; the built tree is
+untouched):
+
+```console
+$ python3 firmware/scripts/check_board_config.py \
+      --sdkconfig .../sdkconfig.tampered.json --board seeed_xiao_esp32s3
+*** vdog board-config gate: ERROR: build configuration rejected (1 problem(s), .../sdkconfig.tampered.json, board from --board argument):
+*** vdog board-config gate:   - SPIRAM_MODE_OCT: expected True, got False
+$ echo $?
+1
+```
+
+Control on the real generated file exits **0** with the "11 required keys
+present and equal" line. Additional tampered fixtures (key deleted,
+`SPIRAM=false`, `PARTITION_TABLE_CUSTOM_FILENAME` swapped, wrong `--board`)
+each exit **1** naming every offending key with expected and actual values; a
+missing fixture exits 1 naming the path. Type-strict comparison means `1` or
+`"y"` cannot satisfy an expected `True`.
+
+The gates' SCons-mode behaviour was additionally exercised with a stub SCons
+environment (outside the tree, no tracked file added): normal build registers
+`checkprogsize` + `firmware.bin` post actions and both pass; `__test` registers
+**no** gate (so `pio test` is unaffected, matching `gen_build_meta.py`'s
+policy); an absent/partial `sdkconfig.json` inside a `*_test` build dir is
+tolerated with a printed note; an absent `sdkconfig.json` in a *release* build
+dir exits 1; a wrong `$BOARD` exits 1; loading the script in any environment
+other than `vdog_xiao_sense_proto` exits 1.
+
+### Host inventory observed for these runs
+
+macOS 26.6.2 (build 25G83), Apple silicon `arm64` (`uname -m`); PlatformIO Core
+**6.2.0** (`~/.local/bin/pio`); PlatformIO-bundled Python **3.12.12** (uv tool
+env `~/.local/share/uv/tools/platformio/bin/python`); host `python3` **3.14.6**
+(used only for the standalone gate invocations, never by PlatformIO). Matches
+§1; nothing was installed or upgraded, and the resolved package set is still
+the §2 matrix (`tool-ninja` 1.13.2 on this darwin host).
+
+### Evidence level and DEVICE pointer
+
+Every number above is **BUILD** (cross-compilation, host-side image analysis)
+or **HOST** (native Unity) evidence. The `8MB` flash / `8MB` octal (OPI) PSRAM
+values in the board report and in the gate's expected table are **build
+configuration** — they come from `firmware/sdkconfig.defaults` and the
+`components/vdog_board` declaration, not from the chip: `CONFIG_SPIRAM_TYPE_AUTO`
+leaves real capacity to runtime detection. Physical flash capacity, octal-PSRAM
+detection/usable bytes, boot-log console output and every other on-device
+behaviour remain **DEVICE** evidence for packages 1.2–1.4 against an identified
+authorized unit; no upload, monitor, erase or other device operation was
+performed here, and no GPIO is configured or driven by any package 1.1 code.
+Wiring stays unapproved (0.3/0.7 outstanding), so the only pin reference is the
+`PROVISIONAL` comment block in `firmware/core/vdog_board.h`, which records that
+[hardware/prototype-a/pin-map.csv](../hardware/prototype-a/pin-map.csv) is
+candidate-only and that its GPIO21 SD-CS/user-LED sharing is unresolved.
