@@ -10,8 +10,10 @@
 #     to `CONFIG_KEY=y` (lowercase; `Y`/`1` are parsed by Kconfig but
 #     ignored, silently keeping the SDK default) or `CONFIG_KEY="value"`
 #     (quotes required). Raw-line validation with NO trimming: any space
-#     around `=` or in the value, or leading whitespace (rejected
-#     fail-closed; Kconfig tolerates it), counts as undeclared (PR-R5,
+#     around `=` or in the value, or leading whitespace (the pinned parser
+#     matches neither anchored regex and IGNORES such a line as malformed,
+#     esp_kconfiglib core.py:1512-1513 — rejecting it fail-closed is the
+#     faithful behaviour), counts as undeclared (PR-R5,
 #     PR-R8). Assignments sourced by ESP-IDF's `# default:` provenance
 #     pragma are NOT user selections and also count as undeclared --
 #     mirroring the pinned esp_kconfiglib loader's `value_is_default`
@@ -307,9 +309,12 @@ def _required_declaration_line(key, expected):
 
     STRICT raw syntax (PR-R5 + PR-R8): no space before OR after `=`, no
     interior whitespace in the value, lowercase bool letter, double quotes
-    required. Deliberate decision on leading whitespace: Kconfig tolerates
-    it, we REJECT it too (fail-closed, simplest exact rule; the repository
-    file uses no leading whitespace) — documented here and in plan §10/§12.
+    required. Deliberate decision on leading whitespace: such a line
+    matches neither anchored regex and the pinned parser ignores it as
+    malformed ("ignoring malformed line",
+    esp_kconfiglib core.py:1512-1513), so rejecting it fail-closed is the
+    faithful behaviour (and the simplest exact rule; the repository file
+    uses no leading whitespace) — documented here and in plan §10/§12.
     Anything else (uppercase `Y`, `=1`, `KEY= y`, `KEY =y`, …) behaves like
     an absent line and must be reported as undeclared."""
     if isinstance(expected, bool):
