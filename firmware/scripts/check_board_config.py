@@ -20,8 +20,10 @@
 #     machine exactly: pragma is `line.strip() == "# default:"` (no
 #     expression suffix), the state persists across intervening
 #     comments/blanks and is consumed by the next assignment (PR-R11,
-#     corrected per PR-R13). Offending forms report "resolved value may
-#     be an SDK default".
+#     corrected per PR-R13); assignments inside the auto-generated
+#     `# Deprecated options ...` / `# End of ...` banners are skipped
+#     by kconfgen's loader and are NOT declarations either (PR-R14).
+#     Offending forms report "resolved value may be an SDK default".
 #  2. RESOLVED PRESENT-AND-EQUAL — the generated config/sdkconfig.json holds
 #     each required key with exactly the expected value (type-strict).
 #  3. COMPONENT DEFINITIONS — components/vdog_board/CMakeLists.txt declares
@@ -232,16 +234,23 @@ _KCONFIG_DEP_END = "# End of deprecated options"                              # 
 def last_raw_assignments(text):
     """{CONFIG_KEY: LAST raw assignment line, or None} -- a faithful mirror
     of the pinned parser's assignment-area state machine (PR-review round 7,
-    PR-R13; supersedes the round-6 "immediately preceding non-blank line"
-    heuristic, which was wrong in BOTH directions).
+    PR-R13; deprecated-section handling added round 8, PR-R14).
 
     A value of None means "this mention is NOT an explicit user
     declaration"; it can never satisfy evaluate_source_declarations' exact
     match, and the standard 'not declared ... (resolved value may be an SDK
     default)' message reports it.
 
-    The machine mirrors `value_is_default` in esp_kconfiglib/core.py
-    (Kconfig.load_config loop):
+    MODE. The pinned loader reaches this machine through kconfgen's
+    defaults-file loop -- kconfgen/core.py:559-569 calls
+    `config.load_config(temp_file, replace=False)` WITHOUT load_deprecated,
+    whose default is False (esp_kconfiglib/core.py:1151-1157; documented
+    :1220; dispatched :1267 -> _load_config :1291). This function mirrors
+    THAT mode; the load_deprecated=True paths (core.py:1420-1423,
+    :1518-1521) are unreachable for sdkconfig.defaults files.
+
+    The machine mirrors `value_is_default` and `in_deprecated_block` in
+    esp_kconfiglib/core.py (Kconfig._load_config loop):
 
       * lines are rstrip()'d only (core.py:1398);
       * the flag is set iff a line equals the pragma EXACTLY after strip():
@@ -250,18 +259,34 @@ def last_raw_assignments(text):
         `#default:` are therefore ORDINARY comments and the assignment
         below them stays an explicit pin (the round-6 n2 expectation was
         wrong and is corrected);
+      * the banner lines `# Deprecated options for backward compatibility`
+        and `# End of deprecated options` (constants.py:32-33) toggle
+        `in_deprecated_block` (core.py:1404-1411; init False :1351) AND
+        clear the marker flag (:1406/:1410);
+      * WHILE in the block (default mode), the loader skips EVERY line --
+        `if in_deprecated_block and not load_deprecated: continue`
+        (core.py:1413-1414).  Assignments there are never processed, so
+        they are NOT user selections: never recorded here (an earlier
+        outside record survives untouched), and they cannot consume the
+        marker.  Edge behaviour, all parser-faithful: a marker before the
+        opening banner is cleared by it (:1406) and one INSIDE the section
+        (the marker test at :1399-1402 runs before the skip, so it does
+        set the flag) is cleared by the closing banner (:1410) -- either
+        way the first assignment AFTER `# End of deprecated options` is a
+        user pin; an unclosed opening banner skips to EOF, because the
+        loop-tail reset (:1610) clears only value_is_default, never
+        in_deprecated_block (fail-closed, same as the parser);
       * the flag PERSISTS across comments, blank and malformed lines --
         they `continue` at core.py:1505-1514 without touching it -- so
         `# default:` + `# any comment` + `CONFIG_X=y` is still a
         default-sourced assignment (round 6's immediate-preceding-line
         check let this through: fail-open bypass);
-      * the FIRST subsequent assignment consumes and clears the flag, on
-        every code path: set lines (anchored `CONFIG_([^=]+)=`,
-        core.py:778/1416) and `is not set` lines (core.py:779/1506) clear
-        it at core.py:1422/1440/1444/1476/1500/1520/1539/1543/1552 and via
-        the unconditional loop-tail reset at core.py:1610;
-      * the auto-generated deprecated-block banner lines also clear it
-        (core.py:1404-1411; constants.py:32-33).
+      * the FIRST subsequent assignment (outside any deprecated section)
+        consumes and clears the flag, on every code path: set lines
+        (anchored `CONFIG_([^=]+)=`, core.py:778/1416) and `is not set`
+        lines (core.py:779/1506) clear it at core.py:1422/1440/1444/1476/
+        1500/1520/1539/1543/1552 and via the unconditional loop-tail reset
+        at core.py:1610.
 
     Documented deviations from the parser, all STRICTER (fail-closed):
       * an `is not set` line records None for its key -- the parser's
@@ -277,15 +302,24 @@ def last_raw_assignments(text):
         the marker PERSISTS across it); we likewise never record such a
         line, so it stays fail-closed as before."""
     last = {}
-    value_is_default = False  # core.py:1394
+    value_is_default = False       # core.py:1394
+    in_deprecated_block = False    # core.py:1351
     for raw in text.splitlines():
         line = raw.rstrip()  # parser rstrips too: core.py:1398
         if line and line.strip() == _KCONFIG_DEFAULT_PRAGMA:  # core.py:1399-1402
             value_is_default = True
             continue
-        if line and line.strip() in (_KCONFIG_DEP_BEGIN,
-                                     _KCONFIG_DEP_END):  # core.py:1404-1411
+        if line and line.strip() == _KCONFIG_DEP_BEGIN:  # core.py:1404-1407
+            in_deprecated_block = True
             value_is_default = False
+            continue
+        if line and line.strip() == _KCONFIG_DEP_END:  # core.py:1408-1411
+            in_deprecated_block = False
+            value_is_default = False
+            continue
+        if in_deprecated_block:
+            # Default mode (load_deprecated=False): the loader skips every
+            # line of the section (core.py:1413-1414) -- see docstring.
             continue
         m = _KCONFIG_SET_RE.match(line)  # core.py:1416, regex at :778
         if m:
