@@ -23,6 +23,11 @@
 #     corrected per PR-R13); assignments inside the auto-generated
 #     `# Deprecated options ...` / `# End of ...` banners are skipped
 #     by kconfgen's loader and are NOT declarations either (PR-R14).
+#     The mirror mirrors the PARSER, which sees kconfgen's
+#     preprocessed temp file -- `_replace_empty_assignments` strips
+#     every line and appends `n` to lines ending `=` (kconfgen/
+#     core.py:547-557) -- and that preprocessing can only ever make
+#     this check OVER-reject, never miss a declaration (INFO-1).
 #     Offending forms report "resolved value may be an SDK default".
 #  2. RESOLVED PRESENT-AND-EQUAL — the generated config/sdkconfig.json holds
 #     each required key with exactly the expected value (type-strict).
@@ -248,6 +253,25 @@ def last_raw_assignments(text):
     :1220; dispatched :1267 -> _load_config :1291). This function mirrors
     THAT mode; the load_deprecated=True paths (core.py:1420-1423,
     :1518-1521) are unreachable for sdkconfig.defaults files.
+
+    PREPROCESSING (INFO-1, round-8 approval note). The parser never reads
+    the file raw: kconfgen rewrites each defaults file through
+    `_replace_empty_assignments` (kconfgen/core.py:547-557) into a temp
+    file -- EVERY line `.strip()`'d (:552), and any line ending in `=`
+    gains an `n` (`CONFIG_FOO=` -> `CONFIG_FOO=n`, :553-554) -- and loads
+    THAT (load_config at :564-569). This mirror mirrors the PARSER, i.e.
+    the post-preprocessing stream. That is safe in the fail-closed
+    direction: the preprocessing can only ever induce OVER-rejections in
+    this gate, never let one through. It strips precisely the whitespace
+    our exact-match already refuses to honour (leading whitespace becomes
+    visible to the PARSER but we still reject the raw line -- stricter),
+    its `=`-suffix completion only rescues empty values that the strict
+    PR-R5/PR-R8 syntax rejects anyway (a required `CONFIG_X=n` written
+    `CONFIG_X=` resolves as user-selected `n` for the parser but fails
+    our exact match -- stricter), and it can never CREATE a canonical
+    clean assignment line or marker that the mirror misses: marker lines
+    still strip-match identically after its `.strip()` (pragma matching
+    already strips), and it only ever shortens lines or appends `n`.
 
     The machine mirrors `value_is_default` and `in_deprecated_block` in
     esp_kconfiglib/core.py (Kconfig._load_config loop):
