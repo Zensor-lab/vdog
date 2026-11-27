@@ -2,7 +2,8 @@
 
 Status: **IN PROGRESS — 0.2 qualified; 0.9 implemented on
 `opencode/0.9-ci-release`, hosted run pending; 1.1 reviewed and verified on
-`opencode/1.1-fw-bootstrap` (BUILD/HOST evidence only; PR #5 open, merge
+`opencode/1.1-fw-bootstrap` (BUILD/HOST evidence only; PR #5 open — PR-review
+round 2 findings PR-R1..R4 fixed at `9becabf`, re-review pending, merge
 pending)**, revised 2026-11-27. This is the
 master backlog, not authorization to execute every stage in one assignment. The
 minimal firmware and portable host tests exist with BUILD/HOST evidence.
@@ -257,13 +258,16 @@ stage the dependencies listed in each package override simple numeric order.
 
 ### 1.1 Bootstrap the firmware and portable core
 
-- Status: **REVIEWED & VERIFIED — `opencode/1.1-fw-bootstrap` @ `32d6da3`,
-  PR #5 open (2026-11-27, BUILD/HOST evidence only)**: portable board-profile
+- Status: **REVIEWED & VERIFIED — `opencode/1.1-fw-bootstrap`, PR #5 open
+  (2026-11-27, BUILD/HOST evidence only)**: portable board-profile
   core with host-tested identity gate, build-time board-config + core-purity
   gates on the proto environment, `components/vdog_board` adapter and the board
   report in `main.c`. esp32-reviewer approved (round 2, round-1 notes closed),
-  test-engineer VERIFIED at `32d6da3`, lead detached review passed; merge
-  pending hosted CI + PR review. **No DEVICE evidence** (device/board checks
+  test-engineer VERIFIED at `32d6da3`, lead detached review passed; PR-review
+  bot then requested changes at `d24bd33` (PR-R1..R4, 2 Medium + 2 Low, all
+  gate scripts) — fixed with a four-layer board gate and FatFs purity rules at
+  `9becabf` (12/12 fixture regressions, plan §10/§11), PR re-review pending;
+  merge pending hosted CI + PR review. **No DEVICE evidence** (device/board checks
   stay in 1.2–1.4) and 0.3/0.7 wiring
   and bench approval remain outstanding, so every pin reference is
   provisional. See [package 1.1 assignment](1.1-assignment.md) and

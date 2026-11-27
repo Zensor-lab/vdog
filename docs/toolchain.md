@@ -444,3 +444,18 @@ Wiring stays unapproved (0.3/0.7 outstanding), so the only pin reference is the
 `PROVISIONAL` comment block in `firmware/core/vdog_board.h`, which records that
 [hardware/prototype-a/pin-map.csv](../hardware/prototype-a/pin-map.csv) is
 candidate-only and that its GPIO21 SD-CS/user-LED sharing is unresolved.
+
+### Package 1.1 addendum — PR-review round 2 (append-only, 2026-11-27)
+
+Supersedes nothing above; records what the two gate scripts enforce **now**
+after PR #5 round 2 (findings PR-R1..PR-R4, plan §10). Evidence: plan §11
+"PR-review round 2 re-run" (12/12 regression cases; BUILD and HOST separate).
+
+| Item | Behaviour after round 2 |
+| --- | --- |
+| `firmware/scripts/check_board_config.py` layer 1 (PR-R1) | Every `EXPECTED_KEYS` entry must be **EXPLICITLY declared** in the SOURCE `firmware/sdkconfig.defaults` (`KEY=y` / `KEY="value"`; boolean letters checked). A resolved-but-undeclared key fails the build: `… not declared in sdkconfig.defaults (resolved value may be an SDK default)`. The layer-2 resolved present-and-equal check is kept — "never silently taken from defaults" = declared **and** equal. |
+| … layer 3 (PR-R2) | `components/vdog_board/CMakeLists.txt` must define `VDOG_BOARD_ID_STR="seeed_xiao_esp32s3"` and `VDOG_BOARD_PSRAM_SIZE_BYTES=8388608u`; mismatch or absence fails with expected-vs-actual naming the file. Single source of truth stays the script's `EXPECTED` table. |
+| … layer 4 (PR-R3) | Effective partition table must agree **three ways**: PlatformIO `board_build.partitions` (SCons: `env.GetProjectOption` first — empirically the resolving source; `BOARD_BUILD['partitions']` is probed but is `None` under espressif32 8.0.0; parsed-ini fallback), resolved `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME`, and the expected `partitions/vdog_8mb_two_ota.csv`; any mismatch names all three. `VDOG_GATE_DEBUG=1` prints the probed candidates. |
+| … CLI override flags | `--defaults PATH`, `--component-cmake PATH`, `--platformio-ini PATH` (all default to the real repository files) allow tampered-copy fixtures without touching the repo; used by the §11 regression harness. Exit-code contract unchanged: 0 pass / 1 gate failure or unreadable input / 2 argparse usage only. |
+| `firmware/scripts/check_core_purity.py` (PR-R4) | Four additional **case-sensitive** FatFs/disk-io rules: `ff.h`/`ffconf.h`/`diskio.h` (and `integer.h`/`ccsbcs.h`) includes; `f_mount/f_open/f_read/f_write/f_close/f_mkfs/f_opendir/f_readdir/…`; types `FIL/FILINFO/FATFS/FRESULT`; `disk_initialize/disk_status/disk_read/disk_write/disk_ioctl`. Generic FatFs typedefs (`BYTE/WORD/DWORD/UINT/WCHAR/DIR`) are deliberately excluded as ordinary/stdio-colliding words — `FILE` and `portable` prose stay clean; directory use is covered via `f_opendir`/`f_readdir`. |
+| Evidence levels | Unchanged taxonomy: these are BUILD-time gates and host-side gate runs; still zero DEVICE evidence; `pio test -e native` (22/22) remains the only executed-test level. |
