@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vdog.local/contracts/media-v1/frame-record.schema.json",
+  "title": "vdog original recording v1 frame index record",
+  "description": "One complete compact JSONL line of /vdog/v1/clips/<clip_id>/frames.jsonl (docs/specs/media-format.md section 3). Bounds come from the section 2 table. Cross-record rules (seq continuity, offset continuity, strictly increasing t_us, first t_us == 0, CRC over the exact payload bytes) are clip-level invariants enforced by tools/contracts and reported with stable codes; they are not expressible per line.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "seq", "offset", "size", "t_us", "crc32"],
+  "properties": {
+    "v": {
+      "description": "Media contract version; unsupported major versions are rejected.",
+      "const": 1
+    },
+    "seq": {
+      "description": "Consecutive from zero; at most 3,600 frames per clip.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3599
+    },
+    "offset": {
+      "description": "Byte offset of the JPEG SOI. Bounded here by the shared JSON integer range; the payload bound (at most 268,435,456 bytes) and continuity are clip-level invariants.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "size": {
+      "description": "JPEG payload length including SOI and EOI.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2097152
+    },
+    "t_us": {
+      "description": "Capture time in microseconds relative to the first retained frame of this segment; first record is zero and later values strictly increase. Bounded by the 120,000,000 us hard segment maximum.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 120000000
+    },
+    "crc32": {
+      "description": "CRC-32/ISO-HDLC of the exact JPEG payload bytes, eight lowercase hexadecimal characters.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}$"
+    }
+  }
+}

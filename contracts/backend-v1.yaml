@@ -1,0 +1,1899 @@
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+info:
+  title: vdog backend API v1
+  version: 1.0.0
+  description: |
+    Normative self-hosted backend contract for the vdog camera, frozen from
+    docs/specs/interfaces.md sections 1 and 7-9 in package 0.6.
+
+    Conventions that apply to every operation in this file:
+
+    * Single-owner self-hosted instance. A bootstrap CLI creates one random
+      32-byte admin bearer credential; there are no default credentials and no
+      open registration. Backend tokens are distinct from local camera tokens
+      and only token hashes are stored.
+    * Every JSON body is UTF-8 and carries top-level `v: 1` on both request and
+      response objects; unknown major versions fail.
+    * Write-side (request) objects reject unknown fields; readers must tolerate
+      unknown response fields, so response objects are deliberately permissive.
+    * Control-plane JSON request bodies are at most 16 KiB; upload
+      initialization is the one documented exception at 32 KiB.
+    * Errors use the single reusable `Error` envelope; clients branch on the
+      stable `code`, never on `message`.
+    * `clip_id` is always scoped by `device_id` in backend requests, carried as
+      the `device_id` query parameter on the routes below.
+    * All traffic is HTTPS outside localhost development; no authentication ever
+      travels in a query string.
+  contact:
+    name: vdog contract owner
+    url: https://vdog.local/contracts
+servers:
+  - url: https://backend.local/api/v1
+    description: Self-hosted single-owner instance.
+security:
+  - bearerAuth: []
+tags:
+  - name: identity
+  - name: catalog
+  - name: ingestion
+  - name: events
+  - name: jobs
+  - name: health
+paths:
+  /tokens:
+    post:
+      tags: [identity]
+      operationId: createToken
+      summary: Admin creates a separate scoped API token
+      description: >-
+        The raw token value is returned once; the backend stores only its hash.
+        A device-upload token is scoped to one device and may ingest or query its
+        own uploads only. No refresh-token or session-cookie flow exists in v1.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTokenRequest'
+      responses:
+        '201':
+          description: Token created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /tokens/{id}:
+    delete:
+      tags: [identity]
+      operationId: deleteToken
+      summary: Admin revokes a scoped token
+      parameters:
+        - $ref: '#/components/parameters/TokenIdPath'
+      responses:
+        '204':
+          description: Token revoked; repeating the call is not an error.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /devices:
+    post:
+      tags: [identity]
+      operationId: registerDevice
+      summary: Owner registers a device
+      description: >-
+        Registration alone grants no access to a camera; ingest authority comes
+        only from a scoped device-upload token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterDeviceRequest'
+      responses:
+        '201':
+          description: Device registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      tags: [catalog]
+      operationId: listDevices
+      summary: Owner-scoped paginated device catalog
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/LimitBackend'
+      responses:
+        '200':
+          description: One page of devices.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DevicesPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /clips:
+    get:
+      tags: [catalog]
+      operationId: listClips
+      summary: Owner-scoped paginated clip catalog
+      description: >-
+        Clips include the device id and an original-manifest summary. Ingest
+        identity is `(device_id, clip_id)`; no stable-catalogue assumption holds
+        between pages, so clients deduplicate by immutable ids.
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdQueryOptional'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/LimitBackend'
+      responses:
+        '200':
+          description: One page of clips.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendClipsPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /clips/{clip_id}:
+    get:
+      tags: [catalog]
+      operationId: getClip
+      summary: Manifest plus upload time, integrity state and derivatives
+      parameters:
+        - $ref: '#/components/parameters/ClipIdPath'
+        - $ref: '#/components/parameters/DeviceIdQuery'
+      responses:
+        '200':
+          description: Stored clip detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoredClip'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+    delete:
+      tags: [catalog]
+      operationId: deleteClip
+      summary: Owner deletion (never touches the SD card)
+      description: >-
+        Returns 409 `CLIP_PROTECTED` until every server event pin is removed. No
+        SD-card effect exists.
+      parameters:
+        - $ref: '#/components/parameters/ClipIdPath'
+        - $ref: '#/components/parameters/DeviceIdQuery'
+      responses:
+        '202':
+          description: Deletion accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletingResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/Gone'
+  /clips/{clip_id}/files/{name}:
+    get:
+      tags: [catalog]
+      operationId: getClipFile
+      summary: Authorized range download of a stored original
+      description: >-
+        Same ETag and Range semantics as the device: the ETag is the quoted
+        SHA-256, `Accept-Ranges` is `bytes`, only a single `bytes=start-end` or
+        `bytes=start-` range is granted, multipart and suffix ranges get 416, and
+        an `If-Match` mismatch gets 412 `CONTENT_CHANGED`.
+      parameters:
+        - $ref: '#/components/parameters/ClipIdPath'
+        - $ref: '#/components/parameters/DeviceIdQuery'
+        - $ref: '#/components/parameters/ClipFileName'
+        - $ref: '#/components/parameters/Range'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Whole original file.
+          headers:
+            Accept-Ranges:
+              $ref: '#/components/headers/AcceptRanges'
+            ETag:
+              $ref: '#/components/headers/ETagSha256'
+            Content-Length:
+              $ref: '#/components/headers/ContentLength'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: Requested single byte range.
+          headers:
+            Accept-Ranges:
+              $ref: '#/components/headers/AcceptRanges'
+            Content-Range:
+              $ref: '#/components/headers/ContentRange'
+            ETag:
+              $ref: '#/components/headers/ETagSha256'
+            Content-Length:
+              $ref: '#/components/headers/ContentLength'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '416':
+          $ref: '#/components/responses/RangeNotSatisfiable'
+  /uploads:
+    post:
+      tags: [ingestion]
+      operationId: createUpload
+      summary: Initialize a resumable upload from exact manifest bytes
+      description: |
+        `manifest_base64url` is unpadded base64url of the exact UTF-8
+        `manifest.json` bytes; the decoded length is at most 16 KiB, the encoded
+        request body must fit the 32 KiB initialization limit, the JSON is
+        validated and the bytes are preserved unchanged. The device id comes from
+        the token scope, never from the body, and aggregate plus reserved quota is
+        enforced before allocation. The same `Idempotency-Key` with the same
+        request returns the existing upload; the same key with a different request
+        returns 409. Only finalized bundles of the media contract are accepted.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUploadRequest'
+      responses:
+        '201':
+          description: Upload initialized and receiving.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /uploads/{id}/files/{name}:
+    head:
+      tags: [ingestion]
+      operationId: headUploadFile
+      summary: Authoritative committed offset and length
+      description: >-
+        Retrying after an ambiguous response always starts with this HEAD; it
+        returns the authoritative `Upload-Offset` and `Upload-Length`.
+      parameters:
+        - $ref: '#/components/parameters/UploadIdPath'
+        - $ref: '#/components/parameters/UploadFileName'
+      responses:
+        '200':
+          description: Authoritative offsets.
+          headers:
+            Upload-Offset:
+              $ref: '#/components/headers/UploadOffset'
+            Upload-Length:
+              $ref: '#/components/headers/UploadLength'
+        '401':
+          # A HEAD answer is status and headers alone (RFC 9110 §9.3.2): the shared Error
+          # body the other refusals of this contract carry would promise content the
+          # method forbids, so the status plus the challenge is the whole report.
+          description: Missing or invalid bearer token, reported by the status alone.
+          headers:
+            WWW-Authenticate:
+              $ref: '#/components/headers/WwwAuthenticate'
+        '404':
+          description: Resource was never known, reported by the status alone.
+        '410':
+          description: Known evicted clip or expired upload, reported by the status alone.
+    patch:
+      tags: [ingestion]
+      operationId: patchUploadFile
+      summary: Append one verified chunk to one file
+      description: |
+        Exactly one in-flight writer per upload. The body is
+        `application/octet-stream` of 1-1,048,576 bytes and only the two permitted
+        file names are accepted. The server verifies chunk length and hash,
+        appends at the expected offset, syncs, persists the offset and only then
+        returns 204 with the new `Upload-Offset`. A wrong offset returns 409 with
+        the authoritative offset and never appends repeated bytes implicitly.
+        Whole-file integrity, not chunk acknowledgement, proves ingestion.
+      parameters:
+        - $ref: '#/components/parameters/UploadIdPath'
+        - $ref: '#/components/parameters/UploadFileName'
+        - $ref: '#/components/parameters/UploadOffset'
+        - $ref: '#/components/parameters/UploadChecksum'
+        - $ref: '#/components/parameters/ChunkContentLength'
+      requestBody:
+        required: true
+        description: >-
+          Raw chunk bytes. `Content-Length` must be between 1 and 1,048,576 bytes;
+          an empty body is 400 and an oversized body is 413.
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '204':
+          description: Chunk committed at the expected offset.
+          headers:
+            Upload-Offset:
+              $ref: '#/components/headers/UploadOffset'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            Offset conflict; the authoritative committed offset is returned in the
+            `Upload-Offset` header.
+          headers:
+            Upload-Offset:
+              $ref: '#/components/headers/UploadOffset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          # interfaces.md §8: an upload session expires 24 h after its last committed
+          # chunk, and every endpoint of that session answers 410 once it has. A chunk
+          # that arrives after the window closes names an offset that no longer exists.
+          $ref: '#/components/responses/Gone'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /uploads/{id}/commit:
+    post:
+      tags: [ingestion]
+      operationId: commitUpload
+      summary: Validate and publish the clip through a durable transaction
+      description: |
+        Validates both lengths and hashes and every index/frame bound, then
+        publishes through a recoverable database/filesystem transaction. 201 is
+        returned only after durability and a repeated commit returns the same
+        result. An integrity failure returns 422 and quarantines or rejects the
+        upload without creating a catalog entry. Existing `(device_id, clip_id)`
+        deduplicates only when the SHA-256 of the exact original manifest bytes
+        and both declared data-file hashes all match; anything else returns 409
+        `CLIP_ID_COLLISION`.
+      parameters:
+        - $ref: '#/components/parameters/UploadIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VersionedRequest'
+      responses:
+        '201':
+          description: Clip stored durably.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadCommitted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /uploads/{id}:
+    get:
+      tags: [ingestion]
+      operationId: getUpload
+      summary: State, offsets and expiry for an authorized client
+      parameters:
+        - $ref: '#/components/parameters/UploadIdPath'
+      responses:
+        '200':
+          description: Upload detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+    delete:
+      tags: [ingestion]
+      operationId: deleteUpload
+      summary: Cancel a receiving upload (idempotent)
+      description: >-
+        Inactive receiving uploads expire 24 h after the last successfully
+        committed chunk; an already expired upload returns 410.
+      parameters:
+        - $ref: '#/components/parameters/UploadIdPath'
+      responses:
+        '204':
+          description: Upload cancelled.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+  /events:
+    post:
+      tags: [events]
+      operationId: createEvent
+      summary: Create a server-side event association
+      description: >-
+        Server event association only: it is not a remote pin acknowledgement and
+        it has no effect on the camera. A local event and a server event are
+        distinct acknowledged states.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackendEventRequest'
+      responses:
+        '201':
+          description: Event association created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendEventRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      tags: [events]
+      operationId: listEvents
+      summary: Owner event list
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/LimitBackend'
+      responses:
+        '200':
+          description: One page of events.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendEventsPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /events/{id}:
+    delete:
+      tags: [events]
+      operationId: deleteEvent
+      summary: Owner event removal
+      description: >-
+        Removal follows the separately configured backend retention policy;
+        retention is never implied by this contract.
+      parameters:
+        - $ref: '#/components/parameters/EventIdPath'
+      responses:
+        '204':
+          description: Event removed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /jobs:
+    post:
+      tags: [jobs]
+      operationId: createJob
+      summary: Queue a derivative job
+      description: >-
+        `type` is `transcode` or `stabilize` and only an approved preset name from
+        the configured enum is accepted. Jobs are deduplicated by original hash,
+        type, preset and version; `Idempotency-Key` makes submission retryable.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJobRequest'
+      responses:
+        '201':
+          description: Job queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /jobs/{id}:
+    get:
+      tags: [jobs]
+      operationId: getJob
+      summary: Job state, nullable progress and result ids
+      description: >-
+        `progress` is null whenever no real measurement exists; no estimate is
+        fabricated. On restart, stale running jobs become `interrupted` and a
+        bounded retry policy starts a new attempt without changing the original.
+      parameters:
+        - $ref: '#/components/parameters/JobIdPath'
+      responses:
+        '200':
+          description: Job record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [jobs]
+      operationId: deleteJob
+      summary: Request cancellation
+      description: >-
+        202 while stopping; terminal cancellation is reported only after child
+        cleanup.
+      parameters:
+        - $ref: '#/components/parameters/JobIdPath'
+      responses:
+        '202':
+          description: Cancellation requested.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCancellation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /derivatives/{id}:
+    get:
+      tags: [jobs]
+      operationId: getDerivative
+      summary: Derivative metadata
+      description: >-
+        Records original hashes, encoder and filter versions, parameters, output
+        dimensions, crop and its own hash.
+      parameters:
+        - $ref: '#/components/parameters/DerivativeIdPath'
+      responses:
+        '200':
+          description: Derivative metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DerivativeRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [jobs]
+      operationId: deleteDerivative
+      summary: Owner deletion (no original or SD effect)
+      description: >-
+        Idempotent cleanup; neither the stored original nor the SD card is touched.
+      parameters:
+        - $ref: '#/components/parameters/DerivativeIdPath'
+      responses:
+        '202':
+          description: Deletion accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletingResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /derivatives/{id}/file:
+    get:
+      tags: [jobs]
+      operationId: getDerivativeFile
+      summary: Authorized range download of a derivative
+      parameters:
+        - $ref: '#/components/parameters/DerivativeIdPath'
+        - $ref: '#/components/parameters/Range'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Whole derivative file.
+          headers:
+            Accept-Ranges:
+              $ref: '#/components/headers/AcceptRanges'
+            ETag:
+              $ref: '#/components/headers/ETagSha256'
+            Content-Length:
+              $ref: '#/components/headers/ContentLength'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: Requested single byte range.
+          headers:
+            Accept-Ranges:
+              $ref: '#/components/headers/AcceptRanges'
+            Content-Range:
+              $ref: '#/components/headers/ContentRange'
+            ETag:
+              $ref: '#/components/headers/ETagSha256'
+            Content-Length:
+              $ref: '#/components/headers/ContentLength'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '416':
+          $ref: '#/components/responses/RangeNotSatisfiable'
+  /health/live:
+    get:
+      tags: [health]
+      operationId: getHealthLive
+      summary: Minimal liveness probe
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthRecord'
+  /health/ready:
+    get:
+      tags: [health]
+      operationId: getHealthReady
+      summary: Readiness probe over DB, storage and required workers
+      security: []
+      responses:
+        '200':
+          description: Dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthRecord'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: >-
+        Admin or scoped token: 32 random bytes base64url without padding. The
+        backend stores only hashes; there is no auth through query strings.
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: >-
+        Opaque cursor from a previous page, at most 256 characters. An expired
+        cursor returns 409 CURSOR_EXPIRED and the listing restarts.
+      schema:
+        type: string
+        maxLength: 256
+    LimitBackend:
+      name: limit
+      in: query
+      required: false
+      description: Page size; defaults to 100 backend items and never exceeds 100.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 100
+    DeviceIdQuery:
+      name: device_id
+      in: query
+      required: true
+      description: Scope of the clip id; required on every clip-scoped route.
+      schema:
+        $ref: '#/components/schemas/DeviceId'
+    DeviceIdQueryOptional:
+      name: device_id
+      in: query
+      required: false
+      description: Optional filter of the owner-scoped clip catalog.
+      schema:
+        $ref: '#/components/schemas/DeviceId'
+    ClipIdPath:
+      name: clip_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/ClipId'
+    ClipFileName:
+      name: name
+      in: path
+      required: true
+      description: Exactly one of the two original clip file names.
+      schema:
+        $ref: '#/components/schemas/ClipFileName'
+    UploadFileName:
+      name: name
+      in: path
+      required: true
+      description: >-
+        Only the two permitted media file names; any other name is 400, so the
+        manifest itself can never be streamed through this route.
+      schema:
+        $ref: '#/components/schemas/ClipFileName'
+    TokenIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/TokenId'
+    UploadIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/UploadId'
+    EventIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    JobIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/JobId'
+    DerivativeIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/DerivativeId'
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Client UUID making a submission retryable. Same key plus same request
+        returns the existing resource; same key plus different request is 409.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    UploadOffset:
+      name: Upload-Offset
+      in: header
+      required: true
+      description: >-
+        Offset the client believes is committed. A wrong value is 409 with the
+        authoritative offset, never an implicit append of repeated bytes.
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 9007199254740991
+    UploadChecksum:
+      name: Upload-Checksum
+      in: header
+      required: true
+      description: '`sha256 <64 lowercase hexadecimal>` over the chunk body.'
+      schema:
+        type: string
+        minLength: 71
+        maxLength: 71
+        pattern: '^sha256 [0-9a-f]{64}$'
+    ChunkContentLength:
+      name: Content-Length
+      in: header
+      required: true
+      description: >-
+        Exact chunk length in bytes, between 1 and 1,048,576. An empty body is
+        400 MALFORMED_REQUEST and an oversized body is 413 BOUND_EXCEEDED.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1048576
+    Range:
+      name: Range
+      in: header
+      required: false
+      description: >-
+        A single `bytes=start-end` or `bytes=start-` range only; multipart and
+        suffix ranges are rejected with 416.
+      schema:
+        type: string
+        pattern: '^bytes=[0-9]+(-[0-9]*)?$'
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: Original ETag; a mismatch returns 412 CONTENT_CHANGED.
+      schema:
+        type: string
+  headers:
+    WwwAuthenticate:
+      description: >-
+        The bearer challenge RFC 9110 §15.5.2 requires on every 401, naming the
+        protection space the token was presented to. A bodyless HEAD refusal carries
+        it as well: what the method forbids is the body, not the header.
+      required: true
+      schema:
+        type: string
+        pattern: '^Bearer( realm="[^"]{1,100}")?$'
+      example: 'Bearer realm="vdog"'
+    AcceptRanges:
+      description: Byte ranges are supported for immutable stored files.
+      required: true
+      schema:
+        type: string
+        const: bytes
+    ETagSha256:
+      description: The quoted SHA-256 of the whole file.
+      required: true
+      schema:
+        type: string
+        minLength: 66
+        maxLength: 66
+        pattern: '^"[0-9a-f]{64}"$'
+    ContentLength:
+      description: Exact number of body bytes in this response.
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+    ContentRange:
+      description: >-
+        `bytes <first>-<last>/<total>` for the single granted range.
+      required: true
+      schema:
+        type: string
+        pattern: '^bytes [0-9]+-[0-9]+/[0-9]+$'
+    ContentRangeUnsatisfied:
+      description: >-
+        `bytes */<total>` on the 416 that reports the current representation
+        length (RFC 9110 §14.4, §15.5.17).
+      schema:
+        type: string
+        pattern: '^bytes \*/[0-9]+$'
+    UploadOffset:
+      description: >-
+        Authoritative committed offset for this file, returned on 204, on the
+        offset-conflict 409 and on HEAD.
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 9007199254740991
+    UploadLength:
+      description: >-
+        Declared total length for this file, taken from the validated manifest
+        received during initialization.
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 268435456
+  responses:
+    BadRequest:
+      description: Malformed request or out-of-range value.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      headers:
+        WWW-Authenticate:
+          $ref: '#/components/headers/WwwAuthenticate'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Wrong privilege or token scope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource was never known.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: State, revision, offset, idempotency or collision conflict.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Gone:
+      description: Known evicted clip or expired upload.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PayloadTooLarge:
+      description: Bound exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RangeNotSatisfiable:
+      description: Invalid byte range; only a single range is supported.
+      headers:
+        Content-Range:
+          $ref: '#/components/headers/ContentRangeUnsatisfied'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PreconditionFailed:
+      description: ETag mismatch, `CONTENT_CHANGED`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnprocessableEntity:
+      description: Integrity, schema or media failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: Rate limited; honour `Retry-After` when present.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            minimum: 0
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServiceUnavailable:
+      description: Dependency unavailable; honour `Retry-After` when present.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            minimum: 0
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Version:
+      description: Contract major version; unknown major versions fail.
+      type: integer
+      const: 1
+    DeviceId:
+      description: 32 lowercase hexadecimal characters provisioned once.
+      type: string
+      minLength: 32
+      maxLength: 32
+      pattern: '^[0-9a-f]{32}$'
+    ClipId:
+      description: >-
+        `<boot_id>-<sequence>`; the prefix equals boot_id, which the media
+        validator checks as a cross-field invariant.
+        The length keywords restate what the pattern implies: a validator whose
+        `pattern` is a substring search must still refuse the 42nd character.
+      type: string
+      minLength: 41
+      maxLength: 41
+      pattern: '^[0-9a-f]{32}-[0-9a-f]{8}$'
+    TokenId:
+      description: Opaque backend token identifier.
+      type: string
+      minLength: 1
+      maxLength: 64
+    TokenSecret:
+      description: 32 random bytes base64url without padding, returned once.
+      type: string
+      minLength: 43
+      maxLength: 43
+      pattern: '^[A-Za-z0-9_-]{43}$'
+    Uuid:
+      description: Canonical lowercase UUID.
+      type: string
+      minLength: 36
+      maxLength: 36
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    UploadId:
+      description: Opaque upload identifier.
+      type: string
+      minLength: 1
+      maxLength: 64
+    JobId:
+      description: Opaque job identifier.
+      type: string
+      minLength: 1
+      maxLength: 64
+    DerivativeId:
+      description: Opaque derivative identifier.
+      type: string
+      minLength: 1
+      maxLength: 64
+    Rfc3339UtcMs:
+      description: RFC3339 UTC timestamp with millisecond precision and trailing Z.
+      type: string
+      format: date-time
+      minLength: 24
+      maxLength: 24
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+    Sha256:
+      description: >-
+        SHA-256 over the exact file bytes. The length keywords restate what the
+        pattern already implies here, so a generated client refuses a digest with a
+        stray byte rather than comparing something that was never a digest.
+      type: string
+      minLength: 64
+      maxLength: 64
+      pattern: '^[0-9a-f]{64}$'
+    ClipFileName:
+      description: The two file names of the original recording format.
+      enum: [video.mjpg, frames.jsonl]
+    UInt53:
+      description: Nonnegative integer representable exactly in JSON numbers.
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+    VersionedRequest:
+      description: Control request body carrying nothing but the version.
+      type: object
+      additionalProperties: false
+      required: [v]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+    Error:
+      description: >-
+        Single reusable error envelope, identical to the device contract. Clients
+        branch on `code`; `message` is display-safe and never exposes secrets,
+        paths, FFmpeg command lines or raw internal errors.
+      type: object
+      additionalProperties: false
+      required: [v, error]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable, request_id]
+      properties:
+        code:
+          description: >-
+            Stable machine code. The spec names STORAGE_FULL, CLIP_ID_COLLISION,
+            CLIP_PROTECTED and CURSOR_EXPIRED for this surface and assigns no
+            closed set, so the enum stays open; consumers must tolerate unknown
+            codes and branch on status for the unnamed generic rejections listed
+            in contracts/README.md.
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{0,63}$'
+        message:
+          type: string
+          minLength: 1
+          maxLength: 512
+        retryable:
+          type: boolean
+        request_id:
+          description: Opaque correlation id, never a secret or a path.
+          type: string
+          minLength: 1
+          maxLength: 128
+    TokenScope:
+      description: The two scoped backend token kinds, distinct from camera tokens.
+      enum: [owner, device-upload]
+    CreateTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [v, scope]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        scope:
+          $ref: '#/components/schemas/TokenScope'
+        device_id:
+          description: >-
+            Optional binding of a device-upload token to one device. The spec
+            requires that scoping but names no field, so this name is an
+            illustrative optional choice (contracts/README.md).
+          $ref: '#/components/schemas/DeviceId'
+    CreateTokenResponse:
+      type: object
+      required: [v, token_id, token, scope]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        token_id:
+          $ref: '#/components/schemas/TokenId'
+        token:
+          $ref: '#/components/schemas/TokenSecret'
+        scope:
+          $ref: '#/components/schemas/TokenScope'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+    RegisterDeviceRequest:
+      type: object
+      additionalProperties: false
+      required: [v, device_id, label]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        label:
+          type: string
+          minLength: 1
+          maxLength: 120
+    DeviceRecord:
+      type: object
+      required: [v, device_id, label]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        label:
+          type: string
+          minLength: 1
+          maxLength: 120
+    DevicesPage:
+      type: object
+      required: [v, items, next_cursor]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/DeviceRecord'
+        next_cursor:
+          type: ['string', 'null']
+          maxLength: 256
+    ManifestSummary:
+      description: >-
+        Original-manifest summary shown in catalogs. The spec requires a summary
+        but names no fields, so every key is optional and additionalProperties
+        stays open; nothing here may be treated as the authoritative manifest.
+      type: object
+      properties:
+        duration_us:
+          type: integer
+          minimum: 1
+          maximum: 120000000
+        frame_count:
+          type: integer
+          minimum: 1
+          maximum: 3600
+        start_utc:
+          type: ['string', 'null']
+          format: date-time
+          minLength: 24
+          maxLength: 24
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+        clock_source:
+          enum: [unknown, phone, sntp]
+        close_reason:
+          $ref: '#/components/schemas/CloseReason'
+        recovered:
+          type: boolean
+        profile:
+          $ref: '#/components/schemas/RecordingProfile'
+    BackendClipSummary:
+      type: object
+      required: [device_id, clip_id]
+      properties:
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        clip_id:
+          $ref: '#/components/schemas/ClipId'
+        start_utc:
+          type: ['string', 'null']
+          format: date-time
+          minLength: 24
+          maxLength: 24
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+        duration_us:
+          type: integer
+          minimum: 1
+          maximum: 120000000
+        frame_count:
+          type: integer
+          minimum: 1
+          maximum: 3600
+        bytes:
+          $ref: '#/components/schemas/UInt53'
+        recovered:
+          type: boolean
+        manifest_summary:
+          $ref: '#/components/schemas/ManifestSummary'
+    BackendClipsPage:
+      type: object
+      required: [v, items, next_cursor]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/BackendClipSummary'
+        next_cursor:
+          type: ['string', 'null']
+          maxLength: 256
+    IntegrityState:
+      description: >-
+        Integrity state of a stored original, using the media contract's
+        quarantine/unavailable vocabulary.
+      enum: [verified, quarantined, unavailable]
+    StoredClip:
+      description: >-
+        The stored clip: the original manifest, the server-side upload time, the
+        integrity state and derivative metadata. The manifest hash is computed by
+        the backend and is never self-embedded.
+      type: object
+      required: [v, device_id, clip_id, manifest, uploaded_at, integrity_state, derivatives]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        clip_id:
+          $ref: '#/components/schemas/ClipId'
+        manifest:
+          $ref: '#/components/schemas/Manifest'
+        uploaded_at:
+          $ref: '#/components/schemas/Rfc3339UtcMs'
+        integrity_state:
+          $ref: '#/components/schemas/IntegrityState'
+        derivatives:
+          type: array
+          items:
+            $ref: '#/components/schemas/DerivativeSummary'
+    DeletingResponse:
+      type: object
+      required: [v, state]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        state:
+          type: string
+          const: deleting
+    ManifestBase64Url:
+      description: >-
+        Unpadded base64url of the exact UTF-8 manifest.json bytes. Decoded length
+        must be at most 16,384 bytes and the whole encoded request body must fit
+        32,768 bytes; both are validator invariants because JSON Schema cannot
+        bound a decoded value, and both are checked before any allocation.
+      type: string
+      pattern: '^[A-Za-z0-9_-]+$'
+    CreateUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [v, manifest_base64url]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        manifest_base64url:
+          $ref: '#/components/schemas/ManifestBase64Url'
+    UploadState:
+      description: >-
+        `receiving` and `stored` are the states the spec names; `expired` names the
+        documented 24 h inactivity expiry that makes a later request 410.
+      enum: [receiving, stored, expired]
+    UploadOffsets:
+      description: >-
+        Committed byte offsets of the two streamed files, keyed by the exact media
+        file names.
+      type: object
+      additionalProperties: false
+      required: [video.mjpg, frames.jsonl]
+      properties:
+        video.mjpg:
+          $ref: '#/components/schemas/UInt53'
+        frames.jsonl:
+          $ref: '#/components/schemas/UInt53'
+    UploadCreated:
+      type: object
+      required: [v, upload_id, state, offsets, expires_in_s]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        upload_id:
+          $ref: '#/components/schemas/UploadId'
+        state:
+          type: string
+          const: receiving
+        offsets:
+          $ref: '#/components/schemas/UploadOffsets'
+        expires_in_s:
+          type: integer
+          const: 86400
+    UploadCommitted:
+      type: object
+      required: [v, clip_id, state]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        clip_id:
+          $ref: '#/components/schemas/ClipId'
+        state:
+          type: string
+          const: stored
+    UploadDetail:
+      description: >-
+        `expires_at` is the documented 24 h inactivity deadline interfaces.md §8
+        step 5 promises this response reports: a `receiving` detail must carry it
+        non-null, because a client recovering an upload after a restart can only
+        learn when the session stops being accepted from this member. A `stored`
+        detail has no live deadline left to report, so it may omit the member or
+        send it as null. This 200 names only a live (`receiving`) or committed
+        (`stored`) session: interfaces.md §8 step 5 gives an expired session a
+        410 instead (corpus `upload-get-response-410-expired`), so `state`
+        narrows the shared enum to the two live answers.
+      type: object
+      required: [v, upload_id, state, offsets]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        upload_id:
+          $ref: '#/components/schemas/UploadId'
+        state:
+          allOf:
+            - $ref: '#/components/schemas/UploadState'
+            - enum: [receiving, stored]
+        offsets:
+          $ref: '#/components/schemas/UploadOffsets'
+        expires_at:
+          type: ['string', 'null']
+          format: date-time
+          minLength: 24
+          maxLength: 24
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+      allOf:
+        - if:
+            required: [state]
+            properties:
+              state:
+                const: receiving
+          then:
+            required: [expires_at]
+            properties:
+              expires_at:
+                type: string
+    BackendEventRequest:
+      type: object
+      additionalProperties: false
+      required: [v, event_id, device_id, clip_ids, label]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        event_id:
+          $ref: '#/components/schemas/Uuid'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        clip_ids:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ClipId'
+        label:
+          type: string
+          minLength: 1
+          maxLength: 120
+    BackendEventRecord:
+      type: object
+      required: [v, event_id, device_id, clip_ids, label]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        event_id:
+          $ref: '#/components/schemas/Uuid'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        clip_ids:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ClipId'
+        label:
+          type: string
+          minLength: 1
+          maxLength: 120
+    BackendEventsPage:
+      type: object
+      required: [v, items, next_cursor]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/BackendEventRecord'
+        next_cursor:
+          type: ['string', 'null']
+          maxLength: 256
+    JobType:
+      description: The only two job types.
+      enum: [transcode, stabilize]
+    JobState:
+      description: >-
+        Job lifecycle states. Stale running jobs become interrupted on restart and
+        a bounded retry starts a new attempt without changing the original.
+      enum:
+        - queued
+        - running
+        - cancel_requested
+        - succeeded
+        - failed
+        - cancelled
+        - interrupted
+    JobPreset:
+      description: >-
+        Approved preset name. The spec requires an approved-preset enum but names
+        no values, so the name stays an open bounded string and an implementation
+        must enforce its own configured enum
+        (contracts/README.md, "Illustrative choices").
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'
+    ErrorCode:
+      description: >-
+        Stable machine-readable job failure code. The spec assigns no value set, so
+        the pattern stays open and consumers must tolerate unknown codes.
+      type: ['string', 'null']
+      pattern: '^$|^[A-Z][A-Z0-9_]{0,63}$'
+    CreateJobRequest:
+      type: object
+      additionalProperties: false
+      required: [v, device_id, clip_id, type, preset]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        clip_id:
+          $ref: '#/components/schemas/ClipId'
+        type:
+          $ref: '#/components/schemas/JobType'
+        preset:
+          $ref: '#/components/schemas/JobPreset'
+    JobRecord:
+      description: >-
+        `progress` is null whenever no real measurement exists; a fabricated
+        estimate is a contract violation. A result is `succeeded` only after output
+        validation and durable publication.
+      type: object
+      required: [v, job_id, state, progress, error_code, derivative_id]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        job_id:
+          $ref: '#/components/schemas/JobId'
+        state:
+          $ref: '#/components/schemas/JobState'
+        progress:
+          type: ['number', 'null']
+          minimum: 0
+          maximum: 1
+        error_code:
+          $ref: '#/components/schemas/ErrorCode'
+        derivative_id:
+          type: ['string', 'null']
+          minLength: 1
+          maxLength: 64
+    JobCancellation:
+      description: >-
+        Accepted cancellation request; the job moves to `cancel_requested` while
+        stopping and reaches a terminal state only after child cleanup.
+      type: object
+      required: [v, state]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        state:
+          type: string
+          const: cancel_requested
+    CropRegion:
+      description: >-
+        Crop applied to a derivative, in source pixels. The spec requires a crop to
+        be recorded but names no shape, so this rectangle is the documented
+        illustrative choice.
+      type: object
+      additionalProperties: false
+      required: [x, y, width, height]
+      properties:
+        x:
+          $ref: '#/components/schemas/UInt53'
+        y:
+          $ref: '#/components/schemas/UInt53'
+        width:
+          type: integer
+          minimum: 1
+          maximum: 1600
+        height:
+          type: integer
+          minimum: 1
+          maximum: 1600
+    DerivativeParams:
+      description: >-
+        Encoder parameters used for this derivative. Free-form by design: the spec
+        requires parameters to be recorded but not their names.
+      type: object
+    DerivativeOriginalHashes:
+      description: SHA-256 of each original file the derivative was built from.
+      type: object
+      additionalProperties: false
+      required: [video.mjpg, frames.jsonl]
+      properties:
+        video.mjpg:
+          $ref: '#/components/schemas/Sha256'
+        frames.jsonl:
+          $ref: '#/components/schemas/Sha256'
+    DerivativeSummary:
+      type: object
+      required: [derivative_id, type, preset, sha256]
+      properties:
+        derivative_id:
+          $ref: '#/components/schemas/DerivativeId'
+        type:
+          $ref: '#/components/schemas/JobType'
+        preset:
+          $ref: '#/components/schemas/JobPreset'
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+        output:
+          $ref: '#/components/schemas/DerivativeOutput'
+    DerivativeOutput:
+      description: Output dimensions of a derivative.
+      type: object
+      additionalProperties: false
+      required: [width, height]
+      properties:
+        width:
+          type: integer
+          minimum: 1
+          maximum: 1600
+        height:
+          type: integer
+          minimum: 1
+          maximum: 1600
+    DerivativeRecord:
+      description: >-
+        A derivative records the original hashes, encoder and filter versions,
+        parameters, output dimensions, crop and its own hash, so any evaluation can
+        be reproduced from this record alone.
+      type: object
+      required:
+        - v
+        - derivative_id
+        - device_id
+        - clip_id
+        - job_id
+        - type
+        - preset
+        - encoder_version
+        - filter_version
+        - params
+        - output
+        - crop
+        - original_hashes
+        - sha256
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        derivative_id:
+          $ref: '#/components/schemas/DerivativeId'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        clip_id:
+          $ref: '#/components/schemas/ClipId'
+        job_id:
+          $ref: '#/components/schemas/JobId'
+        type:
+          $ref: '#/components/schemas/JobType'
+        preset:
+          $ref: '#/components/schemas/JobPreset'
+        encoder_version:
+          type: string
+          minLength: 1
+          maxLength: 128
+        filter_version:
+          type: string
+          minLength: 1
+          maxLength: 128
+        params:
+          $ref: '#/components/schemas/DerivativeParams'
+        output:
+          $ref: '#/components/schemas/DerivativeOutput'
+        crop:
+          $ref: '#/components/schemas/CropRegion'
+        original_hashes:
+          $ref: '#/components/schemas/DerivativeOriginalHashes'
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+    HealthRecord:
+      description: >-
+        Minimal health body. The spec asks for minimal health only and names no
+        fields, so only `v` is required; `status` is an optional display string and
+        readiness failures are carried by the 503 status.
+      type: object
+      required: [v]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        status:
+          type: string
+          minLength: 1
+          maxLength: 32
+    RecordingProfile:
+      description: Recording profile mirrored from the media contract bounds.
+      type: object
+      additionalProperties: false
+      required: [width, height, nominal_fps, jpeg_quality]
+      properties:
+        width:
+          type: integer
+          minimum: 1
+          maximum: 1600
+        height:
+          type: integer
+          minimum: 1
+          maximum: 1600
+        nominal_fps:
+          type: integer
+          minimum: 1
+          maximum: 30
+        jpeg_quality:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+    CloseReason:
+      description: Close cause of a finalized segment.
+      enum:
+        - duration
+        - size
+        - settings
+        - clock_change
+        - shutdown
+        - storage_fault
+        - recovery
+        - ota
+    Manifest:
+      description: >-
+        Byte-for-byte mirror of contracts/media-v1/manifest.schema.json (the
+        validator fails if the two ever disagree), carried unchanged through
+        ingestion so exact original bytes are preserved.
+      type: object
+      additionalProperties: false
+      required:
+        - v
+        - device_id
+        - boot_id
+        - clip_id
+        - capture_order
+        - firmware_version
+        - hardware_revision
+        - profile
+        - clock
+        - start_boot_us
+        - duration_us
+        - frame_count
+        - dropped_frames
+        - close_reason
+        - recovered
+        - files
+      properties:
+        v:
+          const: 1
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        boot_id:
+          $ref: '#/components/schemas/BootId'
+        clip_id:
+          $ref: '#/components/schemas/ClipId'
+        capture_order:
+          $ref: '#/components/schemas/UInt53'
+        firmware_version:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        hardware_revision:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        profile:
+          $ref: '#/components/schemas/RecordingProfile'
+        clock:
+          $ref: '#/components/schemas/ManifestClock'
+        start_boot_us:
+          $ref: '#/components/schemas/UInt53'
+        duration_us:
+          type: integer
+          minimum: 1
+          maximum: 120000000
+        frame_count:
+          type: integer
+          minimum: 1
+          maximum: 3600
+        dropped_frames:
+          $ref: '#/components/schemas/UInt53'
+        close_reason:
+          $ref: '#/components/schemas/CloseReason'
+        recovered:
+          type: boolean
+        files:
+          type: object
+          additionalProperties: false
+          required: [video.mjpg, frames.jsonl]
+          properties:
+            video.mjpg:
+              $ref: '#/components/schemas/ManifestFile'
+            frames.jsonl:
+              $ref: '#/components/schemas/ManifestIndexFile'
+    BootId:
+      description: 32 random lowercase hexadecimal characters per boot.
+      type: string
+      minLength: 32
+      maxLength: 32
+      pattern: '^[0-9a-f]{32}$'
+    ManifestFile:
+      type: object
+      additionalProperties: false
+      required: [bytes, sha256]
+      properties:
+        bytes:
+          type: integer
+          minimum: 1
+          maximum: 268435456
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+    ManifestIndexFile:
+      description: >-
+        The frames.jsonl entry of Manifest: media-format.md section 2 bounds the
+        index at 1,843,200 bytes, far below the payload ceiling ManifestFile states.
+      type: object
+      additionalProperties: false
+      required: [bytes, sha256]
+      properties:
+        bytes:
+          type: integer
+          minimum: 1
+          maximum: 1843200
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+    ManifestClock:
+      description: >-
+        Null-ness pairing with `source` is a media-validator invariant, not a
+        schema rule, so that violations report a stable code.
+      type: object
+      additionalProperties: false
+      required: [source, start_utc, uncertainty_ms]
+      properties:
+        source:
+          enum: [unknown, phone, sntp]
+        start_utc:
+          type: ['string', 'null']
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+        uncertainty_ms:
+          type: ['integer', 'null']
+          minimum: 0
+          maximum: 9007199254740991

@@ -1,0 +1,62 @@
+# vdog contract checks (Stage 0.6, plan 0.6-contracts-pr3-review-fixes)
+#
+# Security posture, identical to firmware-pr.yml:
+#   * top level permissions are `contents: read` ONLY - this job publishes nothing;
+#   * every third-party action is pinned to a full commit SHA with the resolved
+#     commit recorded in the comment beside it (re-resolve deliberately, never
+#     auto-follow tags);
+#   * checkouts never persist credentials;
+#   * no `pull_request_target`, no privileged `workflow_run`, no artifact promotion.
+#
+# The check runs on the immutable PR head commit (CI-02). Deliberately NO `paths:`
+# filter, following the repo's own documented CI-01 precedent in firmware-pr.yml: a
+# required check that stays pending because a PR touched none of a filter's patterns
+# is a check that blocks the merge it was added to certify. The suite is offline,
+# needs no device, and finishes in seconds, so running it on every PR is the cheaper
+# failure mode.
+#
+# The two commands below are the ones documented in tools/README.md and are run
+# verbatim, from the repository root, on the qualified interpreter. No flags are
+# added, so a green check means exactly what a green local run means.
+#
+# Branch protection: the stable required-check name is `contracts-validation`.
+
+name: Contracts PR
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contracts-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts-validation:
+    name: contracts-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the PR head commit
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+
+      - name: Validate the committed contract tree
+        run: |
+          uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
+            python tools/validate_contracts.py
+
+      - name: Run the contract test suite
+        run: |
+          uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
+            pytest tools/contracts/tests

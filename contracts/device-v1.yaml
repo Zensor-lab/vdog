@@ -1,0 +1,1572 @@
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+info:
+  title: vdog local device API v1
+  version: 1.0.0
+  description: |
+    Normative local (LAN/SoftAP) control-plane contract for the vdog camera,
+    frozen from docs/specs/interfaces.md sections 1-6 in package 0.6.
+
+    Conventions that apply to every operation in this file:
+
+    * Every JSON body is UTF-8 and carries top-level `v: 1` on both request and
+      response objects; unknown major versions fail.
+    * Write-side (request) objects reject unknown fields; readers must tolerate
+      unknown response fields, so response objects are deliberately permissive.
+    * Control-plane JSON request bodies are at most 16 KiB.
+    * Errors use the single reusable `Error` envelope; clients branch on the
+      stable `code`, never on `message`.
+    * Every route except `POST /pair` requires `Authorization: Bearer <token>`
+      after pinned TLS, including preview and file transfer.
+    * The signed OTA envelope is intentionally not frozen here; see
+      `POST /ota`.
+  contact:
+    name: vdog contract owner
+    url: https://vdog.local/contracts
+servers:
+  - url: https://vdog.local/api/v1
+    description: Documented AP/LAN address of the camera behind pinned TLS.
+security:
+  - bearerAuth: []
+tags:
+  - name: provisioning
+  - name: status
+  - name: catalog
+  - name: transfer
+  - name: ota
+  - name: events
+paths:
+  /pair:
+    post:
+      tags: [provisioning]
+      operationId: pair
+      summary: Claim device ownership inside a physical-button window
+      security: []
+      description: |
+        A qualified physical button press opens a 120 s claim window. The setup
+        secret is compared in constant time and one owner token exists initially.
+        Failures are rate limited to 5 per minute. Pairing never replaces an
+        existing owner token implicitly and never transmits Wi-Fi credentials in
+        plaintext.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PairRequest'
+      responses:
+        '201':
+          description: Ownership claimed; the owner token is returned once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          # interfaces.md §1 reserves 403 for "wrong privilege/physical window", and §2
+          # keeps the claim available only while that window is open, so a pairing
+          # attempt outside it is a refusal to act, not a malformed request.
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /tokens/revoke:
+    post:
+      tags: [provisioning]
+      operationId: revokeToken
+      summary: Revoke the caller's own token
+      description: |
+        The owner may revoke its own token; adding a second owner is outside v1.
+        Revoking the last token leaves ownership locked, so reclaiming requires
+        the deliberate physical ownership reset procedure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeTokenRequest'
+      responses:
+        '200':
+          description: Token revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeTokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /capabilities:
+    get:
+      tags: [status]
+      operationId: getCapabilities
+      summary: Report implemented features and applied resource limits
+      description: |
+        Reports implemented features only, never planned ones, and the actual
+        resource limits plus the applied protection ceiling. No fixed
+        retained-history claim is encoded here.
+      responses:
+        '200':
+          description: Capability report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /status:
+    get:
+      tags: [status]
+      operationId: getStatus
+      summary: Single authoritative device status snapshot
+      description: |
+        `battery_mv` and `external_power` are null when not measurable and a
+        voltage never implies a battery percentage. Storage totals are zero only
+        for a measured zero and null while unmounted. `recording.clip_id` is null
+        while inactive. `retained_duration_s` is the sum of valid unprotected
+        recorded durations, not newest-minus-oldest UTC. Optional UI state never
+        implies that recording is healthy.
+      responses:
+        '200':
+          description: Status snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /settings:
+    get:
+      tags: [status]
+      operationId: getSettings
+      summary: Read the current settings and their revision
+      description: Secrets are write-only; no password is ever returned.
+      responses:
+        '200':
+          description: Current settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [status]
+      operationId: putSettings
+      summary: Compare-and-swap settings update
+      description: |
+        Writes are compare-and-swap on `expected_revision`; a stale write returns
+        409 `REVISION_CONFLICT` together with the current revision. An unsupported
+        recording profile is rejected with 400. Recording changes take effect only
+        at the next segment boundary. A disruptive network change is acknowledged
+        before the scheduled reconnect, so the app must reconnect by ID and
+        certificate pin.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutSettingsRequest'
+      responses:
+        '200':
+          description: Settings accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PutSettingsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: >-
+            `expected_revision` is stale. The answer names the revision the device
+            actually holds, so a client that lost the previous 200 can rebase its edit
+            instead of guessing; every other 409 of this contract answers with the
+            shared envelope alone.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsRevisionConflictResponse'
+  /time:
+    post:
+      tags: [status]
+      operationId: postTime
+      summary: Correct the device UTC mapping
+      description: |
+        The current segment is closed before the UTC mapping changes. Phone time
+        is an estimate, never trusted proof, and unknown UTC stays unknown until
+        a correction arrives.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TimeRequest'
+      responses:
+        '200':
+          description: Correction applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /preview:
+    get:
+      tags: [status]
+      operationId: getPreview
+      summary: Live MJPEG preview stream
+      description: |
+        `multipart/x-mixed-replace; boundary=frame`. Each part is one JPEG with
+        its own `Content-Length` and an `X-Capture-Boot-Us` header. At most one
+        client is served at up to 2 FPS. The stream may close with 503 or drop
+        under recording pressure and must release camera buffers promptly. Part
+        bodies are deliberately not schema-validated: the payload is JPEG image
+        data whose bounds are owned by the media contract.
+      responses:
+        '200':
+          description: Multipart MJPEG stream, one JPEG part per frame.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            # The key is the whole `Content-Type` the operation sends, boundary
+            # parameter included, exactly as the description above and interfaces.md §3
+            # state it: a consumer that generated its parser from the parameterless form
+            # would be looking for the wrong multipart subtype on the wire.
+            'multipart/x-mixed-replace; boundary=frame':
+              schema:
+                type: string
+                description: >-
+                  Opaque multipart stream body. Part framing, per-part
+                  Content-Length and X-Capture-Boot-Us are described above and
+                  are not JSON-schema validated.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /clips:
+    get:
+      tags: [catalog]
+      operationId: listClips
+      summary: Cursor page of finalized valid clips
+      description: |
+        Finalized, valid clips only. Cursors are opaque and bounded to 256
+        characters; `limit` defaults to 50 and never exceeds 100. An expired
+        cursor returns 409 `CURSOR_EXPIRED` and the listing is restarted. There is
+        no stable-catalogue assumption between pages, so clients deduplicate by
+        immutable IDs.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/LimitDevice'
+      responses:
+        '200':
+          description: One page of clip summaries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClipsPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /clips/{clip_id}/manifest:
+    get:
+      tags: [catalog]
+      operationId: getClipManifest
+      summary: Exact immutable manifest bytes as JSON
+      description: >-
+        Returns the media-contract completion manifest unchanged; the catalog
+        exposes a clip only after this record validated.
+      parameters:
+        - $ref: '#/components/parameters/ClipId'
+      responses:
+        '200':
+          description: The manifest exactly as recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Manifest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+  /clips/{clip_id}/leases:
+    post:
+      tags: [transfer]
+      operationId: createLease
+      summary: Take a download lease on one clip
+      description: |
+        A lease is not a pin. The device holds at most two clip leases and one
+        downloading client; the default lease is 300 s. A new lease may be refused
+        when granting it would stop recording from meeting free-space thresholds
+        (409 `LEASE_LIMIT`). Deletion and lease grant are serialized, so there is
+        no grant-versus-prune race.
+      parameters:
+        - $ref: '#/components/parameters/ClipId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VersionedRequest'
+      responses:
+        '201':
+          description: Lease granted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaseResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/Gone'
+  /leases/{lease_id}:
+    put:
+      tags: [transfer]
+      operationId: renewLease
+      summary: Renew an existing lease
+      description: >-
+        Renewal may be denied with 409 `STORAGE_PRESSURE`. Lease expiry is checked
+        before every response chunk; an open HTTP response never extends a lease.
+      parameters:
+        - $ref: '#/components/parameters/LeaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VersionedRequest'
+      responses:
+        '200':
+          description: Lease renewed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaseResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [transfer]
+      operationId: deleteLease
+      summary: Release a lease (idempotent)
+      parameters:
+        - $ref: '#/components/parameters/LeaseId'
+      responses:
+        '204':
+          description: Lease released; repeating the call is not an error.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /clips/{clip_id}/files/{name}:
+    get:
+      tags: [transfer]
+      operationId: getClipFile
+      summary: Range download of one immutable clip file
+      description: |
+        `name` is exactly `video.mjpg` or `frames.jsonl` and `X-Clip-Lease` is
+        required. Bytes are immutable, so the ETag is the quoted SHA-256 of the
+        whole file and `Accept-Ranges` is always `bytes`. Only a single
+        `bytes=start-end` or `bytes=start-` range is supported; multipart,
+        suffix and malformed ranges are rejected with 416, and so is a range
+        whose endpoint ordering or start makes it unsatisfiable for this file (a
+        416 may then describe the file with `Content-Range: bytes */<total>`). A
+        request without `Range` returns 200. Resume requires `If-Match` with the
+        original ETag; a mismatch returns 412 `CONTENT_CHANGED`. A lease that
+        expired before the response was started is refused with 409
+        `LEASE_EXPIRED` as a complete error body, because nothing has been
+        streamed yet. Clients write a temporary file, store offset and
+        manifest, re-acquire a lease when needed and verify the full SHA-256
+        before renaming.
+      parameters:
+        - $ref: '#/components/parameters/ClipId'
+        - $ref: '#/components/parameters/ClipFileName'
+        - $ref: '#/components/parameters/ClipLeaseHeader'
+        - $ref: '#/components/parameters/Range'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Whole file.
+          headers:
+            Accept-Ranges:
+              $ref: '#/components/headers/AcceptRanges'
+            ETag:
+              $ref: '#/components/headers/ETagSha256'
+            Content-Length:
+              $ref: '#/components/headers/ContentLength'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: >-
+                  Exact bytes of the named clip file; the media contract owns
+                  their internal validation.
+        '206':
+          description: Requested single byte range.
+          headers:
+            Accept-Ranges:
+              $ref: '#/components/headers/AcceptRanges'
+            Content-Range:
+              $ref: '#/components/headers/ContentRange'
+            ETag:
+              $ref: '#/components/headers/ETagSha256'
+            Content-Length:
+              $ref: '#/components/headers/ContentLength'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '416':
+          $ref: '#/components/responses/RangeNotSatisfiable'
+  /ota:
+    post:
+      tags: [ota]
+      operationId: postOta
+      summary: Stage one signed firmware envelope
+      x-deferred: '2.10'
+      description: |
+        Authenticated `application/octet-stream` upload of exactly one signed
+        firmware envelope; no arbitrary URL is ever fetched.
+
+        DEFERRED: the envelope encoding and `contracts/ota-v1.json` are defined in
+        package 2.10 (signed envelope version, product/hardware compatibility,
+        firmware version, image length/SHA-256, signing-key ID, signature and
+        image, plus exact signature coverage). Consumers must not guess them.
+        This operation intentionally carries no request schema.
+
+        Successful staging returns 202 `reboot_pending`. Rejections before reboot
+        close the partial inactive image, clear pending metadata and resume
+        recording on the current firmware.
+      requestBody:
+        required: true
+        description: >-
+          signed envelope; encoding and `contracts/ota-v1.json` deferred to
+          package 2.10; consumers must not guess
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: >-
+                Opaque signed envelope bytes. Deliberately unspecified until
+                package 2.10 freezes the encoding.
+      responses:
+        '202':
+          description: Image staged; reboot pending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OtaStageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /events:
+    post:
+      tags: [events]
+      operationId: createEvent
+      summary: Pin one or more finalized clips as an event
+      description: |
+        `event_id` is a client UUID and is idempotent for identical content;
+        different content under the same ID returns 409. The device computes the
+        newly protected bytes and then pins all requested clips atomically or
+        returns 409 `PROTECTION_QUOTA`. Maximum protected size is 2,000,000,000
+        bytes or the smaller configured safe-pool bound. A pin is not a transfer
+        lease and protection never retroactively restores an evicted clip.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceEventRequest'
+      responses:
+        '201':
+          description: Event pins applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceEventResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      tags: [events]
+      operationId: listEvents
+      summary: Cursor page of event metadata
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/LimitDevice'
+      responses:
+        '200':
+          description: One page of event metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceEventsPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /events/{event_id}:
+    delete:
+      tags: [events]
+      operationId: deleteEvent
+      summary: Remove one event's pins
+      description: >-
+        Only this event's pins are removed; clips pinned by other events stay
+        protected.
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      responses:
+        '204':
+          description: Event pins removed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: >-
+        32 random bytes base64url without padding, stored hashed on the device and
+        in OS secure storage on the phone, presented after pinned TLS.
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: >-
+        Opaque cursor from a previous page, at most 256 characters. An expired
+        cursor returns 409 CURSOR_EXPIRED and the listing restarts.
+      schema:
+        type: string
+        maxLength: 256
+    LimitDevice:
+      name: limit
+      in: query
+      required: false
+      description: Page size; defaults to 50 device items and never exceeds 100.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    ClipId:
+      name: clip_id
+      in: path
+      required: true
+      description: >-
+        `<boot_id>-<sequence>` with exactly eight lowercase hexadecimal digits.
+        Validated against this syntax before any path lookup; a caller-supplied
+        value never becomes a filesystem path.
+      schema:
+        $ref: '#/components/schemas/ClipId'
+    ClipFileName:
+      name: name
+      in: path
+      required: true
+      description: Exactly one of the two clip file names of the media contract.
+      schema:
+        $ref: '#/components/schemas/ClipFileName'
+    LeaseId:
+      name: lease_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/LeaseId'
+    EventId:
+      name: event_id
+      in: path
+      required: true
+      description: Client-generated UUID of a local event.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    ClipLeaseHeader:
+      name: X-Clip-Lease
+      in: header
+      required: true
+      description: Lease id authorizing this transfer.
+      schema:
+        $ref: '#/components/schemas/LeaseId'
+    Range:
+      name: Range
+      in: header
+      required: false
+      description: >-
+        A single `bytes=start-end` or `bytes=start-` range only. Multipart and
+        suffix ranges are rejected with 416.
+      schema:
+        type: string
+        pattern: '^bytes=[0-9]+(-[0-9]*)?$'
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: >-
+        Original ETag required on resume; a mismatch returns 412 CONTENT_CHANGED.
+      schema:
+        type: string
+  headers:
+    WwwAuthenticate:
+      description: >-
+        The bearer challenge RFC 9110 §15.5.2 requires on every 401, naming the
+        protection space the token was presented to. A bodyless HEAD refusal carries
+        it as well: what the method forbids is the body, not the header.
+      required: true
+      schema:
+        type: string
+        pattern: '^Bearer( realm="[^"]{1,100}")?$'
+      example: 'Bearer realm="vdog"'
+    AcceptRanges:
+      description: Byte ranges are always supported for immutable clip files.
+      required: true
+      schema:
+        type: string
+        const: bytes
+    ETagSha256:
+      description: The quoted SHA-256 of the whole file.
+      required: true
+      schema:
+        type: string
+        minLength: 66
+        maxLength: 66
+        pattern: '^"[0-9a-f]{64}"$'
+    ContentLength:
+      description: Exact number of body bytes in this response.
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+    ContentRange:
+      description: >-
+        `bytes <first>-<last>/<total>` for the single granted range.
+      required: true
+      schema:
+        type: string
+        pattern: '^bytes [0-9]+-[0-9]+/[0-9]+$'
+    ContentRangeUnsatisfied:
+      description: >-
+        `bytes */<total>` on the 416 that reports the current representation
+        length (RFC 9110 §14.4, §15.5.17).
+      schema:
+        type: string
+        pattern: '^bytes \*/[0-9]+$'
+    CacheControlNoStore:
+      description: Live preview parts are never cached.
+      schema:
+        type: string
+        const: no-store
+  responses:
+    BadRequest:
+      description: Malformed request or out-of-range value.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      headers:
+        WWW-Authenticate:
+          $ref: '#/components/headers/WwwAuthenticate'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Wrong privilege or physical access window.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource was never known.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: State, revision, cursor or offset conflict.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Gone:
+      description: Known evicted clip.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PayloadTooLarge:
+      description: Bound exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RangeNotSatisfiable:
+      description: Invalid byte range; only a single range is supported.
+      headers:
+        Content-Range:
+          $ref: '#/components/headers/ContentRangeUnsatisfied'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PreconditionFailed:
+      description: ETag mismatch, `CONTENT_CHANGED`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnprocessableEntity:
+      description: Integrity, schema or media failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: Rate limited; honour `Retry-After` when present.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            minimum: 0
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServiceUnavailable:
+      description: Temporarily unavailable; honour `Retry-After` when present.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            minimum: 0
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Version:
+      description: Contract major version; unknown major versions fail.
+      type: integer
+      const: 1
+    DeviceId:
+      description: 32 lowercase hexadecimal characters provisioned once.
+      type: string
+      minLength: 32
+      maxLength: 32
+      pattern: '^[0-9a-f]{32}$'
+    BootId:
+      description: 32 random lowercase hexadecimal characters per boot.
+      type: string
+      minLength: 32
+      maxLength: 32
+      pattern: '^[0-9a-f]{32}$'
+    ClipId:
+      description: >-
+        `<boot_id>-<sequence>`; the eight-digit sequence starts at zero and the
+        prefix equals boot_id (a cross-field invariant of the media validator).
+        The length keywords restate what the pattern implies: a validator whose
+        `pattern` is a substring search must still refuse the 42nd character.
+      type: string
+      minLength: 41
+      maxLength: 41
+      pattern: '^[0-9a-f]{32}-[0-9a-f]{8}$'
+    LeaseId:
+      description: Opaque lease identifier issued by this device.
+      type: string
+      minLength: 1
+      maxLength: 64
+    TokenId:
+      description: Opaque token identifier.
+      type: string
+      minLength: 1
+      maxLength: 64
+    AccessToken:
+      description: 32 random bytes base64url without padding.
+      type: string
+      minLength: 43
+      maxLength: 43
+      pattern: '^[A-Za-z0-9_-]{43}$'
+    SetupSecret:
+      description: 32 random bytes base64url without padding, from the QR payload.
+      type: string
+      minLength: 43
+      maxLength: 43
+      pattern: '^[A-Za-z0-9_-]{43}$'
+    Uuid:
+      description: Canonical lowercase UUID.
+      type: string
+      minLength: 36
+      maxLength: 36
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    Rfc3339UtcMs:
+      description: RFC3339 UTC timestamp with millisecond precision and trailing Z.
+      type: string
+      format: date-time
+      minLength: 24
+      maxLength: 24
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+    ClipFileName:
+      description: The two file names of the original recording format.
+      enum: [video.mjpg, frames.jsonl]
+    UInt53:
+      description: Nonnegative integer representable exactly in JSON numbers.
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+    VersionedRequest:
+      description: Control request body carrying nothing but the version.
+      type: object
+      additionalProperties: false
+      required: [v]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+    Error:
+      description: >-
+        Single reusable error envelope. Clients branch on `code`; `message` is
+        display-safe and never a localized branch point, and never exposes
+        secrets, paths, command lines or raw internal errors.
+      type: object
+      additionalProperties: false
+      required: [v, error]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable, request_id]
+      properties:
+        code:
+          description: >-
+            Stable machine code. The spec names STORAGE_FULL, ALREADY_OWNED,
+            CURSOR_EXPIRED, REVISION_CONFLICT, LEASE_LIMIT, STORAGE_PRESSURE,
+            LEASE_EXPIRED, CLIP_GONE, CONTENT_CHANGED and PROTECTION_QUOTA; the
+            enum stays open because the spec assigns no closed set, so consumers
+            must tolerate unknown codes and branch on status for the unnamed
+            generic rejections listed in contracts/README.md.
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{0,63}$'
+        message:
+          type: string
+          minLength: 1
+          maxLength: 512
+        retryable:
+          type: boolean
+        request_id:
+          description: Opaque correlation id, never a secret or a path.
+          type: string
+          minLength: 1
+          maxLength: 128
+    SettingsRevisionConflictResponse:
+      description: >-
+        The 409 of PUT /settings alone. interfaces.md states a stale compare-and-swap
+        returns `REVISION_CONFLICT` together with the current revision, so this answer
+        names it: without the member the client cannot tell what it lost the race to,
+        and the shared envelope's `additionalProperties: false` leaves nowhere else to
+        put it. `current_revision` carries exactly what `PutSettingsResponse.revision`
+        carries, because both name the device's revision counter.
+      type: object
+      additionalProperties: false
+      required: [v, error, current_revision]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+        current_revision:
+          $ref: '#/components/schemas/UInt53'
+    PairRequest:
+      type: object
+      additionalProperties: false
+      required: [v, setup_secret, client_name]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        setup_secret:
+          $ref: '#/components/schemas/SetupSecret'
+        client_name:
+          description: >-
+            Display name the phone offers for itself. The spec assigns no length,
+            so this bound is an illustrative choice recorded in
+            contracts/README.md.
+          type: string
+          minLength: 1
+          maxLength: 64
+    PairResponse:
+      type: object
+      required: [v, device_id, token_id, access_token]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        token_id:
+          $ref: '#/components/schemas/TokenId'
+        access_token:
+          $ref: '#/components/schemas/AccessToken'
+    RevokeTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [v, token_id]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        token_id:
+          $ref: '#/components/schemas/TokenId'
+    RevokeTokenResponse:
+      type: object
+      required: [v, revoked]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        revoked:
+          type: boolean
+          const: true
+    MediaVersions:
+      description: Media contract versions this build can read and write.
+      type: array
+      minItems: 1
+      uniqueItems: true
+      items:
+        type: integer
+        const: 1
+    Features:
+      description: >-
+        Implemented feature names only. Names are not enumerated by the spec, so
+        readers must tolerate unknown entries.
+      type: array
+      uniqueItems: true
+      items:
+        type: string
+        minLength: 1
+        maxLength: 64
+    CapabilityLimits:
+      description: >-
+        Applied resource limits. The spec requires that limits be reported and
+        that the inactive-slot maximum image size be discoverable here, but it
+        names no field names; every property is therefore optional and
+        additionalProperties stays open. See contracts/README.md.
+      type: object
+      properties:
+        inactive_slot_max_image_bytes:
+          $ref: '#/components/schemas/UInt53'
+        max_concurrent_downloading_clients:
+          type: integer
+          minimum: 0
+        max_clip_leases:
+          type: integer
+          minimum: 0
+        default_lease_s:
+          type: integer
+          minimum: 1
+        max_download_range_bytes:
+          $ref: '#/components/schemas/UInt53'
+        protected_max_bytes:
+          $ref: '#/components/schemas/UInt53'
+        protected_ceiling_bytes:
+          $ref: '#/components/schemas/UInt53'
+        max_index_line_bytes:
+          type: integer
+          minimum: 1
+        max_manifest_bytes:
+          type: integer
+          minimum: 1
+    CapabilitiesResponse:
+      type: object
+      required: [v, device_id, firmware_version, hardware_revision, media_versions, features, limits]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        firmware_version:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        hardware_revision:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        media_versions:
+          $ref: '#/components/schemas/MediaVersions'
+        features:
+          $ref: '#/components/schemas/Features'
+        limits:
+          $ref: '#/components/schemas/CapabilityLimits'
+    DeviceState:
+      description: Device lifecycle state. Optional UI state never implies health.
+      enum:
+        - booting
+        - recovering
+        - recording
+        - storage_fault
+        - camera_fault
+        - storage_full
+        - updating
+        - shutting_down
+    FaultCode:
+      description: >-
+        Nullable stable fault code. The spec defines at least NO_CARD,
+        UNSUPPORTED_FS, SD_IO, CAMERA_INIT, NO_EVICTABLE_SPACE, LOW_POWER and
+        RECOVERY_REQUIRED and expects more, so the set stays open.
+      type: ['string', 'null']
+      pattern: '^$|^[A-Z][A-Z0-9_]{0,63}$'
+    RecordingStatus:
+      type: object
+      required: [clip_id, frames, dropped_frames]
+      properties:
+        clip_id:
+          type: ['string', 'null']
+          minLength: 41
+          maxLength: 41
+          pattern: '^[0-9a-f]{32}-[0-9a-f]{8}$'
+        frames:
+          $ref: '#/components/schemas/UInt53'
+        dropped_frames:
+          $ref: '#/components/schemas/UInt53'
+    StorageStatus:
+      description: >-
+        Totals are zero only for a measured zero and null when unmounted, per
+        interfaces.md §4: a card that is not mounted has no capacity to measure, so
+        every total of an unmounted status is null — a number there, zero included,
+        would let a reader mistake an absent card for an empty or a full one. On a
+        mounted card, zero is a real measurement and stays legal.
+        `retained_duration_s` sums valid unprotected recorded durations.
+      type: object
+      required: [mounted, total_bytes, free_bytes, rolling_bytes, protected_bytes, retained_duration_s]
+      properties:
+        mounted:
+          type: boolean
+        total_bytes:
+          type: ['integer', 'null']
+          minimum: 0
+        free_bytes:
+          type: ['integer', 'null']
+          minimum: 0
+        rolling_bytes:
+          type: ['integer', 'null']
+          minimum: 0
+        protected_bytes:
+          type: ['integer', 'null']
+          minimum: 0
+        retained_duration_s:
+          type: ['integer', 'null']
+          minimum: 0
+      allOf:
+        - if:
+            required: [mounted]
+            properties:
+              mounted:
+                const: false
+          then:
+            properties:
+              total_bytes:
+                type: 'null'
+              free_bytes:
+                type: 'null'
+              rolling_bytes:
+                type: 'null'
+              protected_bytes:
+                type: 'null'
+              retained_duration_s:
+                type: 'null'
+    PowerStatus:
+      description: >-
+        Null when not measurable. Voltage never implies a battery percentage and
+        `external_power` only describes a measurable supply state; it never means
+        the pack is charging.
+      type: object
+      required: [battery_mv, external_power]
+      properties:
+        battery_mv:
+          type: ['integer', 'null']
+          minimum: 0
+        external_power:
+          type: ['boolean', 'null']
+    NetworkStatus:
+      type: object
+      required: [mode, connected]
+      properties:
+        mode:
+          enum: ["off", "ap", "sta"]
+        connected:
+          type: boolean
+    StatusResponse:
+      type: object
+      required:
+        - v
+        - device_id
+        - boot_id
+        - state
+        - fault_code
+        - uptime_ms
+        - recording
+        - storage
+        - power
+        - network
+        - settings_revision
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        boot_id:
+          $ref: '#/components/schemas/BootId'
+        state:
+          $ref: '#/components/schemas/DeviceState'
+        fault_code:
+          $ref: '#/components/schemas/FaultCode'
+        uptime_ms:
+          $ref: '#/components/schemas/UInt53'
+        recording:
+          $ref: '#/components/schemas/RecordingStatus'
+        storage:
+          $ref: '#/components/schemas/StorageStatus'
+        power:
+          $ref: '#/components/schemas/PowerStatus'
+        network:
+          $ref: '#/components/schemas/NetworkStatus'
+        settings_revision:
+          $ref: '#/components/schemas/UInt53'
+    RecordingProfile:
+      description: >-
+        Recording profile mirrors the media-contract profile: bounded dimensions,
+        nominal integer fps and the esp32-camera quality parameter.
+      type: object
+      additionalProperties: false
+      required: [width, height, nominal_fps, jpeg_quality]
+      properties:
+        width:
+          type: integer
+          minimum: 1
+          maximum: 1600
+        height:
+          type: integer
+          minimum: 1
+          maximum: 1600
+        nominal_fps:
+          type: integer
+          minimum: 1
+          maximum: 30
+        jpeg_quality:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+    NetworkSettingsRead:
+      description: >-
+        Read view of stored network settings. additionalProperties stays false
+        deliberately so no password field can ever appear in a settings response.
+      type: object
+      additionalProperties: false
+      required: [mode, ssid]
+      properties:
+        mode:
+          enum: ["off", "ap", "sta"]
+        ssid:
+          type: ['string', 'null']
+          maxLength: 32
+    NetworkSettingsWrite:
+      description: >-
+        Write view: secrets are write-only, so `password` may be sent but is never
+        returned. The SoftAP password a qualified provisioning step generates is
+        at least 16 characters; a station password follows the WPA2 minimum of 8.
+      type: object
+      additionalProperties: false
+      required: []
+      properties:
+        mode:
+          enum: ["off", "ap", "sta"]
+        ssid:
+          type: ['string', 'null']
+          maxLength: 32
+        password:
+          type: string
+          minLength: 8
+          maxLength: 63
+    SettingsResponse:
+      type: object
+      required: [v, revision, recording_profile, network, preview_enabled]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        revision:
+          $ref: '#/components/schemas/UInt53'
+        recording_profile:
+          $ref: '#/components/schemas/RecordingProfile'
+        network:
+          $ref: '#/components/schemas/NetworkSettingsRead'
+        preview_enabled:
+          type: boolean
+    PutSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [v, expected_revision]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        expected_revision:
+          $ref: '#/components/schemas/UInt53'
+        recording_profile:
+          $ref: '#/components/schemas/RecordingProfile'
+        network:
+          $ref: '#/components/schemas/NetworkSettingsWrite'
+        preview_enabled:
+          type: boolean
+    PutSettingsResponse:
+      description: >-
+        `effective_from_clip_id` is null when the accepted change affects no
+        future segment; recording changes apply only at a segment boundary.
+      type: object
+      required: [v, revision, effective_from_clip_id]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        revision:
+          $ref: '#/components/schemas/UInt53'
+        effective_from_clip_id:
+          type: ['string', 'null']
+          minLength: 41
+          maxLength: 41
+          pattern: '^[0-9a-f]{32}-[0-9a-f]{8}$'
+    TimeRequest:
+      type: object
+      additionalProperties: false
+      required: [v, utc, uncertainty_ms]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        utc:
+          $ref: '#/components/schemas/Rfc3339UtcMs'
+        uncertainty_ms:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+    TimeResponse:
+      type: object
+      required: [v, applied]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        applied:
+          type: boolean
+          const: true
+    ClipSummary:
+      description: >-
+        One finalized valid clip. `start_utc` is null while the clock source was
+        unknown.
+      type: object
+      required:
+        - clip_id
+        - start_utc
+        - duration_us
+        - frame_count
+        - bytes
+        - protected
+        - recovered
+      properties:
+        clip_id:
+          $ref: '#/components/schemas/ClipId'
+        start_utc:
+          type: ['string', 'null']
+          format: date-time
+          minLength: 24
+          maxLength: 24
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+        duration_us:
+          type: integer
+          minimum: 1
+          maximum: 120000000
+        frame_count:
+          type: integer
+          minimum: 1
+          maximum: 3600
+        bytes:
+          $ref: '#/components/schemas/UInt53'
+        protected:
+          type: boolean
+        recovered:
+          type: boolean
+    ClipsPage:
+      type: object
+      required: [v, items, next_cursor]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ClipSummary'
+        next_cursor:
+          type: ['string', 'null']
+          maxLength: 256
+    LeaseResponse:
+      description: >-
+        Default lease is 300 s. Expiry is checked before each response chunk and
+        an open response never extends a lease.
+      type: object
+      required: [v, lease_id, expires_in_s]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        lease_id:
+          $ref: '#/components/schemas/LeaseId'
+        expires_in_s:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 300
+    OtaStageResponse:
+      type: object
+      required: [v, state]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        state:
+          type: string
+          const: reboot_pending
+    DeviceEventRequest:
+      type: object
+      additionalProperties: false
+      required: [v, event_id, clip_ids, label]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        event_id:
+          $ref: '#/components/schemas/Uuid'
+        clip_ids:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ClipId'
+        label:
+          type: string
+          minLength: 1
+          maxLength: 120
+    DeviceEventResponse:
+      description: >-
+        `protected_bytes` is the device total after this event's pins were applied;
+        the spec requires newly protected bytes to be computed but names no field,
+        so it is optional (see contracts/README.md).
+      type: object
+      required: [v, event_id, clip_ids]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        event_id:
+          $ref: '#/components/schemas/Uuid'
+        clip_ids:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ClipId'
+        label:
+          type: string
+          minLength: 1
+          maxLength: 120
+        newly_protected_bytes:
+          $ref: '#/components/schemas/UInt53'
+        protected_bytes:
+          $ref: '#/components/schemas/UInt53'
+    DeviceEventsPage:
+      type: object
+      required: [v, items, next_cursor]
+      properties:
+        v:
+          $ref: '#/components/schemas/Version'
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/DeviceEventResponse'
+        next_cursor:
+          type: ['string', 'null']
+          maxLength: 256
+    Manifest:
+      description: >-
+        Byte-for-byte mirror of contracts/media-v1/manifest.schema.json (the
+        validator fails if the two ever disagree) and the exact response body of
+        GET /clips/{clip_id}/manifest.
+      type: object
+      additionalProperties: false
+      required:
+        - v
+        - device_id
+        - boot_id
+        - clip_id
+        - capture_order
+        - firmware_version
+        - hardware_revision
+        - profile
+        - clock
+        - start_boot_us
+        - duration_us
+        - frame_count
+        - dropped_frames
+        - close_reason
+        - recovered
+        - files
+      properties:
+        v:
+          const: 1
+        device_id:
+          $ref: '#/components/schemas/DeviceId'
+        boot_id:
+          $ref: '#/components/schemas/BootId'
+        clip_id:
+          $ref: '#/components/schemas/ClipId'
+        capture_order:
+          $ref: '#/components/schemas/UInt53'
+        firmware_version:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        hardware_revision:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        profile:
+          $ref: '#/components/schemas/RecordingProfile'
+        clock:
+          $ref: '#/components/schemas/ManifestClock'
+        start_boot_us:
+          $ref: '#/components/schemas/UInt53'
+        duration_us:
+          type: integer
+          minimum: 1
+          maximum: 120000000
+        frame_count:
+          type: integer
+          minimum: 1
+          maximum: 3600
+        dropped_frames:
+          $ref: '#/components/schemas/UInt53'
+        close_reason:
+          $ref: '#/components/schemas/CloseReason'
+        recovered:
+          type: boolean
+        files:
+          type: object
+          additionalProperties: false
+          required: [video.mjpg, frames.jsonl]
+          properties:
+            video.mjpg:
+              $ref: '#/components/schemas/ManifestFile'
+            frames.jsonl:
+              $ref: '#/components/schemas/ManifestIndexFile'
+    ManifestFile:
+      type: object
+      additionalProperties: false
+      required: [bytes, sha256]
+      properties:
+        bytes:
+          type: integer
+          minimum: 1
+          maximum: 268435456
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+    ManifestIndexFile:
+      description: >-
+        The frames.jsonl entry of Manifest: media-format.md section 2 bounds the
+        index at 1,843,200 bytes, far below the payload ceiling ManifestFile states.
+      type: object
+      additionalProperties: false
+      required: [bytes, sha256]
+      properties:
+        bytes:
+          type: integer
+          minimum: 1
+          maximum: 1843200
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+    ManifestClock:
+      description: >-
+        Null-ness pairing with `source` is a media-validator invariant, not a
+        schema rule, so that violations report a stable code.
+      type: object
+      additionalProperties: false
+      required: [source, start_utc, uncertainty_ms]
+      properties:
+        source:
+          enum: [unknown, phone, sntp]
+        start_utc:
+          type: ['string', 'null']
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+        uncertainty_ms:
+          type: ['integer', 'null']
+          minimum: 0
+          maximum: 9007199254740991
+    CloseReason:
+      description: Close cause of a finalized segment; recovered means recovery.
+      enum:
+        - duration
+        - size
+        - settings
+        - clock_change
+        - shutdown
+        - storage_fault
+        - recovery
+        - ota
+    Sha256:
+      description: >-
+        SHA-256 over the exact file bytes. The length keywords restate what the
+        pattern already implies here, so a generated client refuses a digest with a
+        stray byte rather than comparing something that was never a digest.
+      type: string
+      minLength: 64
+      maxLength: 64
+      pattern: '^[0-9a-f]{64}$'

@@ -1,0 +1,60 @@
+# vdog contract checks on main (Stage 0.6, plan 0.6-contracts-pr3-review-fixes)
+#
+# Push twin of contracts-pr.yml: same image, same pinned actions, same two
+# documented commands. Keeping the job body identical is the point — a check that
+# is green on a PR must mean the same thing once it is on main.
+#
+# Security posture, identical to firmware-main.yml:
+#   * top level permissions are `contents: read` ONLY - this job publishes nothing;
+#   * every third-party action is pinned to a full commit SHA, the same resolved
+#     commits contracts-pr.yml uses (re-resolve deliberately, never auto-follow
+#     tags);
+#   * checkouts never persist credentials;
+#   * no `pull_request_target`, no privileged `workflow_run`, no artifact promotion.
+#
+# Deliberately NO `paths:` filter, for the same documented CI-01 reason the PR twin
+# now gives and the one firmware-main.yml states for itself: `contracts-validation`
+# is a required check, and a required check that stays pending because an unrelated
+# commit did not touch the contract tree is a check that blocks the merge it was
+# added to certify. The run costs seconds and needs no network, no device and no
+# firmware toolchain.
+
+name: Contracts main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contracts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contracts-validation:
+    name: contracts-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: false
+
+      - name: Validate the committed contract tree
+        run: |
+          uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
+            python tools/validate_contracts.py
+
+      - name: Run the contract test suite
+        run: |
+          uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
+            pytest tools/contracts/tests

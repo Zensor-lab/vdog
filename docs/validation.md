@@ -1,7 +1,8 @@
 # Validation and evidence plan
 
 Status: updated 2026-11-21. Package 0.2 records firmware BUILD and portable
-HOST evidence in [toolchain](toolchain.md); Stage 0.9 round 2 adds the CI,
+HOST evidence in [toolchain](toolchain.md); package 0.6 records the media/API
+contract gate as HOST evidence in section 4; Stage 0.9 round 2 adds the CI,
 publish and prebuilt-installer HOST evidence in section 5. Device/app/backend/
 recording evidence and every hosted Actions run remain unverified. Documentation
 inspection supplies none of those runtime or deployment results.
@@ -77,16 +78,17 @@ native USB/BOOT recovery on the acquired revision; no old SDMMC/pin-map assumpti
 ## 4. Working and planned check commands
 
 The three PlatformIO commands below exist with package 0.2 BUILD/HOST evidence;
-see [toolchain](toolchain.md). The contract validator, Flutter and Rust commands
-remain future contracts until their packages exist. The [Stage 0.9 release plan](plans/0.9-firmware-ci-release.md)
-adds real package/installer/workflow tests without pretending absent tools passed.
+see [toolchain](toolchain.md). The Stage 0.6 contract validator exists and runs
+offline (its two commands are in the qualified-interpreter block below). The
+Flutter and Rust commands remain future contracts until their packages exist. The
+[Stage 0.9 release plan](plans/0.9-firmware-ci-release.md) adds real
+package/installer/workflow tests without pretending absent tools passed.
 Upstream board support alone is not a project build or device qualification.
 
 ```sh
 pio run -d firmware -e vdog_xiao_sense_proto
 pio test -d firmware -e native
 pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing
-python3 tools/validate_contracts.py
 flutter analyze --fatal-infos
 flutter test
 cargo fmt --manifest-path backend/Cargo.toml --check
@@ -95,8 +97,26 @@ cargo test --manifest-path backend/Cargo.toml --locked
 git diff --check
 ```
 
-The host release-tooling suite runs on the qualified CPython 3.12 through `uv`
-(the system `python3` here is 3.14 and is not the qualified interpreter):
+The Stage 0.6 media/API contract gate and the host release-tooling suite run on the
+qualified CPython 3.12 through `uv` (the system `python3` here is 3.14 and is not
+the qualified interpreter). The contract validator opens no sockets, reads no
+environment variables and exits 0 only when every contract document, schema and
+committed golden fixture matches its declared expectation
+([`contracts/README.md`](../contracts/README.md)). It is **HOST** evidence only:
+the validator and its suite run locally and prove that the published documents and
+fixtures agree with each other, not that firmware, the Flutter app or the Rust
+backend consumes them (consumer conformance is T-04):
+
+```sh
+uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
+  python tools/validate_contracts.py            # corpus gate: 0 pass, 1 check failed, 2 validator error
+uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
+  pytest tools/contracts/tests                  # the suite that guards that gate
+uv run --python 3.12 --with-requirements tools/contracts/requirements-dev.lock \
+  python -m tools.contracts.generate_fixtures   # rewrite contracts/fixtures from fixture_spec.py
+```
+
+The Stage 0.9 release-tooling suite uses its own locked environment:
 
 ```sh
 uv run --python 3.12 --with-requirements tools/firmware/requirements-dev.lock \

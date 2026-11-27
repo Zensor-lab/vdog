@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vdog.local/contracts/media-v1/manifest.schema.json",
+  "title": "vdog original recording v1 completion manifest",
+  "description": "Immutable completion record at /vdog/v1/clips/<clip_id>/manifest.json (docs/specs/media-format.md section 4). Serialized form must stay within 16,384 bytes; that bound and the cross-field rules (clip_id boot_id prefix, clock null-ness pairing, duration_us exceeding the final t_us, recovered true exactly when close_reason is \"recovery\", file hashes matching the exact bytes) are clip-level invariants enforced by tools/contracts with stable codes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "v",
+    "device_id",
+    "boot_id",
+    "clip_id",
+    "capture_order",
+    "firmware_version",
+    "hardware_revision",
+    "profile",
+    "clock",
+    "start_boot_us",
+    "duration_us",
+    "frame_count",
+    "dropped_frames",
+    "close_reason",
+    "recovered",
+    "files"
+  ],
+  "properties": {
+    "v": { "const": 1 },
+    "device_id": { "$ref": "#/$defs/device_id" },
+    "boot_id": { "$ref": "#/$defs/boot_id" },
+    "clip_id": { "$ref": "#/$defs/clip_id" },
+    "capture_order": {
+      "description": "Card-local increasing integer used for eviction ordering; gaps allowed, not a global ordering.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "firmware_version": {
+      "description": "Opaque version string. Length is bounded only by the whole-manifest 16,384-byte invariant; the spec assigns no per-field limit.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "hardware_revision": {
+      "description": "Acquired hardware revision label. Length is bounded only by the whole-manifest 16,384-byte invariant.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "profile": { "$ref": "#/$defs/profile" },
+    "clock": { "$ref": "#/$defs/clock" },
+    "start_boot_us": {
+      "description": "Monotonic first-frame time for that boot.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "duration_us": {
+      "description": "Exclusive media end; must exceed the final t_us and be at most 120,000,000.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120000000
+    },
+    "frame_count": {
+      "description": "Empty segments are discarded rather than finalized, so a finalized manifest has at least one frame.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3600
+    },
+    "dropped_frames": {
+      "description": "Observed acquisition drops only; unknown losses across reset are described by recovery status.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "close_reason": {
+      "enum": [
+        "duration",
+        "size",
+        "settings",
+        "clock_change",
+        "shutdown",
+        "storage_fault",
+        "recovery",
+        "ota"
+      ]
+    },
+    "recovered": { "type": "boolean" },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["video.mjpg", "frames.jsonl"],
+      "properties": {
+        "video.mjpg": { "$ref": "#/$defs/file_entry" },
+        "frames.jsonl": { "$ref": "#/$defs/index_file_entry" }
+      }
+    }
+  },
+  "$defs": {
+    "device_id": {
+      "description": "32 lowercase hexadecimal characters provisioned once. The length keywords restate what the pattern already implies in this dialect, so a reader whose regex engine treats $ loosely still refuses an identifier with a stray byte glued to it.",
+      "type": "string",
+      "minLength": 32,
+      "maxLength": 32,
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "boot_id": {
+      "description": "32 random lowercase hexadecimal characters per boot; never reveals a MAC address. The length keywords restate what the pattern already implies in this dialect, so a reader whose regex engine treats $ loosely still refuses an identifier with a stray byte glued to it.",
+      "type": "string",
+      "minLength": 32,
+      "maxLength": 32,
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "clip_id": {
+      "description": "<boot_id>-<sequence> with exactly eight lowercase hexadecimal digits. Equality between the prefix and boot_id is a cross-field invariant. The length keywords restate what the pattern already implies in this dialect, so a reader whose regex engine treats $ loosely still refuses an identifier with a stray byte glued to it.",
+      "type": "string",
+      "minLength": 41,
+      "maxLength": 41,
+      "pattern": "^[0-9a-f]{32}-[0-9a-f]{8}$"
+    },
+    "sha256": {
+      "description": "SHA-256 over the exact file bytes. The length keywords restate what the pattern already implies in this dialect: a digest with a trailing newline or a stray space is not a digest, and a reader whose regex engine treats $ loosely still has to refuse it.",
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "file_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes", "sha256"],
+      "properties": {
+        "bytes": {
+          "description": "Exact file length in bytes; both files are non-empty for a finalized clip.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 268435456
+        },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "index_file_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes", "sha256"],
+      "properties": {
+        "bytes": {
+          "description": "Exact index length in bytes. media-format.md section 2 bounds frames.jsonl at 1,843,200 bytes, well below the 268,435,456-byte payload ceiling the video file may use.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1843200
+        },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "nominal_fps", "jpeg_quality"],
+      "properties": {
+        "width": {
+          "description": "Positive; each dimension at most 1600 and it must match the JPEG SOF.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1600
+        },
+        "height": {
+          "description": "Positive; each dimension at most 1600 and it must match the JPEG SOF.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1600
+        },
+        "nominal_fps": {
+          "description": "Nominal integer rate; actual rate may be lower and comes from timestamps.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "jpeg_quality": {
+          "description": "esp32-camera driver quality parameter, not a percentage. The spec assigns no numeric range, so only nonnegativity is required here.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "start_utc", "uncertainty_ms"],
+      "properties": {
+        "source": { "enum": ["unknown", "phone", "sntp"] },
+        "start_utc": {
+          "description": "RFC3339 UTC with millisecond precision and trailing Z, or null when the clock source is unknown. The pairing of null-ness with source is a validator invariant.",
+          "type": ["string", "null"],
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+        },
+        "uncertainty_ms": {
+          "description": "Required and nonnegative when the clock source is known; null when unknown. media-format.md §2 puts every JSON integer of this format inside the range a conforming reader represents exactly, so an estimate above that ceiling is not an estimate at all.",
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}
