@@ -1,7 +1,26 @@
 # vdog implementation plan
 
 Status: **IN PROGRESS — 0.2 qualified; 0.9 implemented on
-`opencode/0.9-ci-release`, hosted run pending**, revised 2026-11-21. This is the
+`opencode/0.9-ci-release`, hosted run pending; 1.1 reviewed and verified on
+`opencode/1.1-fw-bootstrap` (BUILD/HOST evidence only; PR #5 open — PR-review
+round 2 findings PR-R1..R4 fixed at `9becabf`, round-3 notes PR-N1/PR-N2 at
+`e0de4ec`, round-4 findings PR-R5/R6/R7 (strict Kconfig/CMake full-token
+parsing) at `599d1c8`, round-5 findings PR-R8/R9/R10 — raw-line Kconfig
+syntax, #error compile-flag backstop, widened header prefix class — at
+`7ff0244`, round-6 findings PR-R11 (`# default:` provenance marker)
+and PR-R12 (CMake-scope wording) fixed at `c34b287`,
+round-7 finding PR-R13 (marker logic unfaithful to the pinned
+esp_kconfiglib parser in both directions) fixed at `1819ef6` by
+mirroring its `value_is_default` machine, round-7 approved with LOW docs
+nit F-1 (comment wording at `a6faac8`), round-8 finding PR-R14
+(deprecated-options section must be skipped like kconfgen's default-mode
+loader) fixed at `4b87a19`, round-8 approved with non-blocking
+notes INFO-1/INFO-2 folded in at `6c24739`, round-9 finding PR-R15
+(line boundaries: gate `splitlines()` vs loader universal newlines —
+U+2028-hidden assignments fail-open) fixed at `6abd27e` by mirroring
+the loader/CMake/configparser line models via `_split_universal`,
+re-review pending, merge
+pending)**, revised 2026-11-27. This is the
 master backlog, not authorization to execute every stage in one assignment. The
 minimal firmware and portable host tests exist with BUILD/HOST evidence.
 Recording, device operation and every hosted CI/tag/Release result are not
@@ -255,6 +274,53 @@ stage the dependencies listed in each package override simple numeric order.
 
 ### 1.1 Bootstrap the firmware and portable core
 
+- Status: **REVIEWED & VERIFIED — `opencode/1.1-fw-bootstrap`, PR #5 open
+  (2026-11-27, BUILD/HOST evidence only)**: portable board-profile
+  core with host-tested identity gate, build-time board-config + core-purity
+  gates on the proto environment, `components/vdog_board` adapter and the board
+  report in `main.c`. esp32-reviewer approved (round 2, round-1 notes closed),
+  test-engineer VERIFIED at `32d6da3`, lead detached review passed; PR-review
+  bot then requested changes at `d24bd33` (PR-R1..R4, 2 Medium + 2 Low, all
+  gate scripts) — fixed with a four-layer board gate and FatFs purity rules at
+  `9becabf` (12/12 fixture regressions, plan §10/§11); round-3 reviewer then
+  approved with notes, whose fix-now findings (PR-N1 all-occurrences/comment-
+  aware CMake matching, PR-N2 extended FatFs API list) landed at `e0de4ec`
+  (17/17 regressions, plan §10/§11; PR-N3 nit consciously skipped
+  per §12); round-4 re-review then requested changes at `5151666`
+  (PR-R5/R6/R7 — uppercase-Y Kconfig declarations accepted, partial capture
+  of `8388608u/2u`, `buffer.h` substring false positive), all fixed with
+  strict full-token/basename-anchored parsing at `599d1c8` (22/22
+  regressions incl. pre-fix false-pass reproductions; PR-N3 skip superseded
+  by the k1 fix, plan §10/§11/§12); round-5 re-review then requested
+  changes at `89133f8` (PR-R8 `KEY= y` whitespace, PR-R9 PRIVATE→INTERFACE
+  text-vs-compile-flag gap, PR-R10 `./ff.h`/`fat-fs/diskio.h` misses) —
+  fixed at `7ff0244` with raw-line exact syntax, an #error compile-flag
+  backstop in vdog_board_idf.c (proved by a stripped-`-D` syntax-only
+  compile failing with both #errors) plus gate scope checks (27/27
+  regressions, plan §10/§11/§12); round-6 re-review then requested
+  changes at `4a5c3fb` (PR-R11 `# default:` provenance marker counted
+  as an explicit pin; PR-R12 CMake-scope docstring misstatement) — fixed
+  with preceding-non-blank-line marker tracking (n1/n2 regressions,
+  29/29 harness) and corrected PRIVATE/PUBLIC/INTERFACE semantics wording
+  (enforcement unchanged); round-7 re-review then requested changes at
+  `de6856f` (PR-R13 Medium: `# default:` marker state wrong in BOTH
+  directions vs the pinned parser) — semantics derived from the vendored
+  `esp_kconfiglib` (core.py:1399-1402/1505-1514/1610, constants.py:54)
+  and the gate rewritten to mirror it (p1 bypass -> 1, pre-fix 0;
+  n2 expectation corrected to 0; p3/p4 unset cases; 32/32 harness);
+  round-7 approved with LOW docs nit F-1 (comment wording reworded to
+  parser truth at `a6faac8`), then round-8 re-review requested changes
+  at `a6faac8` (PR-R14 Medium: assignments inside the auto-generated
+  `# Deprecated options …` banners counted as declared although
+  kconfgen's default-mode loader skips the section) — mirrored
+  `in_deprecated_block` skip at `4b87a19` (q1 bypass -> 1, pre-fix 0;
+  q2/q3 controls; 35/35 harness), PR re-review pending; merge pending
+  hosted CI + PR review.
+  **No DEVICE evidence** (device/board checks
+  stay in 1.2–1.4) and 0.3/0.7 wiring
+  and bench approval remain outstanding, so every pin reference is
+  provisional. See [package 1.1 assignment](1.1-assignment.md) and
+  [toolchain addendum](../toolchain.md).
 - Depends: 0.2, 0.3, 0.6, 0.7. Writable: `firmware/`, relevant CI/profile docs.
 - Steps: create pinned PlatformIO ESP-IDF structure, `vdog_xiao_sense_proto` and `native`,
   component interfaces, board selection and version reporting; add minimal host

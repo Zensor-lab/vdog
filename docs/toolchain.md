@@ -307,3 +307,266 @@ identified authorized unit. The upstream PlatformIO board entry alone was
 project build. No upload, monitor, erase, flash, eFuse, OTA or network
 runtime operation was performed in package 0.2, and the microphone stayed
 uninitialized.
+
+## Package 1.1 addendum (append-only, 2026-11-27)
+
+This addendum records package 1.1 (firmware bootstrap + portable board-profile
+core) and **does not modify §1–§9**: the 0.2 lock matrix above is exactly what
+package 1.1 inherits and re-ran green. Produced by `firmware/` on branch
+`opencode/1.1-fw-bootstrap` via
+[plan 1.1](plans/1.1-assignment.md). **No device was connected, flashed,
+monitored or erased**, and nothing here is DEVICE evidence.
+
+### What package 1.1 added to the firmware project
+
+| Path | Role |
+| --- | --- |
+| `firmware/core/vdog_board.{h,c}` | portable pure-C11 board profile + identity gate (explicit `field_set` per field, `vdog_board_validate()`, `vdog_board_error_field()`, `vdog_board_report()`); single source of truth for the supported-configuration semantics |
+| `firmware/core/library.json` | exposes both portable headers to the `native` environment (`vdog-core@1.1.0`) |
+| `firmware/components/vdog_board/` | IDF component wrapper + target-side `vdog_board_profile_from_sdkconfig()` adapter (`#ifdef CONFIG_*`, so an unset key means "field not set", never an inherited default) |
+| `firmware/scripts/check_board_config.py` | post-build gate: required `config/sdkconfig.json` keys present **and** equal, plus `$BOARD == seeed_xiao_esp32s3` |
+| `firmware/scripts/check_core_purity.py` | post-parse gate: `firmware/core/**` stays free of SDK/RTOS/camera/SD/SPI-SD/NVS tokens and SDK-style includes |
+| `firmware/test/test_vdog_board/` | 15 Unity host cases + `cpp_smoke_board.cpp` C++ consumer TU |
+| `firmware/src/main.c`, `src/CMakeLists.txt` | board report / `board config rejected: … (field …)` log line; `REQUIRES vdog_board` |
+| `firmware/platformio.ini` | two new `post:` entries on `[env:vdog_xiao_sense_proto]` **only** — no `platform_packages`, platform/board or Unity/native pin changed |
+| `firmware/README.md` | environments, root commands, gate behaviour, BUILD/HOST discipline |
+
+`sdkconfig.defaults` and `dependencies.lock` are **byte-identical to the 0.2
+lock** (`git diff 7839610 -- firmware/sdkconfig.defaults firmware/dependencies.lock`
+→ empty): no key was added or relaxed, and no dependency/version changed.
+
+### Commands run from the repository root (macOS arm64 host, 2026-11-27)
+
+| Command | Exit | Evidence level | Result summary |
+| --- | --- | --- | --- |
+| `pio --version` | 0 | host inventory | PlatformIO Core 6.2.0 |
+| `pio run -d firmware -e vdog_xiao_sense_proto -t clean` | 0 | **BUILD** | `[SUCCESS]` 0.55 s |
+| `pio run -d firmware -e vdog_xiao_sense_proto` (after clean) | 0 | **BUILD** | `[SUCCESS]` 45.29 s, 1105 compile actions, **0 `warning:`/`error:` lines** with `-Wall -Wextra`; `RAM 19116/327680 B`, `Flash 210413/3145728 B` (re-run after the review fixes; the first round measured 43.26 s with identical compile count and zero warnings) |
+| `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | **BUILD** | `text 149597 / data 61124 / bss 376865`; `firmware.bin` 210,832 B (image grew by the board-report code); slot margin vs the 3 MB OTA slot stays ≈14.9× (≥4× requirement, §5) |
+| `pio test -d firmware -e native` | 0 | **HOST** | `native:test_vdog_board [PASSED]` **15/15** + `native:test_vdog_core [PASSED]` **7/7** → **22 test cases: 22 succeeded, 0 failed** |
+| `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | **BUILD-only** | `vdog_xiao_sense_proto:test_vdog_board [SKIPPED]` and `…:test_vdog_core [SKIPPED]` — both embedded test images compile and link (incl. `cpp_smoke_board.cpp`); **no test executed** (never described as execution). Build stayed isolated in `.pio/build/vdog_xiao_sense_proto_test/` |
+| `~/.platformio/packages/tool-esptool/esptool --chip esp32s3 image-info firmware/.pio/build/vdog_xiao_sense_proto/firmware.bin` | 0 | **BUILD** (host-side image analysis, no device I/O) | `Image size: 210832 bytes / Flash size: 8MB / Flash freq: 80m / Chip ID: 9 (ESP32-S3)` |
+| `python3 firmware/scripts/check_core_purity.py` | 0 | host-side gate run (not an evidence level: **HOST** means the `native` Unity run only) | `5 portable-core files scanned, no camera/SD/RTOS/SDK tokens` |
+| `git diff --check` | 0 | hygiene | clean |
+
+The 0.2 command set is unchanged and still green; no new root command was
+introduced, so `docs/project-profile.md` needs no command-list edit. `pio test
+-e native` remains the only host harness (no Python test framework added under
+`firmware/`).
+
+**Plan command-form note:** the plan's clean step
+`pio run -d firmware -e vdog_xiao_sense_proto -t run --target clean` passes two
+SCons targets and SCons aborts the *clean* run with
+`*** Do not know how to make File target 'run'` (**exit 1**, no build
+performed). The equivalent supported form `pio run -d firmware -e
+vdog_xiao_sense_proto -t clean` (exit 0, above) followed by the normal `pio
+run` is what was used; the subsequent build was a genuine full rebuild (1105
+compile actions) and picked up the new `components/vdog_board` component.
+
+### Gate evidence (package 1.1 §5.4/§6)
+
+Taxonomy note (F7): the standalone `python3 firmware/scripts/check_*.py`
+invocations below are **host-side gate runs** — they show the gate logic
+behaves, but they are neither a BUILD nor a HOST result. **BUILD** = the
+cross-compile rows above; **HOST** = the `pio test -e native` Unity run only;
+**DEVICE** = nothing here.
+
+Green inside the BUILD above (proto environment only):
+
+```text
+vdog core-purity gate: 5 portable-core files scanned, no camera/SD/RTOS/SDK tokens
+vdog board-config gate: 11 required keys present and equal + board=seeed_xiao_esp32s3
+  (.../.pio/build/vdog_xiao_sense_proto/config/sdkconfig.json)   # fired on checkprogsize AND on firmware.bin
+```
+
+Negative demo on a **tampered copy** of the generated `sdkconfig.json`
+(`SPIRAM_MODE_OCT` flipped `true → false` in the copy only; the built tree is
+untouched):
+
+```console
+$ python3 firmware/scripts/check_board_config.py \
+      --sdkconfig .../sdkconfig.tampered.json --board seeed_xiao_esp32s3
+*** vdog board-config gate: ERROR: build configuration rejected (1 problem(s), .../sdkconfig.tampered.json, board from --board argument):
+*** vdog board-config gate:   - SPIRAM_MODE_OCT: expected True, got False
+$ echo $?
+1
+```
+
+Control on the real generated file exits **0** with the "11 required keys
+present and equal" line. Additional tampered fixtures (key deleted,
+`SPIRAM=false`, `PARTITION_TABLE_CUSTOM_FILENAME` swapped, wrong `--board`)
+each exit **1** naming every offending key with expected and actual values; a
+missing fixture exits 1 naming the path. Type-strict comparison means `1` or
+`"y"` cannot satisfy an expected `True`. Exit-code contract (review F3): **0**
+pass, **1** gate failure *or* an unreadable/malformed/missing fixture (a config
+that cannot be read is never a pass), **2** argparse usage error only —
+verified: missing option → 2, unknown option → 2, malformed JSON → 1, missing
+file → 1.
+
+The purity gate's FreeRTOS coverage (review F5) was verified the same way with
+scratch copies of `core/`: `xTaskCreate`, `xQueueSend`, `xSemaphoreGive`,
+`pdTRUE`, `portMAX_DELAY`, `TickType_t` and `vTaskDelay` each exit **1** naming
+file:line, while the real `core/` and an ordinary-prose control containing
+"portable", "porting" and "pdq" stay clean (the kernel-symbol patterns are
+deliberately case-sensitive so English words are not flagged).
+
+The gates' SCons-mode behaviour was additionally exercised with a stub SCons
+environment (outside the tree, no tracked file added): normal build registers
+`checkprogsize` + `firmware.bin` post actions and both pass; `__test` registers
+**no** gate (so `pio test` is unaffected, matching `gen_build_meta.py`'s
+policy); an absent/partial `sdkconfig.json` inside a `*_test` build dir is
+tolerated with a printed note; an absent `sdkconfig.json` in a *release* build
+dir exits 1; a wrong `$BOARD` exits 1; loading the script in any environment
+other than `vdog_xiao_sense_proto` exits 1.
+
+### Host inventory observed for these runs
+
+macOS 26.6.2 (build 25G83), Apple silicon `arm64` (`uname -m`); PlatformIO Core
+**6.2.0** (`~/.local/bin/pio`); PlatformIO-bundled Python **3.12.12** (uv tool
+env `~/.local/share/uv/tools/platformio/bin/python`); host `python3` **3.14.6**
+(used only for the standalone gate invocations, never by PlatformIO). Matches
+§1; nothing was installed or upgraded, and the resolved package set is still
+the §2 matrix (`tool-ninja` 1.13.2 on this darwin host).
+
+### Evidence level and DEVICE pointer
+
+Every number above is **BUILD** (cross-compilation, host-side image analysis)
+or **HOST** (native Unity) evidence. The `8MB` flash / `8MB` octal (OPI) PSRAM
+values in the board report and in the gate's expected table are **build
+configuration** — they come from `firmware/sdkconfig.defaults` and the
+`components/vdog_board` declaration, not from the chip: `CONFIG_SPIRAM_TYPE_AUTO`
+leaves real capacity to runtime detection. Physical flash capacity, octal-PSRAM
+detection/usable bytes, boot-log console output and every other on-device
+behaviour remain **DEVICE** evidence for packages 1.2–1.4 against an identified
+authorized unit; no upload, monitor, erase or other device operation was
+performed here, and no GPIO is configured or driven by any package 1.1 code.
+Wiring stays unapproved (0.3/0.7 outstanding), so the only pin reference is the
+`PROVISIONAL` comment block in `firmware/core/vdog_board.h`, which records that
+[hardware/prototype-a/pin-map.csv](../hardware/prototype-a/pin-map.csv) is
+candidate-only and that its GPIO21 SD-CS/user-LED sharing is unresolved.
+
+### Package 1.1 addendum — PR-review round 2 (append-only, 2026-11-27)
+
+Supersedes nothing above; records what the two gate scripts enforce **now**
+after PR #5 round 2 (findings PR-R1..PR-R4, plan §10). Evidence: plan §11
+"PR-review round 2 re-run" (12/12 regression cases; BUILD and HOST separate).
+
+| Item | Behaviour after round 2 |
+| --- | --- |
+| `firmware/scripts/check_board_config.py` layer 1 (PR-R1) | Every `EXPECTED_KEYS` entry must be **EXPLICITLY declared** in the SOURCE `firmware/sdkconfig.defaults` (`KEY=y` / `KEY="value"`; boolean letters checked). A resolved-but-undeclared key fails the build: `… not declared in sdkconfig.defaults (resolved value may be an SDK default)`. The layer-2 resolved present-and-equal check is kept — "never silently taken from defaults" = declared **and** equal. |
+| … layer 3 (PR-R2) | `components/vdog_board/CMakeLists.txt` must define `VDOG_BOARD_ID_STR="seeed_xiao_esp32s3"` and `VDOG_BOARD_PSRAM_SIZE_BYTES=8388608u`; mismatch or absence fails with expected-vs-actual naming the file. Single source of truth stays the script's `EXPECTED` table. |
+| … layer 4 (PR-R3) | Effective partition table must agree **three ways**: PlatformIO `board_build.partitions` (SCons: `env.GetProjectOption` first — empirically the resolving source; `BOARD_BUILD['partitions']` is probed but is `None` under espressif32 8.0.0; parsed-ini fallback), resolved `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME`, and the expected `partitions/vdog_8mb_two_ota.csv`; any mismatch names all three. `VDOG_GATE_DEBUG=1` prints the probed candidates. |
+| … CLI override flags | `--defaults PATH`, `--component-cmake PATH`, `--platformio-ini PATH` (all default to the real repository files) allow tampered-copy fixtures without touching the repo; used by the §11 regression harness. Exit-code contract unchanged: 0 pass / 1 gate failure or unreadable input / 2 argparse usage only. |
+| `firmware/scripts/check_core_purity.py` (PR-R4) | Four additional **case-sensitive** FatFs/disk-io rules: `ff.h`/`ffconf.h`/`diskio.h` (and `integer.h`/`ccsbcs.h`) includes; `f_mount/f_open/f_read/f_write/f_close/f_mkfs/f_opendir/f_readdir/…`; types `FIL/FILINFO/FATFS/FRESULT`; `disk_initialize/disk_status/disk_read/disk_write/disk_ioctl`. Generic FatFs typedefs (`BYTE/WORD/DWORD/UINT/WCHAR/DIR`) are deliberately excluded as ordinary/stdio-colliding words — `FILE` and `portable` prose stay clean; directory use is covered via `f_opendir`/`f_readdir`. |
+| Evidence levels | Unchanged taxonomy: these are BUILD-time gates and host-side gate runs; still zero DEVICE evidence; `pio test -e native` (22/22) remains the only executed-test level. |
+
+### Package 1.1 addendum — PR-review round 3 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-3 reviewer-note fixes to the gate
+scripts (plan §10 round-3 block; evidence in §11 "PR-review round 3 re-run",
+17/17 fixture cases).
+
+| Item | Behaviour after round 3 |
+| --- | --- |
+| `check_board_config.py` layer 3 semantics (PR-N1) | CMake comment lines (`# …` EOL) are stripped before matching, and **every** occurrence of `VDOG_BOARD_ID_STR` / `VDOG_BOARD_PSRAM_SIZE_BYTES` must equal the expected value (finditer): zero occurrences fails (absent = field not set), and any wrong occurrence fails naming expected/got plus occurrence count — a second tampered `target_compile_definitions` block can no longer hide behind a correct first one (the compiler would take the last `-D`). Duplicate identical-good blocks pass. |
+| `check_core_purity.py` FatFs API list (PR-N2) | Extended with `f_size`, `f_rewinddir`, `f_rewind`, `f_chdrive`, `f_utime`, `f_printf`, `f_fputs`, `f_findfirst`, `f_findnext` (all keep the mandatory `f_` prefix, so plain `printf`/`fputs`/`rewind`/`utimbuf` stay clean — regression control i2). |
+| PR-N3 (skipped by agreement) | The header rule may over-match unrelated `*integer.h`/`*ccsbcs.h`-style includes; accepted because over-match is fail-closed and no such includes exist in `core/` — rationale in plan §12. |
+| Size observation discipline | Clean-build `data`/`bss`/`firmware.bin` fluctuate by ≤16 B run-to-run (ESP-IDF metadata/padding non-determinism; `text` stable at 149597) — single-run sizes are quoted as snapshots with the observed range, never as stability claims. |
+
+### Package 1.1 addendum — PR-review round 4 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-4 strict-parsing fixes to the
+gate scripts (plan §10 round-4 block; §11 "PR-review round 4 re-run", 22/22
+fixture cases). Root-cause pattern: never parse Kconfig/CMake semantics with
+substring or lenient regexes — match COMPLETE tokens.
+
+| Item | Behaviour after round 4 |
+| --- | --- |
+| `check_board_config.py` layer 1 strictness (PR-R5) | Source declarations are honoured only in the exact form Kconfig accepts: bool keys `CONFIG_KEY=y` (lowercase; `Y`/`1`/`0` are parsed by Kconfig but IGNORED ⇒ treated as undeclared), string keys `CONFIG_KEY="value"` (double quotes required, exact). Offending forms report the standard `not declared in sdkconfig.defaults (resolved value may be an SDK default)`. |
+| `check_board_config.py` layer 3 full tokens (PR-R6) | Definition captures take the entire token after `=` (up to whitespace/paren, post comment-strip): PSRAM must wholly match `^[0-9]+[uUlL]*$` and equal 8388608 (expression characters fail naming the raw token — the compiler receives them verbatim), board id must be exactly `"seeed_xiao_esp32s3"` including quotes. All-occurrences checking (PR-N1) unchanged. |
+| `check_core_purity.py` header rule (PR-R7) | BASENAME-anchored: `[<"](?:[dir/]*)?(ff\|ffconf\|diskio\|integer\|ccsbcs)\.h[>"]` — `esp_port/ff.h` hits, `buffer.h`/`my_effective_settings.h` stay clean. Supersedes the round-3 PR-N3 skip; §12 records the lesson. |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1/j2/j3, k1/k2, l1/l2, m1, k3a/k3b — 27/27 expected exits (driver out of tree, same location). |
+
+### Package 1.1 addendum — PR-review round 5 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-5 fixes — the first STRUCTURAL
+one (compile-time enforcement of compile flags) plus raw-line Kconfig syntax
+and the widened header prefix class (plan §10 round-5 block; §11 "round 5
+re-run", 27-case harness + compile proof).
+
+| Item | Behaviour after round 5 |
+| --- | --- |
+| `check_board_config.py` layer 1 raw syntax (PR-R8) | The RAW assignment line is validated before any trimming (only trailing-WS/CRLF rstrip and whole-line-comment rejection): it must equal `CONFIG_KEY=y` (bool, lowercase) or `CONFIG_KEY="value"` (string, double-quoted) character-for-character — no spaces around `=`, no interior whitespace; duplicates judged on the LAST raw line; leading whitespace rejected fail-closed (deliberate, documented; Kconfig tolerates it, the repo file uses none). Offences report the standard undeclared message. |
+| `vdog_board_idf.c` structural guards (PR-R9) | `#if !defined(VDOG_BOARD_ID_STR)` / `#if !defined(VDOG_BOARD_PSRAM_SIZE_BYTES)` `#error` guards: the adapter refuses to compile when the PRIVATE `target_compile_definitions` don't reach the compiler (PRIVATE→INTERFACE flip, deleted definitions). Compile proof: stripped-`-D` syntax-only compile with the build's own `xtensa-esp-elf-gcc` fails with both `#error`s (exit 1); with the flags it compiles (exit 0); the green BUILD proves the guards satisfied. |
+| `check_board_config.py` layer 3 scope (PR-R9 belt-and-braces) | Every definition occurrence must sit inside a `target_compile_definitions()` block containing `PRIVATE` and no `INTERFACE`/`PUBLIC`; occurrences outside any such block (e.g. via `set()`) fail. |
+| `check_core_purity.py` header prefixes (PR-R10) | Prefix class `(?:[^">]*/)?`: `./ff.h`, `fat-fs/diskio.h`, `a/b/c/ff.h` hit; basename stays anchored after the LAST slash so `my_ff.h`, `ffbuffer.h`, `buffer.h` stay clean. |
+| Evidence levels | Unchanged taxonomy (BUILD/HOST only; zero DEVICE). The m2 syntax-only compile proof is BUILD-class evidence (compiler invocation, no device, no outputs written). |
+
+### Package 1.1 addendum — PR-review round 6 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-6 layer-1 provenance fix and the
+scope-wording correction (plan §10 round-6 block; §11 "round 6 re-run",
+29-case harness).
+
+| Item | Behaviour after round 6 |
+| --- | --- |
+| `check_board_config.py` layer 1 provenance (PR-R11) | An assignment whose PRECEDING non-blank line matches `^\s*#\s*default\b` (covers `# default:`, `# default: <expr>`, extra spaces/tabs) is ESP-IDF's own default-provenance signal — the pinned Kconfig does not count it as user selection — and therefore does NOT satisfy the explicit-declaration check; it fails with the standard `not declared ... (resolved value may be an SDK default)` message. Last-wins duplicates keep working (an unmarked later line overrides a marked earlier one). |
+| Scope-check wording (PR-R12, wording only) | Corrected CMake semantics documented in `_block_scope`/`evaluate_component_definitions`: PRIVATE = target's own compilation only (policy: definitions stay local to the consuming component); PUBLIC = target AND consumers (rejected as scope creep); INTERFACE = consumers only (rejected: own compilation would silently lose the `-D`). Enforcement unchanged — all non-PRIVATE rejected; the `#error` guards enforce macro arrival at compile time regardless of scope. |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1/n2 — 29/29 expected exits (driver out of tree, same location). |
+
+### Package 1.1 addendum — PR-review round 7 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-7 parser-faithfulness rewrite
+(plan §10 round-7 block; §11 "round 7 re-run", 32-case harness). Authority
+for all marker semantics: the vendored loader the pinned build runs —
+`esp_kconfiglib` (esp_idf_kconfig 3.13.0, ESP-IDF v6.1.0) at
+`~/.platformio/penv/.espidf-6.1.0/lib/python3.12/site-packages/esp_kconfiglib/`,
+driven by kconfgen via framework-espidf `tools/cmake/kconfig.cmake:211-212`
+(`${python} -m kconfgen`) with `:230-237` writing the layer-2 resolved
+`sdkconfig.json` (`--output json`) — i.e. the same parser sits under both
+gate layers.
+
+| Item | Behaviour after round 7 |
+| --- | --- |
+| `check_board_config.py` layer 1 provenance (PR-R13, mirrors PR-R11) | `last_raw_assignments()` mirrors the parser's `value_is_default` machine exactly: marker iff `line.strip() == "# default:"` (core.py:1399-1402; `constants.py:54`) — `# default: (expr)`, `#  default:`, `#default:` are ordinary comments; the flag PERSISTS across comments/blanks/malformed lines (core.py:1505-1514) and is consumed+cleared by the FIRST subsequent set (`CONFIG_([^=]+)=`, core.py:778/1416) or `is not set` (core.py:779/1506) assignment (clears core.py:1422/1440/1444/1476/1500/1520/1539/1543/1552 + loop-tail `:1610`); DEP-OP banner lines clear it (core.py:1404-1411; `constants.py:32-33`). Flagged assignment → recorded None → standard `not declared … (resolved value may be an SDK default)` failure. |
+| Documented stricter deviations | `is not set` line as last mention of a required key records None (parser resolves unset there ⇒ certainly not an explicit pin; repo file contains none); exact raw-line syntax (PR-R5/R8) still decides declaredness; leading-whitespace lines match neither anchored regex (parser: malformed, marker persists) and stay fail-closed. |
+| Round-6 correction | The round-6 rule ("preceding non-blank line matches `^\s*#\s*default\b`") was wrong in both directions: it let `# default:` + intervening comment + assignment PASS (parser: default → must fail; new p1 → 1, pre-fix 0) and rejected `# default: (some expr)` (parser: ordinary comment → explicit pin; n2 expectation CORRECTED to 0). |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1, n2 (corrected), p1, p3, p4 — 32/32 expected exits (driver out of tree, same location). |
+
+### Package 1.1 addendum — PR-review round 8 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-8 deprecated-section fidelity
+fix (plan §10 round-8 block; §11 "round 8 re-run", 35-case harness). Same
+authority chain as round 7 — kconfgen loads every `sdkconfig.defaults` via
+`config.load_config(temp_file, replace=False)` (`kconfgen/core.py:559-569`)
+with `load_deprecated` at its default `False` (`esp_kconfiglib/core.py:1151
+-1157`), plus the F-1 comment fix (tip `a6faac8`).
+
+| Item | Behaviour after round 8 |
+| --- | --- |
+| `check_board_config.py` layer 1 deprecated-section skip (PR-R14) | `last_raw_assignments()` mirrors `in_deprecated_block` (core.py:1351/1404-1411; banners `constants.py:32-33`): BEGIN/END toggle it and clear the `# default:` flag; WHILE inside, EVERY line is skipped exactly as the default-mode loader does (`if in_deprecated_block and not load_deprecated: continue`, core.py:1413-1414) — assignments inside the section are never recorded (earlier outside record survives), cannot consume the marker, and an unclosed BEGIN skips to EOF (loop-tail reset :1610 never clears `in_deprecated_block`). Marker-section edge cases documented and probe-verified (banner clears the flag; first assignment after End is a user pin). |
+| F-1 (round-7 approval nit, tip `a6faac8`) | Comment-only wording fix: leading-whitespace lines are ones the pinned parser IGNORES as malformed (core.py:1512-1513) — NOT "tolerated"; fail-closed rejection is the faithful behaviour. `grep -n tolerat` on the script: no hits. |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1, n2 (corrected), p1, p3, p4, q1, q2, q3 — 35/35 expected exits (driver out of tree, same location); q1 pre-fix bypass reproduced at a6faac8 (exit 0) before the fix. |
+
+### Package 1.1 addendum — round-8 approval notes (append-only, 2026-11-27)
+
+Round 8 approved (`safe to hand back`) with two non-blocking provenance
+notes folded in at comment/docs level only — no behaviour change.
+
+| Note | Content |
+| --- | --- |
+| INFO-1 (gate docstrings) | Provenance chain completed: kconfgen never hands the parser the raw file — `_replace_empty_assignments` (kconfgen/core.py:547-557) writes a temp file where every line is `.strip()`'d (:552) and lines ending `=` gain an `n` (:553-554), then `load_config(temp_file, replace=False)` runs on THAT. The mirror mirrors the PARSER (post-preprocessing); the preprocessing can only ever induce OVER-rejections in the gate — it strips whitespace the exact-match already rejects, its `=`-suffix completion only rescues values the strict PR-R5/PR-R8 syntax rejects anyway, and it can never create a canonical clean line or `# default:` marker the mirror misses (marker matching already strips; the transform only shortens lines or appends `n`). |
+| INFO-2 (plan §12 residual) | The deprecated-NAME-mapping branches (esp_kconfiglib core.py:1428-1440, old-name→new-name set with forced marker clear at :1440) are not mirrored; effect class is over-rejection only (mirror records under the raw key; `EXPECTED` uses canonical names; layer 2 + pin scan backstop). Consciously accepted residual. |
+
+### Package 1.1 addendum — PR-review round 9 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-9 line-boundary class fix
+(plan §10 round-9 block; §11 "round 9 re-run", 45-case harness).
+
+| Item | Behaviour after round 9 |
+| --- | --- |
+| Line model (PR-R15) | Gate line iteration mirrors the loader's universal newlines (\n/\r\n/\r ONLY — U+2028/U+2029/\v/\f/NEL are ordinary characters): `_read_text` opens with explicit `newline=None`; `_split_universal()` splits on \n and feeds the layer-1 mirror machine and the layer-4 platformio.ini fallback (configparser parity — the tool PlatformIO itself uses). NEVER `str.splitlines()` for loader-consumed text. Citations: kconfgen/core.py:547-557 (preprocessing open+iterate), esp_kconfiglib core.py:2464/2469/2533 (opens) + :1396 (parse loop). |
+| CMake-facing classes (PR-R15) | Definition regexes use CMake's argument-lexer terminators (space/TAB/newline/`(`/`)`/`;`) instead of Python `\s` (which matches U+2028..\x85): `=8388608u\u2028u` now captures the full tampered token and fails the complete-literal check; hidden separators around `=` defeat the definition match. Comment EOL (`#.*`) was already \n-only — documented parity. |
+| Purity scanner decision | Keeps `str.splitlines()` deliberately: finest split = detection superset (tokens/`#include`s contain no separator chars, so finer splitting cannot fragment matches; catches `;\u2028#include <ff.h>` the gcc \n-only model misses); separator-inside-token tampering defeats both scan models but fails loudly at compile/link (native build + `#error` guards). |
+| Parser-truth note (r3) | `CONFIG_X=y\u2028junk` is ONE line the parser accepts via the first-character bool rule (core.py:1467-1479) — user-selected `y`; the gate's exact raw-line match still rejects (documented stricter deviation). |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1, n2 (corrected), p1, p3, p4, q1–q3, r1, r1b ×4, r2, r3, r4, r4b, r4c — 45/45 expected exits; all six fail-open faces reproduced at exit 0 on 6c24739 before the fix. |
