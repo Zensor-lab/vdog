@@ -459,3 +459,16 @@ after PR #5 round 2 (findings PR-R1..PR-R4, plan §10). Evidence: plan §11
 | … CLI override flags | `--defaults PATH`, `--component-cmake PATH`, `--platformio-ini PATH` (all default to the real repository files) allow tampered-copy fixtures without touching the repo; used by the §11 regression harness. Exit-code contract unchanged: 0 pass / 1 gate failure or unreadable input / 2 argparse usage only. |
 | `firmware/scripts/check_core_purity.py` (PR-R4) | Four additional **case-sensitive** FatFs/disk-io rules: `ff.h`/`ffconf.h`/`diskio.h` (and `integer.h`/`ccsbcs.h`) includes; `f_mount/f_open/f_read/f_write/f_close/f_mkfs/f_opendir/f_readdir/…`; types `FIL/FILINFO/FATFS/FRESULT`; `disk_initialize/disk_status/disk_read/disk_write/disk_ioctl`. Generic FatFs typedefs (`BYTE/WORD/DWORD/UINT/WCHAR/DIR`) are deliberately excluded as ordinary/stdio-colliding words — `FILE` and `portable` prose stay clean; directory use is covered via `f_opendir`/`f_readdir`. |
 | Evidence levels | Unchanged taxonomy: these are BUILD-time gates and host-side gate runs; still zero DEVICE evidence; `pio test -e native` (22/22) remains the only executed-test level. |
+
+### Package 1.1 addendum — PR-review round 3 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-3 reviewer-note fixes to the gate
+scripts (plan §10 round-3 block; evidence in §11 "PR-review round 3 re-run",
+17/17 fixture cases).
+
+| Item | Behaviour after round 3 |
+| --- | --- |
+| `check_board_config.py` layer 3 semantics (PR-N1) | CMake comment lines (`# …` EOL) are stripped before matching, and **every** occurrence of `VDOG_BOARD_ID_STR` / `VDOG_BOARD_PSRAM_SIZE_BYTES` must equal the expected value (finditer): zero occurrences fails (absent = field not set), and any wrong occurrence fails naming expected/got plus occurrence count — a second tampered `target_compile_definitions` block can no longer hide behind a correct first one (the compiler would take the last `-D`). Duplicate identical-good blocks pass. |
+| `check_core_purity.py` FatFs API list (PR-N2) | Extended with `f_size`, `f_rewinddir`, `f_rewind`, `f_chdrive`, `f_utime`, `f_printf`, `f_fputs`, `f_findfirst`, `f_findnext` (all keep the mandatory `f_` prefix, so plain `printf`/`fputs`/`rewind`/`utimbuf` stay clean — regression control i2). |
+| PR-N3 (skipped by agreement) | The header rule may over-match unrelated `*integer.h`/`*ccsbcs.h`-style includes; accepted because over-match is fail-closed and no such includes exist in `core/` — rationale in plan §12. |
+| Size observation discipline | Clean-build `data`/`bss`/`firmware.bin` fluctuate by ≤16 B run-to-run (ESP-IDF metadata/padding non-determinism; `text` stable at 149597) — single-run sizes are quoted as snapshots with the observed range, never as stability claims. |
