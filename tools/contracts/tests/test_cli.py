@@ -539,3 +539,41 @@ def test_cli_exits_one_when_an_index_record_is_unhashable(
     assert "FIXTURE_INDEX_INVALID" in output
     assert victim_id in output
     assert "validator internal error" not in output
+
+
+def test_cli_exits_one_when_an_inline_operation_schema_references_itself(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A self-referencing inline schema reports, it does not abort (round 23 F1).
+
+    The inline ``GET /derivatives/{id}`` 200 schema given an ``allOf`` whose
+    ``$ref`` points back at that very schema node makes the rooted validator
+    follow the pointer onto itself until Python raises ``RecursionError`` —
+    outside round 22's catch tuple, so the whole corpus run died at exit 2
+    "validator internal error" before printing anything. The cycle is a named
+    ``SPEC_COMPONENT_DRIFT`` now: the CLI exits 1 with the report printed,
+    the vector and the operation schema both named.
+    """
+    broken = _broken_yaml_document(
+        tmp_path,
+        "backend",
+        lambda document: document["paths"]["/derivatives/{id}"]["get"]["responses"]["200"][
+            "content"
+        ]["application/json"]["schema"].__setitem__(
+            "allOf",
+            [
+                {
+                    "$ref": "#/paths/~1derivatives~1%7Bid%7D/get/responses/200"
+                    "/content/application~1json/schema"
+                }
+            ],
+        ),
+    )
+    monkeypatch.chdir(broken)
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "RESULT: FAIL" in output
+    assert "SPEC_COMPONENT_DRIFT" in output
+    assert "backend/valid/derivative-response-200" in output
+    assert "validator internal error" not in output

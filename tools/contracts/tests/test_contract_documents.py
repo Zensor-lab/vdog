@@ -4538,3 +4538,89 @@ def test_a_decimal_body_survives_a_fractional_multiple_of_on_the_operation_schem
     assert any(
         "not a multiple of 2.5" in violation.detail for violation in found
     ), [violation.render() for violation in found]
+
+
+# --- Round 23: the rooted report must name the cycle it recurses on -----------
+
+
+def test_a_self_referencing_inline_operation_schema_earns_a_named_drift_not_a_crash(
+    device: dict, backend: dict
+) -> None:
+    """F1 (round 23): a same-instance reference cycle is a finding, never exit 2.
+
+    Round 21's ``resolve_refs`` preflight refused cycles before evaluation (its
+    schema mode expands a cycle once and raises); round 22 moved the resolution
+    question into the rooted report, and the standard library follows a pointer
+    that returns to an in-flight schema until Python raises ``RecursionError`` —
+    an exception the round-22 catch tuple did not name, so the whole corpus run
+    died at exit 2 with no report. The cycle now joins the ``$ref`` family: the
+    inline ``GET /derivatives/{id}`` 200 schema whose ``allOf`` points back at
+    itself charges ``SPEC_COMPONENT_DRIFT`` on the vector and the body keeps
+    its component verdict. The companion control is the *legal* recursion the
+    same library accepts — an instance-consuming ``$ref`` descending a
+    property — which must still evaluate and charge normally, proving the fix
+    names only the non-consuming cycle.
+    """
+    from tools.contracts.api_validate import validate_api_fixture
+
+    schemas, violations = load_media_schemas(CONTRACTS / "media-v1")
+    assert not violations, [violation.render() for violation in violations]
+    document = json.loads((CONTRACTS / "fixtures" / "fixtures.json").read_bytes().decode("utf-8"))
+    entry = next(
+        item for item in document["fixtures"]
+        if item["id"] == "backend/valid/derivative-response-200"
+    )
+    self_pointer = (
+        "#/paths/~1derivatives~1%7Bid%7D/get/responses/200"
+        "/content/application~1json/schema"
+    )
+
+    cyclic = copy.deepcopy(backend)
+    node = cyclic["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    node["allOf"] = [{"$ref": self_pointer}]
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": device, "backend": cyclic}, schemas
+    )
+    assert [(violation.code, violation.location) for violation in found] == [
+        (E.SPEC_COMPONENT_DRIFT, f"{entry['id']}: operation schema")
+    ], [violation.render() for violation in found]
+    assert "reference cycle" in found[0].detail, found[0].render()
+    assert "DerivativeRecord" in found[0].detail, found[0].render()
+
+    # A component whose sibling $ref returns to itself: the node report cycles
+    # (charge at the operation schema) and so does the fallback target (charge
+    # at the component) — both named, nothing escapes.
+    cyclic_component = copy.deepcopy(backend)
+    cyclic_component["components"]["schemas"]["DerivativeRecord"]["allOf"] = [
+        {"$ref": "#/components/schemas/DerivativeRecord"}
+    ]
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": device, "backend": cyclic_component}, schemas
+    )
+    assert {(violation.code, violation.location) for violation in found} == {
+        (E.SPEC_COMPONENT_DRIFT, f"{entry['id']}: operation schema"),
+        (E.SPEC_COMPONENT_DRIFT, f"{entry['id']}: components/schemas/DerivativeRecord"),
+    }, [violation.render() for violation in found]
+
+    # The legal shape still judges: recursion that consumes the instance
+    # terminates, and the sibling assertion charges like any other.
+    consuming = copy.deepcopy(backend)
+    node = consuming["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    node.clear()
+    node.update(
+        {
+            "type": "object",
+            "properties": {"child": {"$ref": self_pointer}},
+            "required": ["reviewed_round23_field"],
+        }
+    )
+    found = validate_api_fixture(
+        CONTRACTS / "fixtures", entry, {"device": device, "backend": consuming}, schemas
+    )
+    assert {violation.code for violation in found} == {E.API_SCHEMA_MISSING_FIELD}, [
+        violation.render() for violation in found
+    ]

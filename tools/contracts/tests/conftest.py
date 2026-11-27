@@ -648,6 +648,27 @@ CORPUS_MUTATIONS: Final[tuple[tuple[str, str, Mutator], ...]] = (
         "FIXTURE_INDEX_INVALID",
         _set_entry_field("backend/valid/derivative-response-200", "kind", []),
     ),
+    # Round 23: the rooted report's RecursionError class — an inline response
+    # schema whose allOf $ref returns to itself must charge the vector, not
+    # abort the run (the library recurses where round 21's resolver refused).
+    (
+        "documents",
+        "SPEC_COMPONENT_DRIFT",
+        _backend_yaml_subject(
+            lambda d: d["paths"]["/derivatives/{id}"]["get"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"].__setitem__(
+                "allOf",
+                [
+                    {
+                        "$ref": "#/paths/~1derivatives~1%7Bid%7D/get/responses/200"
+                        "/content/application~1json/schema"
+                    }
+                ],
+            ),
+            "backend/valid/derivative-response-200",
+        ),
+    ),
 )
 
 

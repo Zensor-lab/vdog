@@ -705,9 +705,12 @@ def _operation_json_schema_node(
 
 #: How a rooted report can die on pointers: the set ``check_local_refs``
 #: refuses, plus the ``referencing`` family the rooted registry raises for a
-#: pointer into a document that does not carry it. Each is a named finding,
-#: never the exception reaching the CLI as exit 2.
-_RESOLUTION_REPORT_FAILURES: Final = (Unresolvable, *(_RESOLUTION_FAILURES))
+#: pointer into a document that does not carry it, plus the ``RecursionError``
+#: the standard library reaches when a pointer chain revisits an in-flight
+#: schema (round 21's ``resolve_refs`` refused cycles before evaluation; the
+#: rooted validator recurses instead, and an uncaught one was exit 2 with no
+#: report). Each is a named finding, never the exception reaching the CLI.
+_RESOLUTION_REPORT_FAILURES: Final = (Unresolvable, *(_RESOLUTION_FAILURES), RecursionError)
 
 
 def _rooted_schema_errors(
@@ -723,9 +726,22 @@ def _rooted_schema_errors(
     the old failure mode: the round-21 whole-node preflight answered "unreadable"
     for both shapes alike, and the body fell back to the bare component with
     nothing naming the defect.
+
+    A same-instance reference cycle — an inline schema whose ``allOf`` points
+    back at itself — is the third shape the rooted validator answers by dying:
+    the library follows the pointer until Python raises ``RecursionError``,
+    which names no pointer (it is deep in the unwound stack), so the reason
+    says ``reference cycle`` in words. An instance-consuming recursion, which
+    is legal JSON Schema, never reaches this branch: it terminates and simply
+    reports its errors.
     """
     try:
         return schema_error_report(target, instance, root=document), None
+    except RecursionError:
+        return [], (
+            "$ref chain revisits an in-flight schema without consuming the "
+            "instance (reference cycle); maximum recursion depth reached"
+        )
     except _RESOLUTION_REPORT_FAILURES as error:
         return [], f"$ref cannot be followed: {error!r}"
 
