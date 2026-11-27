@@ -6,18 +6,22 @@
 # findings PR-R1..PR-R3):
 #
 #  1. SOURCE DECLARATION — every required key must be EXPLICITLY declared in
-#     firmware/sdkconfig.defaults in a form Kconfig HONOURS (PR-R5, strict
-#     full-token): bool keys only as `CONFIG_KEY=y` (lowercase y; `Y`/`1` are
-#     parsed by Kconfig but ignored, silently leaving the SDK default),
-#     string keys only as `CONFIG_KEY="value"` (quotes required). Anything
-#     else counts as undeclared: "resolved value may be an SDK default".
+#     firmware/sdkconfig.defaults on a line equal, CHARACTER FOR CHARACTER,
+#     to `CONFIG_KEY=y` (lowercase; `Y`/`1` are parsed by Kconfig but
+#     ignored, silently keeping the SDK default) or `CONFIG_KEY="value"`
+#     (quotes required). Raw-line validation with NO trimming: any space
+#     around `=` or in the value, or leading whitespace (rejected
+#     fail-closed; Kconfig tolerates it), counts as undeclared (PR-R5,
+#     PR-R8). Offending forms report "resolved value may be an SDK default".
 #  2. RESOLVED PRESENT-AND-EQUAL — the generated config/sdkconfig.json holds
 #     each required key with exactly the expected value (type-strict).
 #  3. COMPONENT DEFINITIONS — components/vdog_board/CMakeLists.txt declares
 #     VDOG_BOARD_ID_STR == expected board id and VDOG_BOARD_PSRAM_SIZE_BYTES
 #     == expected 8 MiB, validated as COMPLETE tokens (PR-R6) over ALL
-#     occurrences after comment stripping (PR-N1), so what is actually
-#     compiled into the image cannot disagree with the gate (PR-R2).
+#     occurrences after comment stripping (PR-N1); every occurrence must sit
+#     inside a target_compile_definitions() block scoped PRIVATE (PR-R9),
+#     which together with the #error guards in vdog_board_idf.c provably
+#     carries these definitions into the image (PR-R2).
 #  4. EFFECTIVE PARTITION TABLE — PlatformIO's board_build.partitions, the
 #     resolved CONFIG_PARTITION_TABLE_CUSTOM_FILENAME and the expected CSV are
 #     the same file; any mismatch names all three (PR-R3).
@@ -111,6 +115,11 @@ COMPONENT_CMAKE_RELPATH = os.path.join("components", "vdog_board",
 _COMPONENT_BOARD_RE = re.compile(r"VDOG_BOARD_ID_STR\s*=\s*([^\s)]+)")
 _COMPONENT_PSRAM_RE = re.compile(
     r"VDOG_BOARD_PSRAM_SIZE_BYTES\s*=\s*([^\s)]+)")
+# Full target_compile_definitions(...) blocks (post comment-strip) for the
+# PRIVATE-scope provenance check (PR-R9); definition tokens never contain
+# parentheses, so [^()]* safely captures a block body.
+_COMPILE_DEFS_BLOCK_RE = re.compile(
+    r"target_compile_definitions\s*\(([^()]*)\)", re.DOTALL)
 # A complete unsigned-decimal literal with optional C integer suffixes.
 _PSRAM_LITERAL_RE = re.compile(r"\A[0-9]+[uUlL]*\Z")
 # CMake comments run from '#' to end of line (PR-N1): a commented-out
@@ -190,52 +199,60 @@ def _norm_path(value):
 # Layer 1: source declarations in sdkconfig.defaults (PR-R1)
 # ---------------------------------------------------------------------------
 
-def parse_sdkconfig_defaults(text):
-    """{KEY: raw_value} for `KEY=value` lines; #/; comments and blanks
-    ignored. The CONFIG_ prefix is kept exactly as written."""
-    declared = {}
+def last_raw_assignments(text):
+    """{KEY: LAST raw assignment line} — validated WITHOUT any trimming
+    (PR-review round 5, PR-R8).
+
+    Only two normalisations happen, both harmless against Kconfig: rstrip of
+    trailing whitespace/CRLF, and rejection of whole-line `#`/`;` comments
+    (as today). Leading whitespace and spaces around `=` SURVIVE into the
+    candidate, so the exact-match in evaluate_source_declarations sees what
+    Kconfig's parser sees. On duplicate keys Kconfig applies last-wins, so
+    only the LAST raw line is judged; a malformed last line fails even if an
+    earlier line was valid (fail-closed; the repo file has no duplicates)."""
+    last = {}
     for raw in text.splitlines():
-        line = raw.strip()
+        line = raw.rstrip()
         if not line or line[0] in "#;" or "=" not in line:
             continue
-        key, _, value = line.partition("=")
-        declared[key.strip()] = value.strip()
-    return declared
+        last[line.split("=", 1)[0]] = line
+    return last
 
 
-def _declaration_is_effective(raw, expected):
-    """True only when `KEY=<raw>` is the exact form Kconfig actually honours.
+def _required_declaration_line(key, expected):
+    """The ONE assignment-line form that is honoured as written:
+    `CONFIG_<KEY>=y|n` or `CONFIG_<KEY>="value"`.
 
-    STRICT full-token semantics (PR-review round 4, PR-R5): Kconfig bool
-    symbols are assigned ONLY by lowercase `y`/`n` — `Y`/`N`/`1` are parsed
-    but IGNORED, so the resolved key silently falls back to the SDK default
-    and "explicitly declared" would be a lie. String symbols must be exactly
-    double-quoted and equal (quotes required). Anything else behaves exactly
-    like an absent line, so the caller reports it as undeclared. Whitespace
-    around key/value was already stripped (Kconfig strips too). NOTE: on
-    duplicate lines the LAST assignment is what is checked (fail-closed:
-    a malformed last line fails even if an earlier line was valid, which is
-    stricter than Kconfig and only reachable by pathological files)."""
+    STRICT raw syntax (PR-R5 + PR-R8): no space before OR after `=`, no
+    interior whitespace in the value, lowercase bool letter, double quotes
+    required. Deliberate decision on leading whitespace: Kconfig tolerates
+    it, we REJECT it too (fail-closed, simplest exact rule; the repository
+    file uses no leading whitespace) — documented here and in plan §10/§12.
+    Anything else (uppercase `Y`, `=1`, `KEY= y`, `KEY =y`, …) behaves like
+    an absent line and must be reported as undeclared."""
     if isinstance(expected, bool):
-        return raw == ("y" if expected else "n")
-    return raw == '"%s"' % expected
+        value = "y" if expected else "n"
+    else:
+        value = '"%s"' % expected
+    return "CONFIG_%s=%s" % (key, value)
 
 
 def evaluate_source_declarations(defaults_path):
     """Every required key must be EXPLICITLY declared in sdkconfig.defaults
-    in a form Kconfig honours (strict; PR-R1 + PR-R5).
+    on a line equal, CHARACTER FOR CHARACTER, to the only honoured form
+    (strict; PR-R1 + PR-R5 + PR-R8).
 
     A key absent there — or present only in a form Kconfig ignores, such as
-    `KEY=Y` — but visible in the resolved config may simply be an ESP-IDF
-    default, which acceptance §7.3 forbids."""
-    declared = parse_sdkconfig_defaults(
+    `KEY=Y` or `KEY= y` (Kconfig reads these as no assignment and resolves
+    the SDK default) — may simply be an ESP-IDF default, which acceptance
+    §7.3 forbids; it is reported with the standard undeclared message."""
+    last = last_raw_assignments(
         _read_text(defaults_path, "sdkconfig.defaults"))
     where = _rel(defaults_path)
     failures = []
     for key, expected in EXPECTED_KEYS:
         name = "CONFIG_%s" % key
-        raw = declared.get(name)
-        if raw is None or not _declaration_is_effective(raw, expected):
+        if last.get(name) != _required_declaration_line(key, expected):
             failures.append(
                 "%s: not declared in %s (resolved value may be an SDK default)"
                 % (name, where))
@@ -290,6 +307,20 @@ def evaluate_resolved(config, observed_board):
 # Layer 3: component compile definitions actually built in (PR-R2)
 # ---------------------------------------------------------------------------
 
+def _block_scope(body):
+    """None when the block is scoped PRIVATE; else a label for the problem
+    (PR-review round 5, PR-R9: definitions must reach the compiler via
+    PRIVATE target_compile_definitions; INTERFACE/PUBLIC silently omit the
+    -D from this component's own sources)."""
+    if re.search(r"\bINTERFACE\b", body):
+        return "INTERFACE"
+    if re.search(r"\bPUBLIC\b", body):
+        return "PUBLIC"
+    if not re.search(r"\bPRIVATE\b", body):
+        return "no PRIVATE keyword"
+    return None
+
+
 def evaluate_component_definitions(cmake_path):
     """EVERY definition in the component CMakeLists.txt must equal EXPECTED.
 
@@ -302,14 +333,50 @@ def evaluate_component_definitions(cmake_path):
     the token), the PSRAM token must be a full unsigned-decimal literal
     (optional u/l suffixes) equal to the expected capacity — a partial
     capture of an expression like 8388608u/2u (which the compiler receives
-    in full) is never accepted."""
+    in full) is never accepted. Finally, each occurrence must sit inside a
+    target_compile_definitions() block scoped PRIVATE: INTERFACE/PUBLIC
+    scopes keep the literals but silently remove the -D from this
+    component's own translation units, and definitions outside such a block
+    (e.g. smuggled through set()) never reach the compiler at all (PR-R9;
+    the structural backstop is the #error guards in vdog_board_idf.c)."""
     text = _CMAKE_COMMENT_RE.sub("", _read_text(cmake_path,
                                                 "component CMakeLists.txt"))
     where = _rel(cmake_path)
     failures = []
 
+    blocks = [(m.start(), m.end(), m.group(1))
+              for m in _COMPILE_DEFS_BLOCK_RE.finditer(text)]
+
+    def _check_provenance(name, matches):
+        seen_bodies = []
+        outside = 0
+        for m in matches:
+            body = None
+            for start, end, block_body in blocks:
+                if start < m.start() < end:
+                    body = block_body
+                    break
+            if body is None:
+                outside += 1
+            elif body not in seen_bodies:
+                seen_bodies.append(body)
+        if outside:
+            failures.append(
+                "%s (%s): %d occurrence(s) outside any "
+                "target_compile_definitions() block (compile-flag provenance "
+                "unverified; these must be PRIVATE compile definitions)"
+                % (name, where, outside))
+        for body in seen_bodies:
+            scope = _block_scope(body)
+            if scope is not None:
+                failures.append(
+                    "%s (%s): target_compile_definitions() must be scoped "
+                    "PRIVATE, found %s in block %r"
+                    % (name, where, scope, " ".join(body.split())))
+
+    board_ms = list(_COMPONENT_BOARD_RE.finditer(text))
     board_token = '"%s"' % EXPECTED_BOARD
-    board_values = [m.group(1) for m in _COMPONENT_BOARD_RE.finditer(text)]
+    board_values = [m.group(1) for m in board_ms]
     if not board_values:
         failures.append(
             "VDOG_BOARD_ID_STR: not defined in %s (the image would carry no "
@@ -321,9 +388,10 @@ def evaluate_component_definitions(cmake_path):
                 "VDOG_BOARD_ID_STR (%s): expected %r, got %r (%d "
                 "occurrence(s), %d wrong)" % (where, board_token, wrong[0],
                                               len(board_values), len(wrong)))
+        _check_provenance("VDOG_BOARD_ID_STR", board_ms)
 
-    psram_tokens = [m.group(1)
-                    for m in _COMPONENT_PSRAM_RE.finditer(text)]
+    psram_ms = list(_COMPONENT_PSRAM_RE.finditer(text))
+    psram_tokens = [m.group(1) for m in psram_ms]
     if not psram_tokens:
         failures.append("VDOG_BOARD_PSRAM_SIZE_BYTES: not defined in %s "
                         "(expected %d)" % (where, EXPECTED_PSRAM_SIZE_BYTES))
@@ -344,6 +412,7 @@ def evaluate_component_definitions(cmake_path):
                 "(%d occurrence(s), %d wrong)"
                 % (where, EXPECTED_PSRAM_SIZE_BYTES, wrong[0], detail,
                    len(psram_tokens), len(wrong)))
+        _check_provenance("VDOG_BOARD_PSRAM_SIZE_BYTES", psram_ms)
     return failures
 
 

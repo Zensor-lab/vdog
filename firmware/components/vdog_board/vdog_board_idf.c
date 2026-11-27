@@ -18,6 +18,22 @@
  * is a definedness test on purpose. */
 #include "sdkconfig.h"
 
+/* ---- structural compile-flag enforcement (PR-review round 5, PR-R9) ----
+ * VDOG_BOARD_ID_STR and VDOG_BOARD_PSRAM_SIZE_BYTES arrive from the PRIVATE
+ * target_compile_definitions() in this component's CMakeLists.txt. A text
+ * check in scripts/check_board_config.py cannot prove the COMPILER receives
+ * them (e.g. PRIVATE -> INTERFACE silently drops the defines from this
+ * translation unit while every literal stays intact), so this file refuses
+ * to compile without them: a scope flip or deleted definition is a hard
+ * compile error, never a green gate shipping an unconfigured image. The
+ * gate keeps its text layer as defence in depth. */
+#if !defined(VDOG_BOARD_ID_STR)
+#error "vdog_board_idf.c requires VDOG_BOARD_ID_STR from the component build (PRIVATE target_compile_definitions)"
+#endif
+#if !defined(VDOG_BOARD_PSRAM_SIZE_BYTES)
+#error "vdog_board_idf.c requires VDOG_BOARD_PSRAM_SIZE_BYTES from the component build (PRIVATE target_compile_definitions)"
+#endif
+
 #define VDOG_BOARD_MIB (1024u * 1024u)
 
 vdog_board_profile_t vdog_board_profile_from_sdkconfig(void)
