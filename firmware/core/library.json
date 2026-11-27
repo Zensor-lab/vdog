@@ -1,10 +1,10 @@
 {
   "name": "vdog-core",
-  "version": "0.2.1",
-  "description": "vdog portable pure-C core module (host-tested, shared with the ESP-IDF component build)",
-  "keywords": "vdog,core,version",
+  "version": "1.1.0",
+  "description": "vdog portable pure-C core modules (version + board identity gate), host-tested and shared verbatim with the ESP-IDF component builds",
+  "keywords": "vdog,core,version,board",
   "license": "MIT",
   "frameworks": "*",
   "platforms": "*",
-  "headers": "vdog_core.h"
+  "headers": ["vdog_core.h", "vdog_board.h"]
 }
