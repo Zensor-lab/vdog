@@ -105,6 +105,9 @@ _BOOL_DECL_RE = re.compile(r"\A([A-Za-z])\Z")
 _COMPONENT_BOARD_RE = re.compile(r"VDOG_BOARD_ID_STR\s*=\s*\"([^\"]*)\"")
 _COMPONENT_PSRAM_RE = re.compile(
     r"VDOG_BOARD_PSRAM_SIZE_BYTES\s*=\s*([0-9][0-9]*[uUlL]*)")
+# CMake comments run from '#' to end of line (PR-N1): a commented-out
+# definition must never count as a definition, in either direction.
+_CMAKE_COMMENT_RE = re.compile(r"#.*")
 
 _PREFIX = "*** vdog board-config gate:"
 
@@ -274,30 +277,43 @@ def evaluate_resolved(config, observed_board):
 # ---------------------------------------------------------------------------
 
 def evaluate_component_definitions(cmake_path):
-    """The definitions in the component CMakeLists.txt must equal EXPECTED."""
-    text = _read_text(cmake_path, "component CMakeLists.txt")
+    """EVERY definition in the component CMakeLists.txt must equal EXPECTED.
+
+    Matching happens after CMake comments (# ... EOL) are stripped, and every
+    occurrence is checked (finditer), not just the first: CMake/the compiler
+    ultimately take the LAST -D definition, so a second tampered block must
+    never hide behind a correct first one (PR-review round 3, PR-N1)."""
+    text = _CMAKE_COMMENT_RE.sub("", _read_text(cmake_path,
+                                                "component CMakeLists.txt"))
     where = _rel(cmake_path)
     failures = []
 
-    board_match = _COMPONENT_BOARD_RE.search(text)
-    if board_match is None:
+    board_values = [m.group(1) for m in _COMPONENT_BOARD_RE.finditer(text)]
+    if not board_values:
         failures.append(
             "VDOG_BOARD_ID_STR: not defined in %s (the image would carry no "
             "board id; expected %r)" % (where, EXPECTED_BOARD))
-    elif board_match.group(1) != EXPECTED_BOARD:
-        failures.append("VDOG_BOARD_ID_STR (%s): expected %r, got %r"
-                        % (where, EXPECTED_BOARD, board_match.group(1)))
+    else:
+        wrong = [v for v in board_values if v != EXPECTED_BOARD]
+        if wrong:
+            failures.append(
+                "VDOG_BOARD_ID_STR (%s): expected %r, got %r (%d occurrence(s)"
+                ", %d wrong)" % (where, EXPECTED_BOARD, wrong[0],
+                                 len(board_values), len(wrong)))
 
-    psram_match = _COMPONENT_PSRAM_RE.search(text)
-    if psram_match is None:
+    psram_values = [int(re.sub(r"[uUlL]", "", m.group(1)))
+                    for m in _COMPONENT_PSRAM_RE.finditer(text)]
+    if not psram_values:
         failures.append("VDOG_BOARD_PSRAM_SIZE_BYTES: not defined in %s "
                         "(expected %d)" % (where, EXPECTED_PSRAM_SIZE_BYTES))
     else:
-        actual = int(re.sub(r"[uUlL]", "", psram_match.group(1)))
-        if actual != EXPECTED_PSRAM_SIZE_BYTES:
+        wrong = [v for v in psram_values if v != EXPECTED_PSRAM_SIZE_BYTES]
+        if wrong:
             failures.append(
-                "VDOG_BOARD_PSRAM_SIZE_BYTES (%s): expected %d, got %d"
-                % (where, EXPECTED_PSRAM_SIZE_BYTES, actual))
+                "VDOG_BOARD_PSRAM_SIZE_BYTES (%s): expected %d, got %d "
+                "(%d occurrence(s), %d wrong)"
+                % (where, EXPECTED_PSRAM_SIZE_BYTES, wrong[0],
+                   len(psram_values), len(wrong)))
     return failures
 
 
