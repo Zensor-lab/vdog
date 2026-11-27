@@ -513,3 +513,22 @@ scope-wording correction (plan §10 round-6 block; §11 "round 6 re-run",
 | `check_board_config.py` layer 1 provenance (PR-R11) | An assignment whose PRECEDING non-blank line matches `^\s*#\s*default\b` (covers `# default:`, `# default: <expr>`, extra spaces/tabs) is ESP-IDF's own default-provenance signal — the pinned Kconfig does not count it as user selection — and therefore does NOT satisfy the explicit-declaration check; it fails with the standard `not declared ... (resolved value may be an SDK default)` message. Last-wins duplicates keep working (an unmarked later line overrides a marked earlier one). |
 | Scope-check wording (PR-R12, wording only) | Corrected CMake semantics documented in `_block_scope`/`evaluate_component_definitions`: PRIVATE = target's own compilation only (policy: definitions stay local to the consuming component); PUBLIC = target AND consumers (rejected as scope creep); INTERFACE = consumers only (rejected: own compilation would silently lose the `-D`). Enforcement unchanged — all non-PRIVATE rejected; the `#error` guards enforce macro arrival at compile time regardless of scope. |
 | Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1/n2 — 29/29 expected exits (driver out of tree, same location). |
+
+### Package 1.1 addendum — PR-review round 7 (append-only, 2026-11-27)
+
+Supersedes nothing above; records the round-7 parser-faithfulness rewrite
+(plan §10 round-7 block; §11 "round 7 re-run", 32-case harness). Authority
+for all marker semantics: the vendored loader the pinned build runs —
+`esp_kconfiglib` (esp_idf_kconfig 3.13.0, ESP-IDF v6.1.0) at
+`~/.platformio/penv/.espidf-6.1.0/lib/python3.12/site-packages/esp_kconfiglib/`,
+driven by kconfgen via framework-espidf `tools/cmake/kconfig.cmake:211-212`
+(`${python} -m kconfgen`) with `:230-237` writing the layer-2 resolved
+`sdkconfig.json` (`--output json`) — i.e. the same parser sits under both
+gate layers.
+
+| Item | Behaviour after round 7 |
+| --- | --- |
+| `check_board_config.py` layer 1 provenance (PR-R13, mirrors PR-R11) | `last_raw_assignments()` mirrors the parser's `value_is_default` machine exactly: marker iff `line.strip() == "# default:"` (core.py:1399-1402; `constants.py:54`) — `# default: (expr)`, `#  default:`, `#default:` are ordinary comments; the flag PERSISTS across comments/blanks/malformed lines (core.py:1505-1514) and is consumed+cleared by the FIRST subsequent set (`CONFIG_([^=]+)=`, core.py:778/1416) or `is not set` (core.py:779/1506) assignment (clears core.py:1422/1440/1444/1476/1500/1520/1539/1543/1552 + loop-tail `:1610`); DEP-OP banner lines clear it (core.py:1404-1411; `constants.py:32-33`). Flagged assignment → recorded None → standard `not declared … (resolved value may be an SDK default)` failure. |
+| Documented stricter deviations | `is not set` line as last mention of a required key records None (parser resolves unset there ⇒ certainly not an explicit pin; repo file contains none); exact raw-line syntax (PR-R5/R8) still decides declaredness; leading-whitespace lines match neither anchored regex (parser: malformed, marker persists) and stay fail-closed. |
+| Round-6 correction | The round-6 rule ("preceding non-blank line matches `^\s*#\s*default\b`") was wrong in both directions: it let `# default:` + intervening comment + assignment PASS (parser: default → must fail; new p1 → 1, pre-fix 0) and rejected `# default: (some expr)` (parser: ordinary comment → explicit pin; n2 expectation CORRECTED to 0). |
+| Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1, n2 (corrected), p1, p3, p4 — 32/32 expected exits (driver out of tree, same location). |
