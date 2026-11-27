@@ -1,7 +1,9 @@
 # vdog implementation plan
 
 Status: **IN PROGRESS — 0.2 qualified; 0.9 implemented on
-`opencode/0.9-ci-release`, hosted run pending**, revised 2026-11-21. This is the
+`opencode/0.9-ci-release`, hosted run pending; 1.1 implemented on
+`opencode/1.1-fw-bootstrap` (BUILD/HOST evidence only, review/verification
+pending)**, revised 2026-11-27. This is the
 master backlog, not authorization to execute every stage in one assignment. The
 minimal firmware and portable host tests exist with BUILD/HOST evidence.
 Recording, device operation and every hosted CI/tag/Release result are not
@@ -255,6 +257,15 @@ stage the dependencies listed in each package override simple numeric order.
 
 ### 1.1 Bootstrap the firmware and portable core
 
+- Status: **IN PROGRESS — implemented on `opencode/1.1-fw-bootstrap`
+  (2026-11-27, BUILD/HOST evidence only)**: portable board-profile core with
+  host-tested identity gate, build-time board-config + core-purity gates on the
+  proto environment, `components/vdog_board` adapter and the board report in
+  `main.c`. Pending lead review, test-engineer verification and merge; **no
+  DEVICE evidence** (device/board checks stay in 1.2–1.4) and 0.3/0.7 wiring
+  and bench approval remain outstanding, so every pin reference is
+  provisional. See [package 1.1 assignment](1.1-assignment.md) and
+  [toolchain addendum](../toolchain.md).
 - Depends: 0.2, 0.3, 0.6, 0.7. Writable: `firmware/`, relevant CI/profile docs.
 - Steps: create pinned PlatformIO ESP-IDF structure, `vdog_xiao_sense_proto` and `native`,
   component interfaces, board selection and version reporting; add minimal host
