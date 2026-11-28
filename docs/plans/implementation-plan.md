@@ -5,8 +5,9 @@ Status: **IN PROGRESS — 0.2 qualified; 0.9 implemented on
 2026-11-27 as `957b415`, BUILD/HOST evidence only; esp32-reviewer approved,
 test-engineer VERIFIED, and the Pull request review bot approved at `23697ca`
 after nine rounds closing PR-R1..R15 + PR-N1/N2 — full round log in
-[package 1.1 assignment](1.1-assignment.md) §10–§11); 1.2 assigned — desk
-part (BUILD/HOST) on `opencode/1.2-board-bringup`, DEVICE part gated on E01
+[package 1.1 assignment](1.1-assignment.md) §10–§11); 1.2 **Part A
+IMPLEMENTED (BUILD/HOST)** on `opencode/1.2-board-bringup` — device half
+PENDING, gated on E01
 board-marking photos + operation-time port re-identification
 ([package 1.2 assignment](1.2-assignment.md))**, revised 2026-11-28. This is the
 master backlog, not authorization to execute every stage in one assignment. The
@@ -320,13 +321,13 @@ stage the dependencies listed in each package override simple numeric order.
 
 ### 1.2 Bring up board, memory and recovery interface
 
-- Status: **ASSIGNED — desk part (BUILD/HOST) on `opencode/1.2-board-bringup`
-  ([package 1.2 assignment](1.2-assignment.md), plan v2)**; device part
-  gated on owner board-marking photos (E01), operation-time port
-  re-identification and Part A merge. **Recorded deviation (2026-11-28,
-  accepted in plan check):** "correct sensor identity" is deferred to
-  package 1.3 — probing requires camera initialization owned by 1.3; the
-  1.3 plan must carry it as acceptance.
+- Status: **PART A IMPLEMENTED (BUILD/HOST) on `opencode/1.2-board-bringup`
+  ([package 1.2 assignment](1.2-assignment.md), plan v2) — device half
+  PENDING**; device part gated on owner board-marking photos (E01),
+  operation-time port re-identification and Part A merge. **Recorded
+  deviation (2026-11-28, accepted in plan check):** "correct sensor
+  identity" is deferred to package 1.3 — probing requires camera
+  initialization owned by 1.3; the 1.3 plan must carry it as acceptance.
 - Depends: 1.1 plus authorized identified hardware.
 - Steps: verify rails/current, module marking, flash capacity, PSRAM size/mode,
   native USB/BOOT recovery and exact XIAO/Sense GPIO setup; log sanitized identity.

@@ -570,3 +570,52 @@ Supersedes nothing above; records the round-9 line-boundary class fix
 | Purity scanner decision | Keeps `str.splitlines()` deliberately: finest split = detection superset (tokens/`#include`s contain no separator chars, so finer splitting cannot fragment matches; catches `;\u2028#include <ff.h>` the gcc \n-only model misses); separator-inside-token tampering defeats both scan models but fails loudly at compile/link (native build + `#error` guards). |
 | Parser-truth note (r3) | `CONFIG_X=y\u2028junk` is ONE line the parser accepts via the first-character bool rule (core.py:1467-1479) — user-selected `y`; the gate's exact raw-line match still rejects (documented stricter deviation). |
 | Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1, n2 (corrected), p1, p3, p4, q1–q3, r1, r1b ×4, r2, r3, r4, r4b, r4c — 45/45 expected exits; all six fail-open faces reproduced at exit 0 on 6c24739 before the fix. |
+
+## Package 1.2 addendum (append-only, 2026-11-28)
+
+Supersedes nothing above; records package 1.2 **Part A** (desk) verification
+on branch `opencode/1.2-board-bringup` (base `957b415`). **DEVICE evidence:
+none** — Part B is gated by `docs/bench-assignment.md` wake conditions and
+nothing was uploaded, monitored or otherwise touched on a device.
+
+Host inventory re-confirmation (unchanged from §2/§7): macOS 26.6.2
+(25G83) arm64; PlatformIO Core 6.2.0 (`~/.local/bin/pio`);
+PlatformIO-bundled Python 3.12; host `python3` 3.14.6.
+
+New in the image this package: four extra translation units
+(`core/vdog_mem.c`, `core/vdog_recovery.c`, `core/vdog_straps.c`,
+`components/vdog_board/vdog_board_hw.c`) — read-only memory/identity
+queries and a decision table; no pin, peripheral or microphone runtime code.
+
+### Part A commands, exit codes and counts (BUILD/HOST separated)
+
+BUILD — from the repository root:
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `pio run -d firmware -e vdog_xiao_sense_proto -t clean` | 0 | clean |
+| `pio run -d firmware -e vdog_xiao_sense_proto` | 0 | SUCCESS (47.3 s); **1109** `Compiling` lines (1.1 baseline 1105 + the four new units); **0** `warning:` lines; `vdog core-purity gate: 11 portable-core files scanned, no camera/SD/RTOS/SDK tokens`; `vdog board-config gate: …` printed at **both** post-action registrations (`checkprogsize` and `firmware.bin`) |
+| `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | text 153189 / data 63012 / bss 376829 (1.1 reference: text 149597, data 61112–61128, bss 376865–376873 — the deltas are the four new units' code/rodata); `firmware.bin` 216320 B (1.1: 210848 B) |
+
+HOST — from the repository root:
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `pio test -d firmware -e native` | 0 | **61 cases: 61 succeeded, 0 failed** = 39 new (test_vdog_mem 16, test_vdog_recovery 12, test_vdog_straps 11) + inherited **22/22** (test_vdog_board 15, test_vdog_core 7); all cpp_smoke TUs linked across the C/C++ boundary in all five suites |
+| `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | all five groups `[SKIPPED]` — embedded compile/link qualification of the Unity entries **only**; nothing executed, uploaded or monitored (never DEVICE evidence) |
+| `python3 firmware/scripts/check_core_purity.py` | 0 | gate green standalone (11 files) |
+| `python3 firmware/scripts/check_board_config.py --sdkconfig firmware/.pio/build/vdog_xiao_sense_proto/config/sdkconfig.json --board seeed_xiao_esp32s3 --defaults firmware/sdkconfig.defaults --component-cmake firmware/components/vdog_board/CMakeLists.txt --platformio-ini firmware/platformio.ini` | 0 | 11 keys present-and-equal; board agreed by env + component definition; partition table agreed by all three sources |
+| `git diff --check` | 0 | clean (no whitespace errors; new files also free of separator control bytes, tabs, and missing final newlines) |
+
+**Gate scripts were NOT modified by package 1.2 Part A** (the new core files
+are pure C11 and passed `check_core_purity.py` without any allow-list
+change), so the 1.1 §12 parser-fidelity bar and the 45-case out-of-tree
+harness re-run obligation were not triggered; they apply unchanged to any
+future gate-script edit.
+
+Carry-overs (plan A7): F6 documented as an intentional variant in
+`tools/firmware/tests/test_12_gate_scripts_fidelity.py`; F7(b) out-of-tree
+scenario drivers re-homed as NEW files under `tools/firmware/tests/`
+(0.9-branch ownership of existing `tools/firmware/**` respected — zero
+edits to pre-existing files there); the macro-rename residual is covered by
+`tools/firmware/tests/test_12_board_definition_error_guards.py`.
