@@ -109,8 +109,8 @@ unverified here.
 
 ### Firmware CI and prebuilt releases
 
-[Stage 0.9](docs/plans/0.9-firmware-ci-release.md) is implemented in
-`.github/workflows/` on this branch and takes effect for PRs opened from it:
+[Stage 0.9](docs/plans/0.9-firmware-ci-release.md) is live on `main` via
+`.github/workflows/`:
 
 - every PR runs the stable checks `firmware-build`, `firmware-host-tests` and
   `firmware-package-tests` against the immutable PR head SHA and uploads
@@ -127,9 +127,12 @@ unverified here.
 Releases remain **prototype/pre-release** evidence: BUILD/HOST only,
 `hardware_verified=false`, no recording and no device OTA. Installing on real
 hardware is still a separate, deferred gate (CI-T15). Branch protection on
-`main` remains an OWNER decision. The first hosted run of these workflows is
-still pending, so no hosted result is claimed; see
-[validation](docs/validation.md) section 5 for the per-check status.
+`main` remains an OWNER decision. The hosted workflows have run for real and
+their results were verified live on 2026-11-28 (PRs #3–#7, six `main` runs,
+peeled tags, digested pre-release assets and a packaged-installer check), so
+hosted CI-T01–T14 are recorded as verified — with Windows `install.ps1`
+(`pwsh`) and CI-T15 explicitly not; see
+[validation](docs/validation.md) section 5 for the per-check evidence.
 
 ## Documentation
 
