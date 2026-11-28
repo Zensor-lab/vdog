@@ -1,11 +1,12 @@
 /*
  * vdog portable recovery/identity core module — implementation (package
  * 1.2, plan A2). Pure C11: stdio (snprintf) only. See vdog_recovery.h for
- * the contract: classification matches COMPLETE ROM banner forms only and
- * never guesses; the identity struct is the sanitizer (no member can hold
- * a full MAC or eFuse raw data, the chip model is a closed enum, and the
- * board tag is validated at set time and re-validated with a bounded scan
- * at render time — review M-C/M-D).
+ * the contracts: the classifier matches COMPLETE ROM-line forms only
+ * (review R2-A — anchored "rst:0xNN (CAUSE),boot:0xNN (BANNER)" with the
+ * banner WHOLE-matching a closed set from the esptool ESP32-S3 boot-log
+ * reference) and never guesses; the identity struct is the sanitizer
+ * (reviews M-D/R2-B — closed-set chip model, narrow vdg- project label,
+ * bounded re-validation at render time, no member can hold a full MAC).
  */
 #include <stdio.h>
 #include <string.h>
@@ -20,13 +21,18 @@ static char ascii_lower(char c)
     return c;
 }
 
-/* Case-insensitive ASCII prefix test against a lowercase needle. */
-static int starts_with_ci(const char *s, const char *lower_prefix)
+/* Case-insensitive ASCII compare of the first n bytes of s against a
+ * lowercase needle (no <ctype.h> locale surprises). */
+static int starts_with_ci_n(const char *s, size_t len, const char *needle)
 {
+    size_t n = strlen(needle);
     size_t i;
 
-    for (i = 0; lower_prefix[i] != '\0'; ++i) {
-        if (ascii_lower(s[i]) != lower_prefix[i]) {
+    if (len < n) {
+        return 0;
+    }
+    for (i = 0; i < n; ++i) {
+        if (ascii_lower(s[i]) != needle[i]) {
             return 0;
         }
     }
@@ -41,28 +47,90 @@ static int is_hex_digit(char c)
                : 0;
 }
 
-static int is_banner_word_char(char c)
+static unsigned hex_val(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return (unsigned)(c - '0');
+    }
+    return (unsigned)(ascii_lower(c) - 'a' + 10);
+}
+
+static int is_blank(char c)
+{
+    return (c == ' ' || c == '\t') ? 1 : 0;
+}
+
+static size_t skip_blank(const char *s, size_t i, size_t end)
+{
+    while (i < end && is_blank(s[i])) {
+        ++i;
+    }
+    return i;
+}
+
+/* Parse "0x" + exactly 1..2 hex digits at s[i]; returns the new index and
+ * the value, or (size_t)-1 when malformed. */
+static size_t parse_hex12(const char *s, size_t i, size_t end, unsigned *out)
+{
+    size_t digits;
+
+    if (!(i + 1u < end && s[i] == '0' && (s[i + 1u] == 'x' || s[i + 1u] == 'X'))) {
+        return (size_t)-1;
+    }
+    i += 2u;
+    digits = i;
+    while (i < end && is_hex_digit(s[i])) {
+        ++i;
+    }
+    if (i - digits < 1u || i - digits > 2u) {
+        return (size_t)-1; /* ROM values fit in 8 bits: 1..2 digits only */
+    }
+    {
+        size_t k;
+        unsigned v = 0u;
+        for (k = digits; k < i; ++k) {
+            v = v * 16u + hex_val(s[k]);
+        }
+        *out = v;
+    }
+    return i;
+}
+
+static int is_cause_char(char c)
 {
     return ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z') || c == '_' || c == '-')
+            (c >= 'A' && c <= 'Z') || c == '_')
                ? 1
                : 0;
 }
 
-/* Whole-token, case-insensitive equality against a lowercase needle, with
- * hyphen normalised to '_' so the ROM's hyphenated spellings (USB-JTAG)
- * match the underscored needle (usb_jtag). The token must match the WHOLE
- * needle (review M-C: no substring matching anywhere). */
-static int token_equals(const char *tok, size_t len, const char *needle)
+/* ---- closed banner sets: EXACTLY the esptool ESP32-S3 boot-log reference
+ * ("Boot Mode Selection", Boot Log / Boot Mode Message) list. Whole-banner
+ * equality (case-insensitive, hyphen/underscore equivalent), never
+ * substrings. SPI_FLASH_BOOT / SDIO_REI_FEO_V1_BOOT / ATE_BOOT are listed
+ * there as UNSUPPORTED boot modes and are deliberately absent: they
+ * classify UNKNOWN, never "closest class". */
+static const char *const g_vdog_normal_banners[] = {
+    "spi_fast_flash_boot"
+};
+static const char *const g_vdog_download_banners[] = {
+    "download(usb/uart0)",
+    "download_boot(uart0/uart1/sdio_rei_reo_v2)"
+};
+
+/* Whole-banner equality against one lowercase needle, with hyphen
+ * normalised to '_' on the INPUT side (the ROM's hyphenated spellings
+ * match the underscored needle). */
+static int banner_equals(const char *banner, size_t len, const char *needle)
 {
     size_t i;
 
     for (i = 0; i < len; ++i) {
-        char c = ascii_lower(tok[i]);
+        char c = ascii_lower(banner[i]);
         char n = needle[i];
 
         if (c == '-') {
-            c = '_'; /* hyphen/underscore spelling equivalence */
+            c = '_';
         }
         if (n == '\0' || c != n) {
             return 0;
@@ -71,116 +139,212 @@ static int token_equals(const char *tok, size_t len, const char *needle)
     return needle[len] == '\0';
 }
 
-/* Does the banner (text between the parentheses) contain, as a WHOLE word
- * token, any of the closed-set lowercase needles below? */
-static int banner_has_word(const char *banner, size_t len,
-                           const char *const *words, size_t n_words)
+static int banner_in_set(const char *banner, size_t len,
+                         const char *const *set, size_t n)
 {
-    size_t i = 0u;
+    size_t k;
 
-    while (i < len) {
-        size_t start;
-
-        while (i < len && !is_banner_word_char(banner[i])) {
-            ++i;
-        }
-        start = i;
-        while (i < len && is_banner_word_char(banner[i])) {
-            ++i;
-        }
-        if (i > start) {
-            size_t w;
-            for (w = 0u; w < n_words; ++w) {
-                if (token_equals(banner + start, i - start, words[w])) {
-                    return 1;
-                }
-            }
+    for (k = 0; k < n; ++k) {
+        if (banner_equals(banner, len, set[k])) {
+            return 1;
         }
     }
     return 0;
 }
 
-static const char *const g_vdog_jtag_words[] = {
-    "usb_jtag", "usb_jtag_serial", "usb_jtag_serial_boot",
-    "usb_jtag_download", "usb_jtag_serial_download", "usb_serial_jtag",
-    "usb_serial_jtag_boot", "usb_serial_jtag_download"
-};
-static const char *const g_vdog_download_words[] = {
-    "download", "download_boot", "uart_download", "sdio_download",
-    "usb_download", "spi_fast_download"
-};
-static const char *const g_vdog_normal_words[] = {
-    "spi_fast_flash", "spi_fast_flash_boot", "spi_flash_boot", "spi_boot",
-    "basic", "encrypted_flash_boot"
+/* Reset-cause names of the ROM RESET_REASON enum (installed framework's
+ * ROM reset-reason header for this target; the esptool boot-log reference
+ * points at exactly this enum for the rst:0xNN (REASON) mapping). A name
+ * here is CAUSE_KNOWN; any other well-formed token is UNRECOGNISED but
+ * never vetoes the boot-mode verdict. */
+static const char *const g_vdog_cause_names[] = {
+    "poweron_reset",
+    "rtc_sw_sys_reset",
+    "deepsleep_reset",
+    "tg0wdt_sys_reset",
+    "tg1wdt_sys_reset",
+    "rtcwdt_sys_reset",
+    "intrusion_reset",
+    "tg0wdt_cpu_reset",
+    "rtc_sw_cpu_reset",
+    "rtcwdt_cpu_reset",
+    "rtcwdt_brown_out_reset",
+    "rtcwdt_rtc_reset",
+    "tg1wdt_cpu_reset",
+    "super_wdt_reset",
+    "glitch_rtc_reset",
+    "efuse_reset",
+    "usb_uart_chip_reset",
+    "usb_jtag_chip_reset",
+    "power_glitch_reset"
 };
 
-#define VDOG_WORD_COUNT(a) (sizeof(a) / sizeof((a)[0]))
+static int cause_is_known(const char *name, size_t len)
+{
+    size_t k;
+    size_t n = sizeof(g_vdog_cause_names) / sizeof(g_vdog_cause_names[0]);
+
+    for (k = 0; k < n; ++k) {
+        if (banner_equals(name, len, g_vdog_cause_names[k])) {
+            return 1; /* banner_equals' hyphen fold is harmless here */
+        }
+    }
+    return 0;
+}
+
+void vdog_boot_evidence_init(vdog_boot_evidence_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->boot_mode = VDOG_BOOT_MODE_UNKNOWN;
+    out->cause_state = VDOG_BOOT_CAUSE_NONE;
+}
+
+/* Parse the already right-trimmed line s[0..end). Evidence commits ONLY on
+ * full-form success; on any miss it stays cleared (no half claims). */
+static vdog_boot_mode_t classify_line(const char *s, size_t end,
+                                      vdog_boot_evidence_t *ev)
+{
+    size_t i = skip_blank(s, 0, end);
+    vdog_boot_cause_state_t cause_state = VDOG_BOOT_CAUSE_NONE;
+    uint8_t rst_value = 0u;
+    char cause_name[VDOG_BOOT_CAUSE_MAX + 1u];
+    const char *open;
+    const char *close;
+    size_t banner_len;
+    size_t j;
+
+    cause_name[0] = '\0';
+
+    /* Optional "rst:0xNN (CAUSE)," prefix — structurally exact or the
+     * WHOLE line is UNKNOWN (review R2-A). */
+    if (starts_with_ci_n(s + i, end - i, "rst:")) {
+        unsigned val = 0u;
+        size_t cause_start;
+        size_t cause_len;
+
+        i += 4u; /* strlen("rst:") */
+        i = parse_hex12(s, i, end, &val);
+        if (i == (size_t)-1) {
+            return VDOG_BOOT_MODE_UNKNOWN;
+        }
+        i = skip_blank(s, i, end);
+        if (i >= end || s[i] != '(') {
+            return VDOG_BOOT_MODE_UNKNOWN;
+        }
+        ++i;
+        cause_start = i;
+        while (i < end && is_cause_char(s[i])) {
+            ++i;
+        }
+        cause_len = i - cause_start;
+        if (i >= end || s[i] != ')') {
+            return VDOG_BOOT_MODE_UNKNOWN;
+        }
+        ++i;
+        if (i >= end || s[i] != ',') {
+            return VDOG_BOOT_MODE_UNKNOWN;
+        }
+        ++i;
+        if (cause_len < 1u || cause_len > VDOG_BOOT_CAUSE_MAX) {
+            return VDOG_BOOT_MODE_UNKNOWN; /* empty/oversized: malformed */
+        }
+        memcpy(cause_name, s + cause_start, cause_len);
+        cause_name[cause_len] = '\0';
+        rst_value = (uint8_t)val;
+        cause_state = cause_is_known(cause_name, cause_len)
+                          ? VDOG_BOOT_CAUSE_KNOWN
+                          : VDOG_BOOT_CAUSE_UNRECOGNISED;
+    }
+
+    i = skip_blank(s, i, end);
+    if (!starts_with_ci_n(s + i, end - i, "boot:")) {
+        return VDOG_BOOT_MODE_UNKNOWN;
+    }
+    i += 5u; /* strlen("boot:") */
+    {
+        unsigned boot_val = 0u;
+        i = parse_hex12(s, i, end, &boot_val);
+        if (i == (size_t)-1) {
+            return VDOG_BOOT_MODE_UNKNOWN; /* "boot:0x" alone / bad hex */
+        }
+    }
+    i = skip_blank(s, i, end);
+    if (i >= end || s[i] != '(') {
+        return VDOG_BOOT_MODE_UNKNOWN;
+    }
+    open = s + i + 1u;
+    close = NULL;
+    for (j = (size_t)(open - s); j < end; ++j) {
+        if (s[j] == ')') {
+            close = s + j; /* keep the LAST close: the documented
+                            * DOWNLOAD_BOOT spelling itself contains
+                            * "(UART0/UART1/...)" */
+        }
+    }
+    if (close == NULL) {
+        return VDOG_BOOT_MODE_UNKNOWN; /* unclosed banner */
+    }
+    banner_len = (size_t)(close - open);
+    for (j = (size_t)(close - s) + 1u; j < end; ++j) {
+        if (!is_blank(s[j])) {
+            return VDOG_BOOT_MODE_UNKNOWN; /* junk after ")" */
+        }
+    }
+
+    if (banner_in_set(open, banner_len, g_vdog_normal_banners,
+                      sizeof(g_vdog_normal_banners) /
+                          sizeof(g_vdog_normal_banners[0]))) {
+        ev->boot_mode = VDOG_BOOT_MODE_NORMAL;
+    } else if (banner_in_set(open, banner_len, g_vdog_download_banners,
+                             sizeof(g_vdog_download_banners) /
+                                 sizeof(g_vdog_download_banners[0]))) {
+        ev->boot_mode = VDOG_BOOT_MODE_DOWNLOAD;
+    } else {
+        return VDOG_BOOT_MODE_UNKNOWN; /* closed set only, never guessed */
+    }
+    /* Full-form success: commit the evidence. */
+    ev->cause_state = cause_state;
+    ev->rst_value = rst_value;
+    memcpy(ev->cause_name, cause_name, sizeof(ev->cause_name));
+    return ev->boot_mode;
+}
+
+int vdog_recovery_classify_boot(const char *rom_line,
+                                vdog_boot_evidence_t *out)
+{
+    size_t end;
+
+    if (out == NULL) {
+        return VDOG_ERR_INVALID_ARG;
+    }
+    vdog_boot_evidence_init(out);
+    if (rom_line == NULL) {
+        return VDOG_OK; /* UNKNOWN, cleared */
+    }
+    /* Documented line-ending policy (header): strip trailing CR/LF and
+     * blanks at entry, so CRLF/LF/bare lines classify identically. */
+    end = strlen(rom_line);
+    while (end > 0u && (rom_line[end - 1u] == '\r' ||
+                        rom_line[end - 1u] == '\n' ||
+                        is_blank(rom_line[end - 1u]))) {
+        --end;
+    }
+    (void)classify_line(rom_line, end, out);
+    if (out->boot_mode == VDOG_BOOT_MODE_UNKNOWN) {
+        vdog_boot_evidence_init(out); /* unrecognized: no half claims */
+    }
+    return VDOG_OK;
+}
 
 vdog_boot_mode_t vdog_recovery_classify(const char *rom_line)
 {
-    const char *line = rom_line;
-    const char *open;
-    const char *close;
-    const char *p;
+    vdog_boot_evidence_t ev;
 
-    if (line == NULL || line[0] == '\0') {
-        return VDOG_BOOT_MODE_UNKNOWN;
-    }
-    /* Form anchor (review M-C): the line must BE the ROM banner
-     * "boot:0x<hex> (<banner>)", optionally space-padded. Prose that only
-     * CONTAINS tokens never passes this gate. */
-    while (*line == ' ' || *line == '\t') {
-        ++line;
-    }
-    if (!starts_with_ci(line, "boot:0x")) {
-        return VDOG_BOOT_MODE_UNKNOWN;
-    }
-    p = line + 7u; /* strlen("boot:0x") */
-    if (*p == '\0' || !is_hex_digit(*p)) {
-        return VDOG_BOOT_MODE_UNKNOWN; /* "boot:0x" alone / bad hex */
-    }
-    while (is_hex_digit(*p)) {
-        ++p;
-    }
-    while (*p == ' ' || *p == '\t') {
-        ++p;
-    }
-    if (*p != '(') {
-        return VDOG_BOOT_MODE_UNKNOWN;
-    }
-    open = p + 1u;
-    close = NULL;
-    for (p = open; *p != '\0'; ++p) {
-        if (*p == ')') {
-            close = p;
-        }
-    }
-    if (close == NULL || close < open) {
-        return VDOG_BOOT_MODE_UNKNOWN; /* unclosed banner */
-    }
-    /* Nothing but spaces/tabs may follow the closing parenthesis. */
-    for (p = close + 1u; *p != '\0'; ++p) {
-        if (*p != ' ' && *p != '\t') {
-            return VDOG_BOOT_MODE_UNKNOWN;
-        }
-    }
-
-    /* Closed-set whole-word classification inside the banner, documented
-     * priority JTAG > download > normal ("spi_fast_download" is a download
-     * form; a JTAG-path download banner is USBJTAG, not plain DOWNLOAD). */
-    if (banner_has_word(open, (size_t)(close - open), g_vdog_jtag_words,
-                        VDOG_WORD_COUNT(g_vdog_jtag_words))) {
-        return VDOG_BOOT_MODE_USBJTAG;
-    }
-    if (banner_has_word(open, (size_t)(close - open), g_vdog_download_words,
-                        VDOG_WORD_COUNT(g_vdog_download_words))) {
-        return VDOG_BOOT_MODE_DOWNLOAD;
-    }
-    if (banner_has_word(open, (size_t)(close - open), g_vdog_normal_words,
-                        VDOG_WORD_COUNT(g_vdog_normal_words))) {
-        return VDOG_BOOT_MODE_NORMAL;
-    }
-    return VDOG_BOOT_MODE_UNKNOWN; /* unrecognised banner: never guessed */
+    (void)vdog_recovery_classify_boot(rom_line, &ev);
+    return ev.boot_mode; /* documented wrapper (header) */
 }
 
 const char *vdog_boot_mode_name(vdog_boot_mode_t mode)
@@ -196,6 +360,8 @@ const char *vdog_boot_mode_name(vdog_boot_mode_t mode)
         return "unknown";
     }
 }
+
+/* ---- sanitized identity (reviews M-D / R2-B) ------------------------------ */
 
 void vdog_identity_init(vdog_identity_t *id)
 {
@@ -230,15 +396,20 @@ static const char *chip_model_name(vdog_identity_chip_t model)
     }
 }
 
-static int tag_char_ok(char c)
+static int tag_is_alnum(char c)
 {
     return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '_' || c == '-')
+            (c >= '0' && c <= '9'))
                ? 1
                : 0;
 }
 
-static int tag_hex_digit(char c)
+static int tag_is_body_char(char c)
+{
+    return (tag_is_alnum(c) || c == '_') ? 1 : 0;
+}
+
+static int tag_is_hex_digit(char c)
 {
     return ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
             (c >= 'A' && c <= 'F'))
@@ -246,40 +417,70 @@ static int tag_hex_digit(char c)
                : 0;
 }
 
-/* Bounded validation scan (review M-D): reads AT MOST `cap` bytes of tag
- * (never past the storage), requires NUL termination within it, charset
- * [A-Za-z0-9_-], and rejects the compact-MAC lookalike — exactly 12 hex
- * digits, the shape of a full MAC written without separators. Returns the
- * tag length (0 = absent) or -1 when invalid. */
+/* Bounded validation scan (reviews M-D/R2-B): reads AT MOST `cap` bytes of
+ * tag (never past the storage). Accepts ONLY the narrow project-label
+ * format vdg-[A-Za-z0-9_]{1,11} (prefix case-insensitive; canonical
+ * spelling is lowercase) AND rejects the MAC skeleton: with every
+ * non-alphanumeric removed and a leading "0x"/"0X" removed ('x' IS
+ * alphanumeric, so the prefix needs its own step), exactly 12 hex digits
+ * is rejected — no MAC spelling in any grouping can be stored or rendered.
+ * Returns the tag length (0 = absent) or -1 when invalid. */
 static int tag_validate(const char *tag, size_t cap)
 {
     size_t i;
+    size_t n;
+    char skeleton[VDOG_IDENTITY_TAG_MAX];
+    size_t m = 0u;
 
     for (i = 0u; i < cap; ++i) {
         if (tag[i] == '\0') {
             break;
         }
-        if (!tag_char_ok(tag[i])) {
-            return -1;
-        }
     }
     if (i >= cap) {
         return -1; /* no NUL within capacity: unterminated */
     }
-    if (i == 12u) {
+    n = i;
+    if (n < 5u || n > 15u) {
+        return -1; /* "vdg-" + 1..11 body chars inside the 16-byte field */
+    }
+    if (!(ascii_lower(tag[0]) == 'v' && ascii_lower(tag[1]) == 'd' &&
+          ascii_lower(tag[2]) == 'g' && tag[3] == '-')) {
+        return -1; /* mandatory vdg- prefix (case-insensitive) */
+    }
+    for (i = 4u; i < n; ++i) {
+        if (!tag_is_body_char(tag[i])) {
+            return -1; /* body charset [A-Za-z0-9_] only */
+        }
+    }
+    for (i = 0u; i < n; ++i) {
+        if (tag_is_alnum(tag[i])) {
+            skeleton[m++] = tag[i];
+        }
+    }
+    if (m >= 2u && skeleton[0] == '0' &&
+        (ascii_lower(skeleton[1]) == 'x')) {
+        size_t k;
+        for (k = 2u; k < m; ++k) {
+            skeleton[k - 2u] = skeleton[k];
+        }
+        m -= 2u;
+    }
+    if (m == 12u) {
         size_t j;
         int all_hex = 1;
         for (j = 0u; j < 12u; ++j) {
-            if (!tag_hex_digit(tag[j])) {
+            if (!tag_is_hex_digit(skeleton[j])) {
                 all_hex = 0;
                 break;
             }
         }
         if (all_hex != 0) {
-            return -1; /* compact-MAC lookalike: never stored, never sent */
+            return -1; /* MAC skeleton in any spelling: never stored,
+                        * never rendered */
         }
     }
-    return (int)i;
+    return (int)n;
 }
 
 int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag)
@@ -294,7 +495,8 @@ int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag)
     if (tag_validate(tag, VDOG_IDENTITY_TAG_MAX) < 0) {
         return VDOG_ERR_IDENTITY_TAG; /* stored tag left UNCHANGED */
     }
-    /* Validated content only, bounded copy that always NUL-terminates. */
+    /* Validated content only, bounded copy that always NUL-terminates
+     * (validated length <= 15 into the 16-byte field). */
     strcpy(id->board_tag, tag);
     return VDOG_OK;
 }
@@ -349,8 +551,9 @@ int vdog_identity_format(const vdog_identity_t *id, char *buf, size_t cap)
     }
     board_part[0] = '\0';
     if (id->board_tag[0] != '\0') {
-        /* Defense in depth (review M-D): even a struct whose tag bypassed
-         * the setter is RE-VALIDATED with a bounded scan before anything
+        /* Defense in depth (reviews M-D/R2-B): even a struct whose tag
+         * bypassed the setter is RE-VALIDATED with the same bounded scan
+         * (termination + vdg- format + MAC-skeleton rule) before anything
          * is printed, and printed only via a precision-bounded conversion
          * of the validated length. Invalid bytes are omitted, never sent. */
         const int tag_len = tag_validate(id->board_tag, VDOG_IDENTITY_TAG_MAX);
