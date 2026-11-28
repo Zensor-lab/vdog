@@ -127,7 +127,9 @@ unverified here.
 Releases remain **prototype/pre-release** evidence: BUILD/HOST only,
 `hardware_verified=false`, no recording and no device OTA. Installing on real
 hardware is still a separate, deferred gate (CI-T15). Branch protection on
-`main` remains an OWNER decision. The hosted workflows have run for real and
+`main` is active (owner-approved 2026-11-28: strict, requiring the four
+checks `firmware-build`, `firmware-host-tests`, `firmware-package-tests` and
+`contracts-validation`). The hosted workflows have run for real and
 their results were verified live on 2026-11-28 (PRs #3–#7, six `main` runs,
 peeled tags, digested pre-release assets and a packaged-installer check), so
 hosted CI-T01–T14 are recorded as verified — with Windows `install.ps1`
