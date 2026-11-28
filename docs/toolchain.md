@@ -605,7 +605,7 @@ monitored or erased; `docs/bench-assignment.md` records zero Part B rows and
 | Command | Exit | Recorded result |
 | --- | --- | --- |
 | `pio run -d firmware -e vdog_xiao_sense_proto` | 0 | SUCCESS; **0** `warning:` lines; both gate registrations fired (purity: "11 portable-core files scanned, no camera/SD/RTOS/SDK tokens"; board-config line printed by BOTH post actions) |
-| `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | text 153573 / data 63156 / bss 376829 (dec 593558) — round-4 snapshot (per-mode classifier validation + project tag grammar; byte-identical to round 3 — the deleted set helpers and the new per-mode code balance out); slot margin vs the 3 MB OTA slot still ≫4× |
+| `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | text 153573 / data 63156 / bss 376829 (dec 593558) — round-4 snapshot: **equal section sizes** to the round-3 revision. (Not a code-balance coincidence: the Part A boot path never calls the classifier or the board-tag setter, so those functions are absent from the linked app in BOTH revisions — verified by `nm` on `firmware.elf` — and gc-sections drops them; binary hashes differ between local builds, as expected. They qualify via the native suite and the embedded compile/link run until the Part B drill wires the boot path to call them); slot margin vs the 3 MB OTA slot still ≫4× |
 | `pio test -d firmware -e native` | 0 | **68/68** (22 inherited + 18 mem + 18 recovery + 10 straps), 0 failed |
 | `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | all 5 suites `[SKIPPED]` — compile/link only, never executed |
 | `python3 firmware/scripts/check_core_purity.py` (standalone) | 0 | 11 core files scanned |
