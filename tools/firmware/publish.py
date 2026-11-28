@@ -19,7 +19,11 @@ CI-T10/CI-T11/CI-T12/CI-T13):
   tag (never to a branch name), gets its complete validated asset set, and
   is only then marked published; ``prerelease`` stays true and
   ``make_latest`` stays ``false``;
-* a completed matching published release is reused, never overwritten;
+* a completed matching published release is reused only after its ZIP has
+  been RE-VERIFIED: the ZIP bytes must hash to the published detached digest,
+  pass package validation, and carry the verified release identity in their
+  embedded manifest; an un-downloadable (unverifiable) ZIP is a failure,
+  never a silent "reused";
 * an unpublished draft carrying a partial asset set from the same tag/source
   has its **entire** asset set replaced in one attempt (delete-all then
   upload-all, published only after the set verifies);
@@ -343,12 +347,9 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def read_zip_payload(zip_path: Path) -> tuple[bytes, dict[str, bytes]]:
-    """Return (zip bytes, package-relative payload mapping) for one ZIP."""
-    try:
-        data = Path(zip_path).read_bytes()
-    except OSError as exc:
-        raise PublishAborted([f"publish: cannot read {zip_path}: {exc}"]) from exc
+def zip_payload_from_bytes(data: bytes, *, where: str = "ZIP") -> dict[str, bytes]:
+    """Package-relative payload mapping of ZIP bytes (same rules as the file
+    reader: single root, no symlinks)."""
     payload: dict[str, bytes] = {}
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -357,18 +358,27 @@ def read_zip_payload(zip_path: Path) -> tuple[bytes, dict[str, bytes]]:
                     continue
                 if stat.S_ISLNK(info.external_attr >> 16):
                     raise PublishAborted(
-                        [f"publish: {zip_path} contains a symlink entry {info.filename!r}"]
+                        [f"publish: {where} contains a symlink entry {info.filename!r}"]
                     )
                 rel = info.filename.split("/", 1)[1] if "/" in info.filename else ""
                 if not rel:
                     raise PublishAborted(
-                        [f"publish: {zip_path} has an entry outside the single root: "
+                        [f"publish: {where} has an entry outside the single root: "
                          f"{info.filename!r}"]
                     )
                 payload[rel] = archive.read(info)
     except zipfile.BadZipFile as exc:
-        raise PublishAborted([f"publish: {zip_path} is not a readable ZIP: {exc}"]) from exc
-    return data, payload
+        raise PublishAborted([f"publish: {where} is not a readable ZIP: {exc}"]) from exc
+    return payload
+
+
+def read_zip_payload(zip_path: Path) -> tuple[bytes, dict[str, bytes]]:
+    """Return (zip bytes, package-relative payload mapping) for one ZIP."""
+    try:
+        data = Path(zip_path).read_bytes()
+    except OSError as exc:
+        raise PublishAborted([f"publish: cannot read {zip_path}: {exc}"]) from exc
+    return data, zip_payload_from_bytes(data, where=str(zip_path))
 
 
 def verify_external_digest(zip_path: Path, zip_bytes: bytes) -> str:
@@ -642,6 +652,115 @@ def _identity_projection(manifest: dict[str, Any]) -> dict[str, Any]:
     return node
 
 
+def _verify_published_zip(
+    adapter: GitHubAdapter,
+    release: Release,
+    inputs: PublishInputs,
+    report: PublishReport,
+    errors: list[str],
+) -> None:
+    """P1-3: a reused published ZIP must VERIFY before reuse is reported.
+
+    Before ``publish()`` may report ``reused-published`` it downloads the
+    existing ZIP and its detached ``.sha256`` sidecar from the release and
+    checks, in order: (1) the ZIP bytes hash to the digest the published
+    sidecar records; (2) the ZIP is internally consistent (manifest digests,
+    SHA256SUMS, images, headers) via the same validator CI runs; and (3) the
+    manifest EMBEDDED in the ZIP carries this build's verified release
+    identity. A ZIP that cannot be downloaded — i.e. cannot be verified — is
+    an error, never a warning: reuse is reported only for a ZIP that actually
+    passed. (A byte-different digest vs *this rebuild* stays a warning:
+    identical source may legitimately rebuild byte-differently.)
+    """
+    assets = {asset.name: asset for asset in adapter.list_assets(release.id)}
+    zip_asset = assets.get(inputs.zip_name)
+    sidecar_asset = assets.get(f"{inputs.zip_name}.sha256")
+    if zip_asset is None or sidecar_asset is None:
+        errors.append(
+            f"publish: cannot verify the published ZIP for reuse: "
+            f"{inputs.zip_name} or its .sha256 sidecar is not on release "
+            f"{release.id} (the asset-set check above records the mismatch)"
+        )
+        return
+    zip_bytes = adapter.download_asset(zip_asset)
+    if zip_bytes is None:
+        errors.append(
+            f"publish: published {inputs.zip_name} could not be downloaded; an "
+            "unverified ZIP is never reported as reused — refusing "
+            "reused-published for this release"
+        )
+        return
+    sidecar_text = adapter.download_asset(sidecar_asset)
+    if sidecar_text is None:
+        errors.append(
+            f"publish: published {inputs.zip_name}.sha256 could not be "
+            "downloaded; reuse requires the detached digest to be verified"
+        )
+        return
+    try:
+        recorded = sidecar_text.decode("utf-8").split()[0].lower()
+    except (UnicodeDecodeError, IndexError) as exc:
+        errors.append(
+            f"publish: published {inputs.zip_name}.sha256 is unreadable: {exc}"
+        )
+        return
+    digest = sha256_bytes(zip_bytes)
+    if recorded != digest:
+        errors.append(
+            f"publish: published {inputs.zip_name} hashes to {digest} but its "
+            f"published sidecar records {recorded}; the existing ZIP does not "
+            "match its detached digest (tampered or corrupted) — reuse refused"
+        )
+    if digest != inputs.zip_sha256:
+        report.warnings.append(
+            f"published {inputs.zip_name} digest {digest[:12]}… differs from "
+            f"this rebuild's {inputs.zip_sha256[:12]}…; identical source can "
+            "legitimately rebuild byte-differently, so this is reported and "
+            "never overwritten"
+        )
+    failures = validate_package_bytes(
+        zip_bytes, expected_zip_sha256=recorded, run_installer_check=False
+    )
+    if failures:
+        errors.extend(
+            f"publish: published {inputs.zip_name} fails package validation "
+            f"for reuse: {failure}"
+            for failure in failures
+        )
+        return
+    try:
+        payload = zip_payload_from_bytes(
+            zip_bytes, where=f"published {inputs.zip_name}"
+        )
+        embedded = json.loads(payload[contract.MANIFEST_FILE].decode("utf-8"))
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError, PublishAborted) as exc:
+        errors.append(
+            f"publish: the manifest embedded in the published ZIP is "
+            f"unreadable: {exc}; reuse refused"
+        )
+        return
+    want = _identity_projection(inputs.manifest)
+    got = _identity_projection(embedded)
+    if want != got:
+        differing = sorted(k for k in want if want.get(k) != got.get(k))
+        errors.append(
+            "publish: the manifest embedded in the published ZIP disagrees "
+            f"on {differing} with the verified release identity; the ZIP does "
+            "not contain the build its metadata claims — reuse refused"
+        )
+    published_manifest = assets.get(contract.MANIFEST_FILE)
+    if published_manifest is not None:
+        published_bytes = adapter.download_asset(published_manifest)
+        if published_bytes is not None and published_bytes != payload[
+            contract.MANIFEST_FILE
+        ]:
+            errors.append(
+                "publish: the standalone published manifest.json differs from "
+                "the manifest embedded in the published ZIP; a swapped asset "
+                "set is never reported as reused"
+            )
+
+
 def _verify_published_identity(
     adapter: GitHubAdapter,
     release: Release,
@@ -708,6 +827,8 @@ def _verify_published_identity(
                 "so this is reported and never overwritten"
             )
         break
+
+    _verify_published_zip(adapter, release, inputs, report, errors)
 
     if errors:
         raise PublishConflict(errors)

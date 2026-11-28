@@ -52,6 +52,7 @@ class FakeGitHubAdapter(GitHubAdapter):
         create_tag_target: str | None = None,
         fail_upload_on: int | None = None,
         downloadable: bool = True,
+        fail_download_names: set[str] | None = None,
         published_release: Release | None = None,
         published_manifest_doc: dict[str, Any] | None = None,
     ) -> None:
@@ -68,6 +69,7 @@ class FakeGitHubAdapter(GitHubAdapter):
         self.create_tag_target = create_tag_target
         self.fail_upload_on = fail_upload_on
         self.downloadable = downloadable
+        self.fail_download_names = fail_download_names
         self._release_id = 1000
         self._asset_id = 5000
         if published_release is not None:
@@ -221,6 +223,8 @@ class FakeGitHubAdapter(GitHubAdapter):
     def download_asset(self, asset: Asset) -> bytes | None:
         self.calls.append(f"GET asset-bytes {asset.name}")
         if not self.downloadable:
+            return None
+        if self.fail_download_names and asset.name in self.fail_download_names:
             return None
         return self.asset_bytes.get(asset.id)
 
@@ -500,36 +504,161 @@ def test_published_release_without_prototype_flags_is_rejected(tmp_path: Path) -
     assert "prerelease" in messages and "make_latest" in messages
 
 
-def test_unreadable_published_manifest_warns_instead_of_passing(tmp_path: Path) -> None:
-    zip_path, _sha, manifest = build_main_package(tmp_path)
-    inputs = load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A)
-    release = Release(id=903, tag_name=TAG_A, draft=False, prerelease=True,
-                      make_latest="false", title=inputs.title)
-    adapter = FakeGitHubAdapter(published_release=release,
-                               published_manifest_doc=manifest, downloadable=False)
-    adapter.assets[release.id] = [
-        Asset(id=a.id, name=a.name, size=a.size, download_url=a.download_url)
-        for a in adapter.assets[release.id]
-    ]
-    # Only manifest.json exists as an asset, so the asset-set check fails first.
-    with pytest.raises(PublishConflict):
-        publish_run(adapter, inputs)
+def test_unreadable_published_manifest_asset_warns_but_zip_always_verified(
+    tmp_path: Path,
+) -> None:
+    zip_path, _sha, _manifest = build_main_package(tmp_path)
+    adapter = FakeGitHubAdapter()
+    report = publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    assert report.decision == "published-new"
 
-    adapter2 = FakeGitHubAdapter(published_release=release,
-                                published_manifest_doc=manifest, downloadable=True)
-    adapter2.assets[release.id] = []
-    for name in inputs.asset_names:
-        adapter2._asset_id += 1
-        asset = Asset(id=adapter2._asset_id, name=name, size=1,
-                      download_url=f"mem://{name}")
-        adapter2.assets[release.id].append(asset)
-        adapter2.asset_bytes[asset.id] = (
-            json.dumps(manifest).encode() if name == "manifest.json" else b"x"
-        )
-    adapter2.downloadable = False
-    report = publish_run(adapter2, inputs)
+    # Nothing is downloadable: the ZIP cannot be verified at all, so a rerun
+    # is REFUSED outright (P1-3) — an unverified ZIP is never "reused".
+    adapter.downloadable = False
+    with pytest.raises(PublishConflict) as exc:
+        publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    assert "could not be downloaded" in " ".join(exc.value.errors)
+    adapter.downloadable = True
+
+    # The ZIP and its sidecar verify, but the standalone manifest.json asset
+    # cannot be downloaded: the manifest-identity step degrades to a warning
+    # and the ZIP's OWN embedded manifest is still identity-checked.
+    adapter.fail_download_names = {"manifest.json"}
+    report = publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
     assert report.decision == "reused-published"
     assert any("could not be downloaded" in w for w in report.warnings)
+
+
+# ---------------------------------------------------------------------------
+# P1-3: the existing Release ZIP must verify before a rerun reports reuse
+# ---------------------------------------------------------------------------
+
+
+def _publish_once(tmp_path: Path) -> tuple[FakeGitHubAdapter, Any, Path]:
+    zip_path, _sha, _manifest = build_main_package(tmp_path)
+    adapter = FakeGitHubAdapter()
+    report = publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    return adapter, report, zip_path
+
+
+def _stored_zip_asset(adapter: FakeGitHubAdapter, release_id: int) -> Asset:
+    for asset in adapter.assets[release_id]:
+        if asset.name.endswith(".zip"):
+            return asset
+    raise AssertionError("published ZIP asset not seeded")
+
+
+def _sidecar_asset(adapter: FakeGitHubAdapter, release_id: int) -> Asset:
+    for asset in adapter.assets[release_id]:
+        if asset.name.endswith(".zip.sha256"):
+            return asset
+    raise AssertionError("published sidecar asset not seeded")
+
+
+def test_rerun_rejects_a_tampered_published_zip(tmp_path: Path) -> None:
+    """Published ZIP bytes no longer match the published detached digest."""
+    adapter, report, zip_path = _publish_once(tmp_path)
+    zip_asset = _stored_zip_asset(adapter, report.release_id)
+    flipped = bytearray(adapter.asset_bytes[zip_asset.id])
+    flipped[len(flipped) // 2] ^= 0xFF
+    adapter.asset_bytes[zip_asset.id] = bytes(flipped)
+    mutating_before = list(adapter.mutating_calls())
+
+    with pytest.raises(PublishConflict) as exc:
+        publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    messages = " ".join(exc.value.errors)
+    assert "does not match its detached digest" in messages
+    assert "reuse refused" in messages
+    # The refused rerun mutated nothing.
+    assert adapter.mutating_calls() == mutating_before
+
+
+def test_rerun_rejects_rehashed_but_internally_inconsistent_zip(tmp_path: Path) -> None:
+    """Even with the sidecar recomputed to match, an internally tampered ZIP
+    (images no longer match their manifest digests) is rejected on rerun."""
+    adapter, report, zip_path = _publish_once(tmp_path)
+    payload = support._payload_from_zip(zip_path)
+    tampered = bytearray(payload["images/firmware.bin"])
+    tampered[64] ^= 0xFF
+    payload["images/firmware.bin"] = bytes(tampered)
+    # Re-sign ONLY the external sidecar (internal manifest digests now lie).
+    forged_zip = support.rezip(Path(str(zip_path) + ".forged.zip"), payload,
+                               build_id=json.loads(
+                                   payload["manifest.json"].decode())["build_id"])
+    # rezip rewrote payload entries unchanged apart from our flip; recompute
+    # only the detached digest to match the forged bytes.
+    forged_bytes = forged_zip.read_bytes()
+    sidecar = _sidecar_asset(adapter, report.release_id)
+    adapter.asset_bytes[sidecar.id] = (
+        f"{support.sha256_bytes(forged_bytes)}  {sidecar.name[:-len('.sha256')]}\n"
+    ).encode()
+    zip_asset = _stored_zip_asset(adapter, report.release_id)
+    adapter.asset_bytes[zip_asset.id] = forged_bytes
+
+    with pytest.raises(PublishConflict) as exc:
+        publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    messages = " ".join(exc.value.errors)
+    assert "fails package validation for reuse" in messages
+
+
+def test_rerun_rejects_embedded_manifest_identity_mismatch(tmp_path: Path) -> None:
+    """A ZIP whose internal manifest is consistently re-signed but carries a
+    DIFFERENT release identity than the tag/release must be rejected."""
+    adapter, report, zip_path = _publish_once(tmp_path)
+    payload = support._payload_from_zip(zip_path)
+    doc = json.loads(payload["manifest.json"].decode("utf-8"))
+    doc["build_id"] = "main-000000000000"
+    doc["tag"] = "firmware-main-000000000000"
+    doc["source"]["sha"] = "0" * 40
+    doc["source"]["sha_short"] = "0" * 12
+    payload["manifest.json"] = (json.dumps(doc, sort_keys=True, indent=2,
+                                           ensure_ascii=False) + "\n").encode()
+    version = json.loads(payload["VERSION.json"].decode("utf-8"))
+    for key, value in (
+        ("build_id", doc["build_id"]), ("source_sha", doc["source"]["sha"]),
+        ("source_sha_short", doc["source"]["sha_short"]), ("tag", doc["tag"]),
+    ):
+        if key in version:
+            version[key] = value
+    payload["VERSION.json"] = (json.dumps(version, sort_keys=True, indent=2,
+                                          ensure_ascii=False) + "\n").encode()
+    # Everything EXCEPT the identity is re-resolved to consistency, so the
+    # only fault left for the reuse gate to catch is the identity itself.
+    payload = support.with_resolved_hashes(payload)
+    forged_zip = support.rezip(Path(str(zip_path) + ".forged2.zip"), payload,
+                               build_id="main-000000000000")
+    forged_bytes = forged_zip.read_bytes()
+    zip_asset = _stored_zip_asset(adapter, report.release_id)
+    adapter.asset_bytes[zip_asset.id] = forged_bytes
+    sidecar = _sidecar_asset(adapter, report.release_id)
+    adapter.asset_bytes[sidecar.id] = (
+        f"{support.sha256_bytes(forged_bytes)}  {zip_asset.name}\n").encode()
+
+    with pytest.raises(PublishConflict) as exc:
+        publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    messages = " ".join(exc.value.errors)
+    assert "embedded in the published ZIP disagrees" in messages
+
+
+@pytest.mark.parametrize("missing", [
+    pytest.param("zip", id="zip-undownloadable"),
+    pytest.param("sidecar", id="sidecar-undownloadable"),
+])
+def test_rerun_refuses_an_unverifiable_published_zip(tmp_path: Path, missing: str) -> None:
+    """No download, no verification, no reuse: each unverifiable asset alone
+    turns the rerun into a hard failure instead of a warning."""
+    adapter, report, zip_path = _publish_once(tmp_path)
+    names: set[str] = set()
+    for asset in adapter.assets[report.release_id]:
+        if missing == "zip" and asset.name.endswith(".zip"):
+            names.add(asset.name)
+        if missing == "sidecar" and asset.name.endswith(".zip.sha256"):
+            names.add(asset.name)
+    adapter.fail_download_names = names
+    with pytest.raises(PublishConflict) as exc:
+        publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    messages = " ".join(exc.value.errors)
+    assert "could not be downloaded" in messages
 
 
 # ---------------------------------------------------------------------------
