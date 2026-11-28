@@ -264,13 +264,26 @@ python -m serial.tools.miniterm /dev/cu.usbmodem123 115200
 ```
 
 Expected startup lines (the exact identity values come from *your* bundle's
-`VERSION.json` / `manifest.json`):
+`VERSION.json` / `manifest.json`; the `board:`, `mem:` and `identity:` lines
+are the expected console output of the current source — `firmware/src/main.c`
+— and are **not** DEVICE evidence; no device function is proven by these
+lines):
 
 ```text
 I (xxx) vdog: vdog firmware 0.2.0-proto (0.2 proto build)
 I (xxx) vdog: build identity: build_id=main-<sha12> source_sha=<sha12>
+I (xxx) vdog: board: vdog 0.2.0-proto board=seeed_xiao_esp32s3 target=esp32s3 flash=8MB-dio-80m psram=8MB-opi-80m
+I (xxx) vdog: mem: flash_size=8MB[measured] flash_mode=dio[configured] flash_freq=80M[configured] psram=8MB[measured:init-ok] psram_mode=opi[configured] psram_speed=80M[configured]
+I (xxx) vdog: identity: chip=ESP32-S3 rev=0.2 mem=8MB-flash/8MB-psram[opi-configured] mac=**:**:**:**:<xx>:<xx>
 I (xxx) vdog: esp32-camera linked: yes
 ```
+
+The `board:` line (Stage 1.1) renders this image's own board profile; the
+`mem:` line (Stage 1.2) tags each field `measured` (read from the chip) or
+`configured` (this build's configuration); the `identity:` line is the
+sanitized chip model/revision plus the MAC tail only. A rejected board or
+memory baseline prints a `board config rejected:` /
+`memory check rejected:` error line instead — that is a stop, not a warning.
 
 The line you must match is
 
