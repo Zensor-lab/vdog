@@ -77,14 +77,16 @@ pytest tools/firmware/tests` (422 tests; qualified CPython 3.12.12 via `uv` —
 the host `python3` is 3.14 and is not qualified), the offline
 `python -m tools.firmware.validate_package <zip>` check, and
 `python -m tools.firmware.publish ... --dry-run`, which performs no network
-calls. `.github/workflows/firmware-pr.yml` and `firmware-main.yml` exist on
-`opencode/0.9-ci-release` but have not run hosted, and `actionlint`, `pwsh` and
-any GitHub credential or device are absent here, so workflow linting, the
-Windows wrapper and every hosted/tag/Release/device result are recorded as
-unverified rather than passed. Official board support was checked from upstream
-documentation and is now backed by a vdog cross-build (BUILD/HOST evidence
-only); memory detection and all other hardware qualification remain
-unperformed.
+calls. `.github/workflows/firmware-pr.yml` and `firmware-main.yml` live on
+`main` and their hosted runs, peeled tags and published pre-release assets
+were verified against real GitHub data on 2026-11-28
+([validation](validation.md) section 5, package 0.9 §8b); `actionlint` and
+`pwsh` are absent here, so workflow linting stays the structural parse and the
+Windows wrapper (`install.ps1`) remains unexecuted, and every device result
+(CI-T15) stays unverified rather than passed. Official board support was
+checked from upstream documentation and is now backed by a vdog cross-build
+(BUILD/HOST evidence only); memory detection and all other hardware
+qualification remain unperformed.
 
 Non-secret configuration includes hardware revision, profile, SD budgets,
 backend bind/database/storage/scratch roots, quotas and approved processing

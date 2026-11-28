@@ -128,17 +128,25 @@ uv run --python 3.12 --with-requirements tools/firmware/requirements-dev.lock \
   python -m tools.firmware.publish --zip <bundle.zip> --expected-sha <40-hex> --dry-run
 ```
 
-`--dry-run` makes no network calls and mutates nothing; the publish state machine
-is otherwise covered by fake-adapter tests, not by a live GitHub run.
+`--dry-run` makes no network calls and mutates nothing (verified locally). The
+publish state machine's failure and retry paths — wrong-target tag conflicts,
+draft repair, interrupted upload, foreign manifest — are covered by
+fake-adapter tests; its success path has been exercised live: the `publish`
+job completed for all six `main` runs, creating each peeled tag and
+pre-release.
 
 Commands actually available in this environment: `pio`, `uv`, `pytest`, `shasum`,
-`git`, `unzip`. **Not available here, so their checks did not run locally and are
-recorded as UNVERIFIED rather than passed:** `pwsh` (so `install.ps1` has
-structural/text coverage only, never an execution), `actionlint`/`yamllint` (so
-workflow linting is the structural parse and invariant assertions in
-`tools/firmware/tests/test_workflows.py` plus the first real hosted run), and any
-GitHub credential or device (no workflow, tag or Release has been executed from
-this checkout).
+`git`, `unzip`, `gh` (authenticated). **Not available here, so their checks did
+not run locally and are recorded as UNVERIFIED rather than passed:** `pwsh` (so
+`install.ps1` has structural/text coverage only, never an execution) and
+`actionlint`/`yamllint` (so workflow linting is the structural parse and
+invariant assertions in `tools/firmware/tests/test_workflows.py` plus the
+executed hosted runs). The hosted workflows themselves ran on GitHub Actions
+(not from this checkout) — merged `main` pushes and PRs #3–#7 triggered them;
+their live results, tags, artifacts and published Releases were verified
+through the `gh`/REST APIs and real asset downloads on 2026-11-28 (section 5).
+No device was connected and no serial port was opened by any verification
+command; CI-T15 remains deferred by decision D-17.
 
 Run Flutter commands from `app/`; others from repository root. The embedded
 build-only test command does not execute tests. `pio test` without those flags
@@ -156,29 +164,47 @@ Round 2 implemented the workflows, the publish pipeline and the real installer
 wrappers on `opencode/0.9-ci-release`. The definitions stay in the master plan;
 this is the evidence status of each row:
 
-| Test | Status | Evidence on this branch / what is still missing |
+| Test (per the master-plan §7 matrix) | Status | Evidence (hosted verification executed live 2026-11-28 against real GitHub data on `Zensor-lab/vdog`; host-level rows kept where that is what the criterion admits) |
 | --- | --- | --- |
-| CI-T01 no path filters | PASS (HOST, structural) | `tests/test_workflows.py` asserts neither workflow declares `on.*.paths` |
-| CI-T02 PR builds head SHA | PASS (HOST, structural) | checkout `ref: github.event.pull_request.head.sha` + a step that fails unless `git rev-parse HEAD` equals it |
-| CI-T03 complete hash-named package | PASS (HOST) | the `firmware-build` job *definition* packages, validates, uploads a 14-day artifact and runs `install.py check` on the extracted ZIP with the digest re-verified (asserted structurally); the equivalent local chain actually ran end to end — the hosted run of that job is still pending |
-| CI-T04 stable check names | PASS (HOST, structural) | three job names, no variable in any `name:` |
-| CI-T05 main rebuild from source | PASS (HOST, structural) | no `download-artifact` outside the publish job; publish can only reach its own `run-id` |
-| CI-T06 exact tested SHA tag | PASS (HOST) | `publish.py` tags the full SHA, re-peels it, reuses only on exact match; conflict paths tested |
-| CI-T07 manifest agrees | PASS (HOST) | `load_publish_inputs` validates the package and tag/title identity before any adapter call |
-| CI-T08 assets + digest downloadable | UNVERIFIED (host) | asset set built from the validated ZIP and re-uploaded wholesale on repair; needs one real Release |
-| CI-T09 wrappers set up isolated env | PARTIAL (HOST) | fake-`uv` tests and a real `install.sh` setup against a locally packaged ZIP pass; real Windows host run pending (no `pwsh` here) |
-| CI-T10 idempotent rerun | PASS (HOST) | same-SHA rerun, two rapid SHAs, interrupted upload, foreign published manifest and missing asset tested against the fake adapter |
-| CI-T11 prerelease, never latest | PASS (HOST) | `prerelease=true`, `make_latest=false`, exact title asserted; Release-page visibility needs a real publication |
-| CI-T12 least privilege | PASS (HOST, structural) | top level and every build job `contents: read`; only `publish` gets `contents: write` + `actions: read`; all actions pinned to full SHAs; no `pull_request_target`/`workflow_run` |
-| CI-T13 concurrency | PASS (HOST, structural) | main grouped per SHA with `cancel-in-progress: false`; PR grouped per PR number with cancellation |
-| CI-T14 artifact ZIP downloadable | UNVERIFIED (host) | `if-no-files-found: error` and the embedded digest are asserted; the Actions outer-ZIP download path needs a real PR run |
-| CI-T15 real device install | UNVERIFIED (deferred) | out of scope by decision D-17; needs the identified authorized unit/port and DEVICE evidence |
+| CI-T01 every PR | PASS (LIVE — code & docs-only; draft/fork = configuration evidence, not observed live) | docs-only heads (`5171bee`, PR #6, run `46108373780`; `23697ca`, PR #5, run `46056456774`; this PR #8 itself, run `46140795399`) and code PRs all start the same three checks — stable job names `firmware-build`/`firmware-host-tests`/`firmware-package-tests` byte-identical across every run (jobs API); no `on.*.paths` in either workflow (structural test). **Configuration evidence, no live case yet observed:** the PR workflow (`firmware-pr.yml`, the only workflow with a `pull_request` trigger — `firmware-main.yml` triggers on `push` to `main`) has no `draft:` gate — types `opened/reopened/synchronize/ready_for_review` with no job conditioned on `draft` (structural test), so draft PRs take the same path; cross-repository fork approval follows GitHub's first-time-contributor review policy — no draft or fork PR has run yet in this repo's history |
+| CI-T02 head hash | PASS (LIVE) | two successive PR #6 heads produced differently named artifacts — `vdog-xiao-sense-pr-6-4e7ee9e1a5ba-run46107610827-a1` (191,394 B) and `vdog-xiao-sense-pr-6-5171bee6a77c-run46108373780-a1` (191,390 B) — each `jobs[].head_sha` equals the exact full head; the "Validate and record PR source identity" step `success` in every `firmware-build` |
+| CI-T03 normal image | PASS (LIVE) | released/PR bundles carry the normal app (built by the `firmware-build` "Build the prototype environment" step of the `pio run` prototype env — no embedded test runner) alongside bootloader, partition table and initial OTA data; hosted "Export, package and validate the installation ZIP" + packaged offline check `success` on runs `46108373780`/`46134420714` |
+| CI-T04 exact main | PASS (LIVE) | squash-merged PRs rebuild the actual resulting SHA: runs `46084351267` (`957b415da46c…`) and `46134420714` (`afd6c5354dbc…`) with `head_sha` equal to the merge commit; no PR ZIP promotion — no `download-artifact` outside `publish`, which can only reach its own `run-id` (step lists + structural test) |
+| CI-T05 no failed release | PASS (LIVE corroboration + structural; no live main-failure case occurred) | the cancelled run `46100912142` and the two pre-merge bring-up failures/cancels produced no tag and no Release; tags:releases:successful-main-runs are 6:6:6, one per SHA; `publish` is gated by `needs:` on all three green jobs (structural) — an untested-branch/failed-build publish has no path |
+| CI-T06 full layout | PASS (LIVE) | both downloaded bundles (Release ZIP and PR artifact) contain the normalized baseline — `flash/flash-layout.json`, `flash/partitions.csv` and the four images at generated offsets `0x0`/`0x8000`/`0xf000`/`0x20000` (packaged `plan` output, exit 0; `install.py check`: "manifest, layout, 4 images, hashes, partition table and headers all consistent") |
+| CI-T07 integrity | PASS (HOST) | missing/corrupt/wrong-chip/overlap/path-escape fixtures fail before installation or publication (`test_package.py`/`test_validate_package.py`/`test_publish.py` families; 422-test suite green); no live corrupt-publication drill — host-level evidence is what this criterion admits |
+| CI-T08 no-device CLI | PASS (LIVE + HOST) | packaged `check`/`plan` ran without opening a port — hosted step "Run the packaged installer's offline check (never opens a port)" `success`, and local macOS runs identical; `publish --dry-run` performs no network calls; the **installer dry-run** (`install.py install … --dry-run`) opens no transport — asserted by `tools/firmware/tests/test_install_cli.py::test_dry_run_opens_nothing` (FakeTransport records zero calls) alongside `test_plan_never_opens_port` and the consent tests `test_consent_denied_writes_nothing`/`test_consent_eof_writes_nothing`; `ports`/`inspect` cannot write flash and the fake transport proves explicit consent + fixed allowed ranges (HOST tests) |
+| CI-T09 host setup | PARTIAL — macOS PASS (LIVE) | real `sh ./install.sh check` against the published ZIP on this macOS host created the isolated env (`.venv-installer`, CPython 3.12.12, 18 hash-locked packages incl. `esptool==5.4.0`, `pyserial==3.5`), exit 0; `plan --board seeed-xiao-esp32s3-sense` exit 0; offline reuse (`PATH=/bin:/usr/bin`) exit 0. **Open under this criterion: no end-to-end Linux `install.sh` run on a clean host (the Ubuntu CI jobs exercise locked dependency installation and `install.py` directly, not the wrapper); Windows `pwsh` never executed — UNVERIFIED** |
+| CI-T10 immutable tag | PASS (HOST + LIVE corroboration) | existing same-target reuse, wrong-target refusal and the absence of any force/update/delete path are fake-adapter tests (`test_publish.py`; host-level evidence this criterion admits); live: each main SHA has exactly one tag peeling to the tested SHA (`git ls-remote …^{}`) |
+| CI-T11 release completeness | PASS (LIVE) | downloaded ZIP, `.sha256`, `manifest.json`, `INSTALL.md`, `RELEASE_NOTES.md`, `THIRD_PARTY_NOTICES.md` of `firmware-main-afd6c5354dbc` all match GitHub's server-side digests (ZIP 192,991 B `c8361043b6eb…d40dda`) and agree with the exact main SHA, tag, run `46134420714` and attempt 1 (`manifest.json`/`VERSION.json`/Release body); prototype state visible: `prerelease=true`, `draft=false`, `GET /releases/latest` → 404 |
+| CI-T12 retries/concurrency | PASS (LIVE for what ran; retry/repair = HOST) | **live-observed:** per-PR cancellation (run `46100912142` `cancelled` 03:04:49Z when head `1ef6189` pushed 03:04:31Z) and six per-SHA first-attempt publications (`attempt=1` each; runs nonoverlapping — each finished before the next started, closest starts >5 h apart; matching digests across two independent downloads establish that release's bytes consistent); **structural:** per-SHA main group with `cancel-in-progress: false` in the workflow config — no overlapping main runs have occurred to exercise it; **host (fake adapter, `test_publish.py` incl. `test_same_sha_rerun_reuses_the_published_release`):** same-SHA retry reuse, interrupted-upload draft repair and mixed-attempt refusal — no live rerun/interruption occurred |
+| CI-T13 permissions | PASS (structural + LIVE posture) | top level and every build job `contents: read`; only `publish` gets `contents: write` + `actions: read`; all actions pinned to full SHAs; no `pull_request_target`/`workflow_run`/`workflow_dispatch`; canonical-main guard rejects other sources (tests); live: repo Actions settings `default_workflow_permissions=read`, `can_approve_pull_request_reviews=false`; every observed run event was `push`/`pull_request` only |
+| CI-T14 no hidden erase | PASS (LIVE) | `plan` on both downloaded bundles enumerates only explicit-offset `write-flash` invocations and prints "never written: NVS, phy_init, storage, SD card, security fuses"; the installer has no full-chip erase, merged-gap NVS overwrite, eFuse write or security-bypass path (structural tests); artifact path itself verified via the artifacts API outer ZIP (`unzip -t` clean, inner ZIP digest `b9436ded…f479cd: OK`) |
+| CI-T15 device install | UNVERIFIED (deferred) | out of scope by decision D-17; needs the identified authorized unit/port and DEVICE evidence (awaiting separately authorized hardware) |
 
 Structural rows are asserted by `tools/firmware/tests/test_workflows.py`, adapter
 rows by `test_publish.py`, wrapper rows by `test_install_wrappers.py`. The
-authoritative gate for every hosted row is the first real PR run and the first
-real main publication after the Orchestrator pushes this branch; nothing here
-claims a hosted run happened.
+authoritative hosted gate — the first real PR runs and the first real main
+publication — was executed and independently re-verified live on 2026-11-28
+(50+ `firmware-pr` runs on the workflow-era PR branches of PRs #3/#5/#6/#7
+and `hardware-preflight`, all `success` except the observed concurrency cancel
+and two pre-merge bring-up runs on `opencode/0.2-toolchains`; six
+`firmware-main` runs
+`44908002249`/`44935853821`/`45383711985`/`45999492912`/`46084351267`/
+`46134420714` with matching peeled tags and six prereleases; commands and
+digests as per rows above). Evidence limits, matching the matrix: CI-T07 and
+CI-T10 stay host-level (corruption fixtures and fake-adapter tests — the live
+record only corroborates them), CI-T12's same-SHA retry and interrupted-
+publish repair are fake-adapter only (the live record shows per-PR
+cancellation and six nonoverlapping per-SHA first attempts — no overlapping
+main run or rerun has occurred), CI-T01's draft/fork cases are
+configuration-level (`firmware-pr.yml`'s `pull_request` trigger has no
+`draft:` gate; GitHub fork-approval policy — no live case yet), CI-T09 is PARTIAL (macOS wrapper end-to-end live; no clean-host
+Linux `install.sh` run — CI exercises dependency install and `install.py`
+directly; Windows `install.ps1` never executed), and CI-T15
+remains UNVERIFIED (deferred). Still not executed anywhere: `install.ps1` on
+Windows (no `pwsh` here), `actionlint`/`yamllint`, and CI-T15 device
+installation.
 
 CI runs available portable tests and the pinned normal firmware build, then
 schemas/fixtures, Flutter and Rust checks when their implementations exist. Hardware/mobile-device/field
