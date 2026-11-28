@@ -135,6 +135,47 @@ def make_ota_initial(size: int = 0x2000) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# On-device otadata fixtures (pinned ESP-IDF v6.1 esp_ota_select_entry_t)
+# ---------------------------------------------------------------------------
+
+
+def esp_crc32_le(init: int, data: bytes) -> int:
+    """Reference implementation of esp_rom_crc32_le for fixtures (deliberately
+    independent of contract.esp_ota_crc32; equality is asserted in tests)."""
+    crc = init
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
+    return crc
+
+
+def make_ota_record(seq: int, state: int) -> bytes:
+    """One valid 32-byte v6.1 select entry (seq_label left erased/opaque)."""
+    entry = bytearray(32)
+    entry[0:4] = seq.to_bytes(4, "little")
+    entry[4:24] = b"\xFF" * 20
+    entry[24:28] = state.to_bytes(4, "little")
+    entry[28:32] = esp_crc32_le(0xFFFFFFFF, bytes(entry[0:4])).to_bytes(4, "little")
+    return bytes(entry)
+
+
+def make_ota_data(sectors: list[bytes | None]) -> bytes:
+    """Two-sector otadata image: None = erased sector, bytes = record."""
+    out = bytearray(b"\xFF" * 0x2000)
+    for index, record in enumerate(sectors):
+        if record is not None:
+            out[index * 0x1000: index * 0x1000 + len(record)] = record
+    return bytes(out)
+
+
+def first_boot_otadata(seq: int = 1, state: int = 0x00000002) -> bytes:
+    """What a first boot leaves behind: the bootloader's single select entry
+    in each sector (v6.1 writes one 32-byte record per sector), both valid."""
+    return make_ota_data([make_ota_record(seq, state), make_ota_record(seq, state)])
+
+
+# ---------------------------------------------------------------------------
 # Synthetic PlatformIO build directory
 # ---------------------------------------------------------------------------
 
@@ -769,11 +810,17 @@ class FakeTransport:
         self.resets.append(port)
 
 
-def blank_device_table(build_dir_payload: dict[str, bytes]) -> dict[int, bytes]:
-    """flash_map simulating a device already holding the dev layout."""
+def blank_device_table(build_dir_payload: dict[str, bytes], *,
+                       otadata: bytes | None = None) -> dict[int, bytes]:
+    """flash_map simulating a device already holding the dev layout.
+
+    ``otadata`` overrides the packaged all-erased initializer, e.g. with
+    ``first_boot_otadata()`` to model the state after a real first boot.
+    """
     return {
         0x8000: build_dir_payload["images/partitions.bin"],
-        0xF000: build_dir_payload["images/ota_data_initial.bin"],
+        0xF000: (otadata if otadata is not None
+                 else build_dir_payload["images/ota_data_initial.bin"]),
     }
 
 

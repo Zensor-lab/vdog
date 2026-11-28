@@ -144,7 +144,9 @@ PARTITION_TABLE_OFFSET = 0x8000
 PARTITION_TABLE_MAX_BYTES = 0xC00
 PARTITION_ENTRY_MAGIC = 0x50AA  # on-disk bytes AA 50 (u16 little-endian)
 PARTITION_ENTRY_SIZE = 32
-OTA_DATA_MAGIC_BYTE = 0xC9
+# The legacy single-byte 0xC9 "valid sector" heuristic (old IDF otadata
+# layouts) is retired: on-device records are parsed strictly against the
+# pinned ESP-IDF v6.1 esp_ota_select_entry_t (validate_ota_data_records).
 OTA_DATA_SECTOR_SIZE = 0x1000
 
 #: CSV subtype name -> (type, subtype) numeric pair used in the binary table.
@@ -1226,22 +1228,112 @@ def find_desc_segment(data: bytes, *, kind: str) -> bytes | None:
 
 
 def validate_ota_data_initial(data: bytes, *, where: str = "ota data") -> list[str]:
-    """The packaged initial OTA data image: erased sectors or valid C9 sectors."""
+    """The packaged initial OTA data image must be TWO FULLY ERASED sectors.
+
+    The qualified initializer is what the installer writes so the device
+    starts from a known-erased otadata and the boot ROM/bootloader establish
+    the first ``esp_ota_select_entry_t`` themselves (P0-2). A packaged image
+    carrying pre-baked records is rejected outright: it could pin boot
+    selection to a slot nobody verified, and it made the old single-byte
+    0xC9 acceptance look plausible.
+    """
     errors: list[str] = []
-    if len(data) == 0 or len(data) % OTA_DATA_SECTOR_SIZE != 0:
+    if len(data) != 2 * OTA_DATA_SECTOR_SIZE:
         errors.append(
-            f"{where}: size {len(data)} is not a positive multiple of "
-            f"0x{OTA_DATA_SECTOR_SIZE:x}"
+            f"{where}: size {len(data)} != {2 * OTA_DATA_SECTOR_SIZE} "
+            "(the packaged initializer is exactly two erased sectors)"
         )
         return errors
-    for sector in range(len(data) // OTA_DATA_SECTOR_SIZE):
+    for sector in range(2):
+        base = sector * OTA_DATA_SECTOR_SIZE
+        if any(b != 0xFF for b in data[base: base + OTA_DATA_SECTOR_SIZE]):
+            errors.append(
+                f"{where}: sector {sector} is not fully erased; the packaged "
+                "initializer never ships pre-baked OTA records"
+            )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# On-device OTA select records — pinned ESP-IDF v6.1 esp_ota_select_entry_t
+# (components/bootloader_support/include/esp_flash_partitions.h, release
+# v6.1): 32 bytes per sector, one live entry per sector
+# (uint32 ota_seq; uint8 seq_label[20]; uint32 ota_state; uint32 crc), with
+# crc = esp_rom_crc32_le(UINT32_MAX, &ota_seq, 4) exactly as
+# bootloader_common_ota_select_crc() computes it
+# (components/bootloader_support/src/bootloader_common_loader.c), and
+# ota_state one of esp_ota_img_states_t. seq_label is opaque to the
+# bootloader and never validated.
+# ---------------------------------------------------------------------------
+
+OTA_SELECT_ENTRY_SIZE = 32
+OTA_SEQ_LABEL_SIZE = 20
+OTA_IMG_STATE_NAMES: dict[int, str] = {
+    0x00000000: "NEW",
+    0x00000001: "PENDING_VERIFY",
+    0x00000002: "VALID",
+    0x00000003: "INVALID",
+    0x00000004: "ABORTED",
+    0xFFFFFFFF: "UNDEFINED",
+}
+
+
+def esp_ota_crc32(data: bytes) -> int:
+    """esp_rom_crc32_le(UINT32_MAX, data, len) — reflected CRC-32 (poly
+    0xEDB88320), initial value passed through, no final inversion."""
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
+    return crc
+
+
+def validate_ota_data_records(data: bytes, *, where: str = "ota data") -> list[str]:
+    """Strict parse of an ON-DEVICE otadata image against the pinned v6.1
+    layout. Each 0x1000 sector is either fully erased (the state a factory
+    board and an un-booted fresh install legitimately keep) or carries
+    exactly one 32-byte ``esp_ota_select_entry_t`` at the sector head with a
+    defined ``ota_state`` and the correct CRC32 over its ``ota_seq`` field,
+    and the rest of the sector erased — a torn/legacy/foreign record, one
+    whose first byte happens to be the legacy 0xC9 magic included, is
+    corruption and is rejected.
+    """
+    errors: list[str] = []
+    if len(data) != 2 * OTA_DATA_SECTOR_SIZE:
+        return [
+            f"{where}: size {len(data)} != {2 * OTA_DATA_SECTOR_SIZE} "
+            "(two OTA sectors, each 0x1000)"
+        ]
+    for sector in range(2):
         base = sector * OTA_DATA_SECTOR_SIZE
         block = data[base: base + OTA_DATA_SECTOR_SIZE]
         if all(b == 0xFF for b in block):
             continue
-        if block[0] != OTA_DATA_MAGIC_BYTE:
+        entry = block[:OTA_SELECT_ENTRY_SIZE]
+        rest = block[OTA_SELECT_ENTRY_SIZE:]
+        if any(b != 0xFF for b in rest):
             errors.append(
-                f"{where}: sector {sector} magic {block[0]:#x} is neither erased "
-                f"nor OTA magic {OTA_DATA_MAGIC_BYTE:#x}"
+                f"{where}: sector {sector} is not erased beyond the "
+                f"{OTA_SELECT_ENTRY_SIZE}-byte select entry (torn or legacy "
+                "multi-slot content is never accepted)"
+            )
+            continue
+        ota_seq = int.from_bytes(entry[0:4], "little")
+        ota_state = int.from_bytes(entry[24:28], "little")
+        crc = int.from_bytes(entry[28:32], "little")
+        want_crc = esp_ota_crc32(entry[0:4])
+        if ota_state not in OTA_IMG_STATE_NAMES:
+            errors.append(
+                f"{where}: sector {sector} ota_state {ota_state:#010x} is not "
+                f"one of {sorted(OTA_IMG_STATE_NAMES)!r} (pinned v6.1 "
+                "esp_ota_img_states_t)"
+            )
+        if crc != want_crc:
+            errors.append(
+                f"{where}: sector {sector} crc32 {crc:#010x} != "
+                f"{want_crc:#010x} computed over ota_seq "
+                f"{ota_seq:#010x} (pinned bootloader_common_ota_select_crc "
+                "policy)"
             )
     return errors

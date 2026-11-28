@@ -279,10 +279,87 @@ def test_ota_data_initial_accepts_erased() -> None:
 
 def test_ota_data_initial_rejects_bad_sector_and_size() -> None:
     bad = bytearray(b"\xFF" * 0x2000)
-    bad[0x1000] = 0x11  # second sector: neither erased nor 0xC9
+    bad[0x1000] = 0x11  # second sector no longer fully erased
     assert any("sector 1" in e for e in contract.validate_ota_data_initial(bytes(bad)))
     assert contract.validate_ota_data_initial(b"")
     assert contract.validate_ota_data_initial(b"\xFF" * 0x1001)
+
+
+def test_ota_data_initial_rejects_prebaked_records() -> None:
+    """P0-2: the packaged initializer must be two ERASED sectors; a packaged
+    image carrying pre-baked (even perfectly valid) v6.1 records is rejected
+    — boot selection is established by the device's own first boot."""
+    seeded = support.make_ota_data([
+        support.make_ota_record(1, 0x00000002), support.make_ota_record(1, 0x00000002),
+    ])
+    errors = contract.validate_ota_data_initial(seeded)
+    assert any("sector 0" in e for e in errors) and any("sector 1" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# On-device OTA select records (pinned ESP-IDF v6.1 layout) — P0-2
+# ---------------------------------------------------------------------------
+
+
+def test_esp_ota_crc32_matches_the_zlib_composition() -> None:
+    """esp_rom_crc32_le(UINT32_MAX, d, len) == zlib.crc32(d) ^ 0xFFFFFFFF
+    (the raw CRC without zlib's final inversion, since ~UINT32_MAX == 0)."""
+    import zlib
+
+    for sample in (b"", b"\x01", b"123456789", bytes(range(256)),
+                   b"\xc9\x3a\x3a\xc9" * 40):
+        want = zlib.crc32(sample, 0) ^ 0xFFFFFFFF
+        assert contract.esp_ota_crc32(sample) == want, sample[:8]
+
+
+def test_ota_data_records_accept_erased_and_valid_records() -> None:
+    assert contract.validate_ota_data_records(b"\xFF" * 0x2000) == []
+    assert contract.validate_ota_data_records(support.first_boot_otadata(7)) == []
+    # Mixed: one written sector, one still erased is the legitimate
+    # interrupted-first-write state.
+    assert contract.validate_ota_data_records(
+        support.make_ota_data([support.make_ota_record(3, 0x00000002), None])
+    ) == []
+    # Every defined state is accepted with a correct crc.
+    for state in contract.OTA_IMG_STATE_NAMES:
+        assert contract.validate_ota_data_records(
+            support.make_ota_data([support.make_ota_record(2, state), None])
+        ) == []
+
+
+def test_ota_data_records_reject_corrupted_records_including_c9_first_byte() -> None:
+    # Corrupted record whose first byte is the legacy 0xC9 magic: the old
+    # single-byte check accepted this; strict parsing must not.
+    legacy = bytearray(support.first_boot_otadata())
+    legacy[0] = 0xC9
+    assert any("crc32" in e for e in
+               contract.validate_ota_data_records(bytes(legacy)))
+    c9_all = bytearray(b"\xFF" * 0x2000)
+    c9_all[0:32] = b"\xc9" + b"\xAA" * 31
+    errors = contract.validate_ota_data_records(bytes(c9_all))
+    assert errors and any("sector 0" in e for e in errors)
+
+    # Bad state value with an otherwise-correct crc.
+    bad_state = bytearray(support.first_boot_otadata())
+    bad_state[24:28] = (0xDEADBEEF).to_bytes(4, "little")
+    assert any("ota_state" in e for e in
+               contract.validate_ota_data_records(bytes(bad_state)))
+
+    # Bit-flipped crc.
+    bad_crc = bytearray(support.first_boot_otadata())
+    bad_crc[31] ^= 0xFF
+    assert any("crc32" in e for e in
+               contract.validate_ota_data_records(bytes(bad_crc)))
+
+    # Torn sector: content beyond the 32-byte entry.
+    torn = bytearray(support.first_boot_otadata())
+    torn[0x1000 + 64] = 0x5A
+    assert any("beyond the 32-byte select entry" in e for e in
+               contract.validate_ota_data_records(bytes(torn)))
+
+    # Wrong total size (this is also the short-read guard for callers).
+    assert contract.validate_ota_data_records(b"\xFF" * 0x1FFF)
+    assert contract.validate_ota_data_records(b"\xFF" * 0x1000)
 
 
 # ---------------------------------------------------------------------------
