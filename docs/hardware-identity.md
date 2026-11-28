@@ -38,11 +38,12 @@ raw values or serial numbers.
 
 ```text
 mem: flash_size=8MB[measured] flash_mode=qio[configured] flash_freq=80m[configured] psram=8MB[measured:init-ok] psram_mode=opi[configured] psram_speed=80m[configured]
-identity: chip=esp32s3 rev=<major>.<minor> mem=8MB-flash/8MB-psram[opi-configured] mac=**:**:**:**:<tail-lo>:<tail-hi>
+identity: chip=esp32s3 rev=<major>.<minor> mem=8MB-flash/8MB-psram[opi-configured] mac=**:**:**:**:<second-to-last-octet>:<last-octet>
 ```
 
 (Exact strings are host-pinned by `test_vdog_mem` / `test_vdog_recovery`.
-`mac=` renders only the last two bytes; the board tag is omitted until
+`mac=` renders the stored 16-bit tail as its two octets in MAC order
+(0x5e6f → `5e:6f`), OUI masked; the board tag is omitted until
 section 1 records a unit label.)
 
 | Row | Value | Tag | Status |
