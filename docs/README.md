@@ -22,7 +22,9 @@ device operation remains unverified here. For setup and USB flashing, follow the
 6. [Implementation plan](plans/implementation-plan.md): ordered stages and
    numbered work packages, including inputs, outputs, tests, and handoffs.
 7. [Stage 0.9 CI and release plan](plans/0.9-firmware-ci-release.md): PR head-hash
-   builds, main tags/releases and complete installation bundles; implementation pending.
+   builds, main tags/releases and complete installation bundles; implemented on
+   `main` with the hosted runs verified live 2026-11-28 (device install
+   CI-T15 stays deferred, D-26).
 8. [Validation](validation.md), [security](security.md), and
    [references](references.md).
 

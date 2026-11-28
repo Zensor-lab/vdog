@@ -1,11 +1,18 @@
 # Validation and evidence plan
 
-Status: updated 2026-11-21. Package 0.2 records firmware BUILD and portable
+Status: updated 2026-11-28. Package 0.2 records firmware BUILD and portable
 HOST evidence in [toolchain](toolchain.md); package 0.6 records the media/API
-contract gate as HOST evidence in section 4; Stage 0.9 round 2 adds the CI,
-publish and prebuilt-installer HOST evidence in section 5. Device/app/backend/
-recording evidence and every hosted Actions run remain unverified. Documentation
-inspection supplies none of those runtime or deployment results.
+contract gate as HOST evidence in section 4 (merged into `main` as `7839610`,
+PR #3); Stage 0.9 is **closed** — its CI, publish and prebuilt-installer
+evidence in section 5 was verified live against real GitHub data on
+2026-11-28 (closure `5d314c8`, PR #8; installer & release hardening
+`0fd2433`, PR #9). Device/app/backend/recording evidence remains
+unverified: live DEVICE verification is outstanding, Windows `install.ps1`
+execution (no `pwsh` host) and a clean-host Linux `install.sh` run stay
+UNVERIFIED, the CI-T15 hardware-install matrix stays UNVERIFIED (deferred,
+D-26), Jada's E07 GPIO21 sign-off is pending and no microphone
+initialization is in scope. Documentation inspection supplies none of those
+runtime or deployment results.
 
 ## 1. Evidence levels and record format
 
@@ -146,7 +153,7 @@ executed hosted runs). The hosted workflows themselves ran on GitHub Actions
 their live results, tags, artifacts and published Releases were verified
 through the `gh`/REST APIs and real asset downloads on 2026-11-28 (section 5).
 No device was connected and no serial port was opened by any verification
-command; CI-T15 remains deferred by decision D-17.
+command; CI-T15 remains deferred by decision D-26.
 
 Run Flutter commands from `app/`; others from repository root. The embedded
 build-only test command does not execute tests. `pio test` without those flags
@@ -180,7 +187,7 @@ this is the evidence status of each row:
 | CI-T12 retries/concurrency | PASS (LIVE for what ran; retry/repair = HOST) | **live-observed:** per-PR cancellation (run `46100912142` `cancelled` 03:04:49Z when head `1ef6189` pushed 03:04:31Z) and six per-SHA first-attempt publications (`attempt=1` each; runs nonoverlapping — each finished before the next started, closest starts >5 h apart; matching digests across two independent downloads establish that release's bytes consistent); **structural:** per-SHA main group with `cancel-in-progress: false` in the workflow config — no overlapping main runs have occurred to exercise it; **host (fake adapter, `test_publish.py` incl. `test_same_sha_rerun_reuses_the_published_release`):** same-SHA retry reuse, interrupted-upload draft repair and mixed-attempt refusal — no live rerun/interruption occurred |
 | CI-T13 permissions | PASS (structural + LIVE posture) | top level and every build job `contents: read`; only `publish` gets `contents: write` + `actions: read`; all actions pinned to full SHAs; no `pull_request_target`/`workflow_run`/`workflow_dispatch`; canonical-main guard rejects other sources (tests); live: repo Actions settings `default_workflow_permissions=read`, `can_approve_pull_request_reviews=false`; every observed run event was `push`/`pull_request` only |
 | CI-T14 no hidden erase | PASS (LIVE) | `plan` on both downloaded bundles enumerates only explicit-offset `write-flash` invocations and prints "never written: NVS, phy_init, storage, SD card, security fuses"; the installer has no full-chip erase, merged-gap NVS overwrite, eFuse write or security-bypass path (structural tests); artifact path itself verified via the artifacts API outer ZIP (`unzip -t` clean, inner ZIP digest `b9436ded…f479cd: OK`) |
-| CI-T15 device install | UNVERIFIED (deferred) | out of scope by decision D-17; needs the identified authorized unit/port and DEVICE evidence (awaiting separately authorized hardware) |
+| CI-T15 device install | UNVERIFIED (deferred) | out of scope by decision D-26; needs the identified authorized unit/port and DEVICE evidence (awaiting separately authorized hardware) |
 
 Structural rows are asserted by `tools/firmware/tests/test_workflows.py`, adapter
 rows by `test_publish.py`, wrapper rows by `test_install_wrappers.py`. The

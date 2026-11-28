@@ -10,7 +10,7 @@
 #   0x012000 - 0x020000  (gap: first app slot must be 0x10000-aligned)
 #   0x020000 - 0x320000  app0      0x300000 (3MB OTA slot A)
 #   0x320000 - 0x620000  app1      0x300000 (3MB OTA slot B, equal size)
-#   0x620000 - 0x800000  storage   0x1E0000 (1984KB reserved headroom/fat
+#   0x620000 - 0x800000  storage   0x1E0000 (1920 KiB reserved headroom/fat
 #                                            data partition for future use)
 # Arithmetic: 0x620000 + 0x1E0000 = 0x800000 (exactly 8MB, no overflow).
 # Slot margin vs measured minimal app (docs/toolchain.md): slot / image >= 4x.
