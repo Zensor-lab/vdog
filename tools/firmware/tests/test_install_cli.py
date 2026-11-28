@@ -829,6 +829,115 @@ def test_backend_rejects_unusable_flash_size() -> None:
         backend.connect("/dev/ttyX", expect={})
 
 
+def test_backend_initializes_flash_from_fresh_rom() -> None:
+    """PR-R3 P0: a fresh detect_chip leaves the ROM loader; connect() must
+    replicate the pinned CLI — upload the stub, attach SPI flash when the
+    loader is still ROM, configure flash parameters — all BEFORE the first
+    flash read, on the same verified connection, reopen guard in force."""
+    rom = support.FakeEspConnection(is_stub=False)
+    module = support.FakeEsptoolModule(esp=rom, stub_upload_returns_rom=True)
+    backend = inst.EsptoolSessionBackend(esptool_module=module)
+    backend.connect("/dev/ttyX", expect={})
+    assert module.stub_uploads == 1
+    assert rom.attachments == [0]                 # ROM fallback attaches flash
+    assert rom.params_configured == [inst.FLASH_SIZE]
+    rom.read_flash(0x8000, 0xC00)                 # first layout read
+    order = rom.calls + []                        # calls recorded in order
+    seq = [c for c in rom.calls]
+    assert seq.index("run_stub") < seq.index("flash_spi_attach(0)")
+    assert seq.index("flash_spi_attach(0)") < seq.index("set_flash_params(8MB)")
+    with pytest.raises(inst.EsptoolFailure, match="never reconnects"):
+        rom.open()                                # guard still in force
+
+
+def test_backend_loaded_stub_skips_rom_attach_but_still_sets_params() -> None:
+    rom = support.FakeEspConnection(is_stub=False)
+    module = support.FakeEsptoolModule(esp=rom)   # stub upload succeeds
+    backend = inst.EsptoolSessionBackend(esptool_module=module)
+    backend.connect("/dev/ttyX", expect={})
+    assert rom.attachments == []                  # stub manages attachment
+    assert rom.params_configured == [inst.FLASH_SIZE]
+
+
+def test_backend_wrong_chip_reports_name_without_crash() -> None:
+    """PR-R3: the wrong-chip branch used to format the name after clearing
+    the connection (AttributeError on None)."""
+    c3 = support.FakeEspConnection(chip_name="ESP32-C3")
+    backend = inst.EsptoolSessionBackend(
+        esptool_module=support.FakeEsptoolModule(esp=c3))
+    with pytest.raises(inst.EsptoolFailure, match="not an ESP32-S3: 'ESP32-C3'"):
+        backend.connect("/dev/ttyX", expect={})
+    assert c3.closed == 1
+
+
+def test_backend_requires_complete_security_report() -> None:
+    incomplete = support.FakeEspConnection(security={"flags": 0})  # no counter!
+    backend = inst.EsptoolSessionBackend(
+        esptool_module=support.FakeEsptoolModule(esp=incomplete))
+    with pytest.raises(inst.EsptoolFailure, match="security report incomplete"):
+        backend.connect("/dev/ttyX", expect={})
+    malformed = support.FakeEspConnection(
+        security={"flags": "zero", "flash_crypt_cnt": 0})
+    backend = inst.EsptoolSessionBackend(
+        esptool_module=support.FakeEsptoolModule(esp=malformed))
+    with pytest.raises(inst.EsptoolFailure, match="security report malformed"):
+        backend.connect("/dev/ttyX", expect={})
+
+
+def test_install_refuses_incomplete_security_with_zero_writes(installed_package) -> None:
+    """Through the public CLI: unknown protection state is never treated as
+    unprotected — zero writes, zero resets."""
+    root, _payload, _manifest = installed_package
+    transport = support.FakeTransport()  # preflight mac == backend mac
+    esp = support.FakeEspConnection(security={"flags": 0})
+    backend = inst.EsptoolSessionBackend(
+        esptool_module=support.FakeEsptoolModule(esp=esp))
+    a, _lines = app(root, transport=transport, session_backend=backend)
+    with pytest.raises(inst.InstallerError) as exc:
+        a.cmd_install(
+            "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+            dry_run=False, confirm_replace=True,
+        )
+    assert exc.value.code == inst.EXIT_FLASH_FAILED
+    assert "security report incomplete" in str(exc.value)
+    assert transport.writes == [] and esp.writes == []
+    assert transport.resets == [] and esp.resets == 0
+
+
+def test_native_transfer_errors_get_installer_codes(installed_package) -> None:
+    """PR-R3 P1: native esptool/pyserial exceptions must surface as the
+    CLI's failure codes — never a traceback — with the session closed and
+    no reset after a failed write."""
+    root, _payload, _manifest = installed_package
+    transport = support.FakeTransport()
+    esp = support.FakeEspConnection()
+    esp.fail_write = RuntimeError("simulated pyserial OSError")
+    backend = inst.EsptoolSessionBackend(
+        esptool_module=support.FakeEsptoolModule(esp=esp))
+    a, _lines = app(root, transport=transport, session_backend=backend)
+    with pytest.raises(inst.InstallerError) as exc:
+        a.cmd_install(
+            "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+            dry_run=False, confirm_replace=True,
+        )
+    assert exc.value.code == inst.EXIT_FLASH_FAILED
+    assert "RuntimeError" in str(exc.value)
+    assert esp.resets == 0 and transport.resets == []
+    assert esp.closed >= 1
+
+
+def test_native_reset_error_becomes_power_cycle_guidance() -> None:
+    """A native failure in the single reset still maps to the installer's
+    reset-failure message and code, not a traceback."""
+    esp = support.FakeEspConnection()
+    esp.fail_reset = OSError("device disappeared")
+    backend = inst.EsptoolSessionBackend(
+        esptool_module=support.FakeEsptoolModule(esp=esp))
+    backend.connect("/dev/ttyX", expect={})
+    with pytest.raises(inst.EsptoolFailure, match="manual power cycle"):
+        backend.reset("/dev/ttyX")
+
+
 def test_refuses_unpinned_esptool_without_port_touch(installed_package) -> None:
     root, _payload, _manifest = installed_package
     transport = support.FakeTransport(version="4.8.1")

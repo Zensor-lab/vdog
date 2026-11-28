@@ -1259,8 +1259,11 @@ class EsptoolSessionBackend:
                 esptool=esptool, detect_chip=detect_chip,
                 _get_flash_info=_get_flash_info,
             )
-            from esptool.cmds import write_flash as _wf
+            from esptool import run_stub as _run_stub
+            from esptool.cmds import write_flash as _wf, _set_flash_parameters as _sfp
             module.write_flash = _wf
+            module.run_stub = _run_stub
+            module._set_flash_parameters = _sfp
         version = getattr(getattr(module, "esptool", None), "__version__", None)
         if version != ESPTOOL_VERSION:
             raise EsptoolFailure(
@@ -1284,60 +1287,91 @@ class EsptoolSessionBackend:
                 )
         lib = self._library()
         self._write_fn = lib.write_flash
-        self._esp = lib.detect_chip(port, connect_mode="default-reset",
-                                    connect_attempts=3)
-        if not re.search(r"esp[- ]?32[- ]?s3", str(self._esp.CHIP_NAME), re.I):
-            self.close()
-            raise EsptoolFailure(f"device is not an ESP32-S3: {self._esp.CHIP_NAME!r}")
-        # The single-connection rule: esptool's high-level helpers can
-        # close/reopen/reconnect the port on serial errors and retry. On a
-        # vdog install that path is forbidden — reopen attempts fail
-        # immediately so any I/O error surfaces as an abort (zero further
-        # writes, no reset) instead of a silent reconnect to whatever
-        # answers the path now.
-        def _deny_reopen(*_args: Any, **_kwargs: Any) -> None:
-            raise EsptoolFailure(
-                "esptool attempted to reopen the serial port mid-session; a vdog "
-                "install runs on one verified connection and never reconnects — "
-                "the install aborted, the board was not reset"
+
+        def _native(exc: BaseException, what: str) -> EsptoolFailure:
+            """Translate esptool/pyserial errors at the backend boundary:
+            operators get the installer's failure codes, never a raw
+            traceback (PR-R3 review finding)."""
+            if isinstance(exc, EsptoolFailure):
+                return exc
+            return EsptoolFailure(
+                f"esptool {what} failed ({type(exc).__name__}: {exc}); the install "
+                "aborted, the board was not reset"
             )
+
         try:
+            self._esp = lib.detect_chip(port, connect_mode="default-reset",
+                                        connect_attempts=3)
+            chip_name = str(self._esp.CHIP_NAME)  # capture before any close()
+            if not re.search(r"esp[- ]?32[- ]?s3", chip_name, re.I):
+                raise EsptoolFailure(f"device is not an ESP32-S3: {chip_name!r}")
+            # The single-connection rule FIRST: esptool's error recovery can
+            # close/reopen/reconnect the port and retry; that path is denied
+            # from here on, so any I/O error aborts instead of silently
+            # retargeting whatever answers the path now.
+            def _deny_reopen(*_args: Any, **_kwargs: Any) -> None:
+                raise EsptoolFailure(
+                    "esptool attempted to reopen the serial port mid-session; a vdog "
+                    "install runs on one verified connection and never reconnects — "
+                    "the install aborted, the board was not reset"
+                )
             self._esp._port.open = _deny_reopen
-        except Exception as exc:  # noqa: BLE001 - no guard, no install
-            self.close()
-            raise EsptoolFailure(
-                f"cannot enforce the single-connection rule on this backend: {exc}"
-            ) from exc
-        # Flash size exactly as esptool derives it (_get_flash_info returns
-        # a display string like "8MB"; convert here, PR-R2 review finding).
-        _vendor, _device, size_str = lib._get_flash_info(self._esp)
-        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([KM]i?B)", str(size_str), re.I)
-        if not match:
-            self.close()
-            raise EsptoolFailure(f"cannot detect flash size from {size_str!r}")
-        mult = {"KB": 1024, "MB": 1024 ** 2, "MIB": 1024 ** 2}[match.group(2).upper()]
-        flash_bytes = int(float(match.group(1)) * mult)
-        # S3 read_mac takes mac_type "BASE_MAC" (anything else returns
-        # None — PR-R2 review finding) and yields the six MAC bytes.
-        try:
+            # Flash initialization identical to the pinned CLI (PR-R3 P0):
+            # upload the stub flasher (CLI __init__.py:615-617), and because
+            # a ROM loader has not enabled the flash interface, attach it
+            # explicitly (cmds.py:2054-2057); then configure flash
+            # parameters, which esptool requires after attach and before
+            # ANY flash read or write (cmds.py:2163-2167).
+            if not getattr(self._esp, "IS_STUB", False):
+                self._esp = lib.run_stub(self._esp)
+            if not getattr(self._esp, "IS_STUB", False):
+                self._esp.flash_spi_attach(0)
+            lib._set_flash_parameters(self._esp, FLASH_SIZE)
+            # Flash size exactly as esptool derives it (display string like
+            # "8MB"; PR-R2 finding).
+            _vendor, _device, size_str = lib._get_flash_info(self._esp)
+            match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([KM]i?B)",
+                                 str(size_str), re.I)
+            if not match:
+                raise EsptoolFailure(f"cannot detect flash size from {size_str!r}")
+            mult = {"KB": 1024, "MB": 1024 ** 2,
+                    "MIB": 1024 ** 2}[match.group(2).upper()]
+            flash_bytes = int(float(match.group(1)) * mult)
+            # S3 read_mac takes mac_type "BASE_MAC" (anything else returns
+            # None — PR-R2 finding) and yields the six MAC bytes.
             raw_mac = self._esp.read_mac()
-        except Exception as exc:  # noqa: BLE001 - surfaced as transport failure
+            if raw_mac is None:
+                raise EsptoolFailure(
+                    "esptool returned no BASE_MAC on the live connection; identity "
+                    "cannot be verified, refusing to write"
+                )
+            mac = ":".join(f"{b:02x}" for b in bytes(raw_mac))
+            security = self._esp.get_security_info()
+            # Incomplete security information must never default to
+            # "protection off" (PR-R3 P1): both fields are required and
+            # range-checked.
+            if not isinstance(security, dict) or "flags" not in security \
+                    or "flash_crypt_cnt" not in security:
+                raise EsptoolFailure(
+                    "security report incomplete (missing flags or "
+                    "flash_crypt_cnt); refusing to treat unknown protection state "
+                    "as unprotected"
+                )
+            try:
+                flags = int(security["flags"])
+                crypt_cnt = int(security["flash_crypt_cnt"])
+            except (TypeError, ValueError) as exc:
+                raise EsptoolFailure(
+                    f"security report malformed ({exc}); refusing to continue"
+                ) from exc
+            if not 0 <= flags <= 0xFFFFFFFF or not 0 <= crypt_cnt <= 0xFF:
+                raise EsptoolFailure("security report out of range; refusing to continue")
+        except Exception as exc:  # noqa: BLE001 - translated, never leaked
             self.close()
-            raise EsptoolFailure(f"cannot read MAC on the live connection: {exc}") from exc
-        if raw_mac is None:
-            self.close()
-            raise EsptoolFailure(
-                "esptool returned no BASE_MAC on the live connection; identity "
-                "cannot be verified, refusing to write"
-            )
-        mac = ":".join(f"{b:02x}" for b in bytes(raw_mac))
-        security = self._esp.get_security_info()
+            raise _native(exc, "connection/identity") from exc
         # Flash encryption is flash_crypt_cnt ODD BIT PARITY (esptool's own
         # convention at cmds.py:1487), not a flag bit; SECURE_BOOT_EN is
-        # bit 0 of flags (PR-R2 review finding: bit 1 is
-        # SECURE_BOOT_AGGRESSIVE_REVOKE and says nothing about encryption).
-        flags = int(security.get("flags", 0))
-        crypt_cnt = int(security.get("flash_crypt_cnt", 0))
+        # bit 0 of flags (PR-R2: bit 1 is SECURE_BOOT_AGGRESSIVE_REVOKE).
         return {
             "chip": "esp32s3",
             "flash_bytes": flash_bytes,
@@ -1349,19 +1383,40 @@ class EsptoolSessionBackend:
     def read_flash(self, port: str, offset: int, size: int) -> bytes:
         if self._esp is None:
             raise EsptoolFailure("install session is not connected")
-        return self._esp.read_flash(offset, size)
+        try:
+            return self._esp.read_flash(offset, size)
+        except Exception as exc:  # noqa: BLE001 - translated at the boundary
+            raise EsptoolFailure(
+                f"esptool read_flash at 0x{offset:x} failed "
+                f"({type(exc).__name__}: {exc}); the install aborted, "
+                "the board was not reset"
+            ) from exc
 
     def write_flash(self, port: str, offset: int, image_path: Path) -> None:
         if self._esp is None:
             raise EsptoolFailure("install session is not connected")
-        self._write_fn(self._esp, [(offset, str(image_path))],
-                       flash_mode=FLASH_MODE, flash_size=FLASH_SIZE,
-                       flash_freq=FLASH_FREQ)
+        try:
+            self._write_fn(self._esp, [(offset, str(image_path))],
+                           flash_mode=FLASH_MODE, flash_size=FLASH_SIZE,
+                           flash_freq=FLASH_FREQ)
+        except Exception as exc:  # noqa: BLE001 - translated at the boundary
+            raise EsptoolFailure(
+                f"esptool write of 0x{offset:x} failed "
+                f"({type(exc).__name__}: {exc}); the install aborted, "
+                "the board was not reset"
+            ) from exc
 
     def reset(self, port: str) -> None:
         if self._esp is None:
             raise EsptoolFailure("install session is not connected")
-        self._esp.hard_reset()
+        try:
+            self._esp.hard_reset()
+        except Exception as exc:  # noqa: BLE001 - translated at the boundary
+            raise EsptoolFailure(
+                f"the single explicit reset failed "
+                f"({type(exc).__name__}: {exc}); the board may need a "
+                "manual power cycle"
+            ) from exc
 
     def close(self) -> None:
         esp, self._esp = self._esp, None
@@ -1952,7 +2007,12 @@ def build_parser() -> argparse.ArgumentParser:
     for sp in (p_inspect, p_install):
         sp.add_argument("--esptool-python",
                         help="Python interpreter of the qualified installer environment "
-                             "used to run esptool 5.4.0 (never an ambient tool)")
+                             "used for the read-only esptool CLI probe (never an "
+                             "ambient tool). NOTE: the install session's esptool API "
+                             "backend runs in the interpreter executing install.py "
+                             "itself and must carry exactly esptool 5.4.0 — run the "
+                             "whole installer through install.sh/install.ps1 so both "
+                             "share one pinned environment")
     return parser
 
 

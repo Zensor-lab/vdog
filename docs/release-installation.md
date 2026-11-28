@@ -310,7 +310,7 @@ other device function — that verification is still outstanding.
 | Port appears and disappears | Try another cable and another USB port; a charge-only cable is the usual cause |
 | `Permission denied` opening the port (Linux) | Add yourself to the `dialout` group and re-login; do not run the installer as root |
 | Port busy | Close the monitor or other program holding it, then retry |
-| `esptool version … is not the qualified 5.4.0` | Rerun through `sh ./install.sh` / `.\install.ps1` so the locked environment is used, or pass `--esptool-python` to that environment's interpreter. The installer will not silently use an ambient `esptool` |
+| `esptool version … is not the qualified 5.4.0` | Rerun through `sh ./install.sh` / `.\install.ps1` so the **whole installer** runs in the locked environment. `--esptool-python <path>` scopes only the read-only CLI probe; the install session's esptool API backend must load exactly esptool 5.4.0 **in the interpreter executing install.py**, so a mismatch there means rerun via the wrapper (or use that environment's interpreter to run install.py itself). The installer will not silently use an ambient `esptool` |
 | `serial port enumeration needs the locked installer dependencies` | First setup had no network, or the environment was deleted; rerun `sh ./install.sh check` with network access |
 | `check` fails on a hash | Re-download from the Release and re-verify; do not install a bundle that fails |
 | Device reports the wrong chip or flash size | You have a different board or revision. Stop; this bundle is only for the XIAO ESP32S3 Sense |

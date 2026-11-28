@@ -921,29 +921,49 @@ class FakeTransport:
 
 
 class FakeEspConnection:
-    """A mocked I/O ESPLoader: one live connection object for identity,
-    reads, writes and the single reset."""
+    """A mocked I/O ESPLoader: one live connection object for init,
+    identity, reads, writes and the single reset. ``calls`` preserves the
+    exact operation order so tests can assert the CLI-equivalent
+    initialization sequence."""
 
     def __init__(self, *, chip_name: str = "ESP32-S3",
                  mac: tuple[int, ...] | None = (0x00, 0x11, 0x22, 0x33, 0x44, 0x55),
                  security: dict[str, int] | None = None,
-                 flash_map: dict[int, bytes] | None = None) -> None:
+                 flash_map: dict[int, bytes] | None = None,
+                 is_stub: bool = True) -> None:
         self.CHIP_NAME = chip_name
+        self.IS_STUB = is_stub
         self._mac = mac
-        self._security = security or {"flags": 0, "flash_crypt_cnt": 0}
+        self._security = security if security is not None else {
+            "flags": 0, "flash_crypt_cnt": 0}
         self.flash_map = dict(flash_map or {})
         self.writes: list[tuple[int, bytes]] = []
         self.reads: list[tuple[int, int]] = []
         self.resets = 0
         self.closed = 0
+        self.calls: list[str] = []
+        self.attachments: list[int] = []
+        self.params_configured: list[str] = []
+        # fault-injection hooks (native, non-esptool errors on purpose)
+        self.fail_read: Exception | None = None
+        self.fail_write: Exception | None = None
+        self.fail_reset: Exception | None = None
         # the backend monkey-patches _port.open to deny reconnects
         self._port = self
 
     def open(self) -> None:  # replaced by the backend after connect
-        pass
+        self.calls.append("open")
 
     def close(self) -> None:
         self.closed += 1
+
+    def flash_spi_attach(self, value: int) -> None:
+        self.calls.append(f"flash_spi_attach({value})")
+        self.attachments.append(value)
+
+    def set_flash_params(self, size: str) -> None:
+        self.calls.append(f"set_flash_params({size})")
+        self.params_configured.append(size)
 
     def flash_id(self, cache: bool = True) -> int:
         return 0x16  # 8MB-class JEDEC device id
@@ -957,6 +977,8 @@ class FakeEspConnection:
         return dict(self._security)
 
     def read_flash(self, offset: int, length: int, progress_fn=None) -> bytes:
+        if self.fail_read is not None:
+            raise self.fail_read
         self.reads.append((offset, length))
         out = bytearray(b"\xFF" * length)
         for base, region in self.flash_map.items():
@@ -967,21 +989,28 @@ class FakeEspConnection:
         return bytes(out)
 
     def hard_reset(self, uses_usb: bool = False) -> None:
+        if self.fail_reset is not None:
+            raise self.fail_reset
+        self.calls.append("hard_reset")
         self.resets += 1
 
 
 class FakeEsptoolModule:
     """Stub of the qualified esptool module surface consumed by
     EsptoolSessionBackend._library()/connect(): esptool.__version__,
-    detect_chip, _get_flash_info and cmds.write_flash."""
+    detect_chip, run_stub, _get_flash_info, _set_flash_parameters and
+    cmds.write_flash."""
 
     def __init__(self, *, esp: FakeEspConnection | None = None,
                  version: str | None = "5.4.0",
-                 flash_size: str = "8MB") -> None:
+                 flash_size: str = "8MB",
+                 stub_upload_returns_rom: bool = False) -> None:
         self.esptool = types.SimpleNamespace(__version__=version)
         self.esp = esp or FakeEspConnection()
         self._flash_size = flash_size
+        self._stub_upload_returns_rom = stub_upload_returns_rom
         self.detect_calls: list[dict[str, Any]] = []
+        self.stub_uploads = 0
 
     def detect_chip(self, port: str, *, connect_mode: str | None = None,
                     connect_attempts: int | None = None) -> FakeEspConnection:
@@ -989,12 +1018,26 @@ class FakeEsptoolModule:
                                   "connect_attempts": connect_attempts})
         return self.esp
 
+    def run_stub(self, esp: FakeEspConnection) -> FakeEspConnection:
+        self.stub_uploads += 1
+        esp.calls.append("run_stub")
+        if not self._stub_upload_returns_rom:
+            esp.IS_STUB = True  # the normal outcome: stub flasher loaded
+        return esp
+
     def _get_flash_info(self, esp: FakeEspConnection) -> tuple[int, int, str | None]:
         return (0xBF, 0x00, self._flash_size)
+
+    def _set_flash_parameters(self, esp: FakeEspConnection,
+                              flash_size: str = "keep") -> str:
+        esp.set_flash_params(flash_size)
+        return flash_size
 
     def write_flash(self, esp: FakeEspConnection, addr_data, *,
                     flash_mode: str | None = None, flash_size: str | None = None,
                     flash_freq: str | None = None) -> None:
+        if esp.fail_write is not None:
+            raise esp.fail_write
         for offset, source in addr_data:
             data = Path(source).read_bytes() if not isinstance(source, bytes) else source
             esp.writes.append((offset, data))
