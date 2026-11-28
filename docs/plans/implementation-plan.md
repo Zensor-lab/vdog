@@ -329,7 +329,10 @@ stage the dependencies listed in each package override simple numeric order.
   PENDING** — gated on owner board-marking photos (E01), operation-time port
   re-identification and Part A merge; no DEVICE evidence exists (all rows in
   `docs/hardware-identity.md` / `docs/bench-assignment.md` start PENDING;
-  rails/current stay UNVERIFIED, GPIO21 unclaimed, mic never initialized).
+  rails/current is now the **gated owner-performed device step** (multimeter
+  + inline USB-C power meter confirmed by the lead 2026-11-28; readings
+  recorded by the owner, claimed by no one until then), GPIO21 unclaimed,
+  mic never initialized).
   **Recorded deviation (2026-11-28,
   accepted in plan check):** "correct sensor identity" is deferred to
   package 1.3 — probing requires camera initialization owned by 1.3; the

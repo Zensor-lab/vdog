@@ -643,3 +643,17 @@ Host `cc -fsyntax-only` on `vdog_board_idf.c` (stub `sdkconfig.h`, core
 includes): neither `VDOG_BOARD_ID_STR` nor `VDOG_BOARD_PSRAM_SIZE_BYTES`
 defined → 2 `#error`s; only one defined → exactly 1; both defined → clean.
 Renaming either macro is compile-loud; no further guard needed in Part A.
+
+### Part B scope update (2026-11-28, lead equipment confirmation)
+
+The owner confirmed a **multimeter** and an **inline USB-C power meter**, so
+rails/current moved from UNVERIFIED to a **gated owner-performed DEVICE
+step** (plan §6 step 6): USB supply current at boot/idle via the inline
+meter and 3V3 via the multimeter, with the owner handling all probes and
+recording readings into `docs/hardware-identity.md` §3 (all rows PENDING).
+Power stays USB from the Mac with the battery physically disconnected; no
+other electrical measurement, no erase/eFuse/format/NVS-overwrite/filesystem
+upload, and no monitor beyond the recorded session remain in force. No
+measurement has been performed as of this commit — Part B is still gated on
+board marking photos, operation-time port re-identification and the lead's
+release of the reviewed Part A commit.

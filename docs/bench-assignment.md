@@ -13,6 +13,7 @@ This session may begin only when ALL wake conditions in §1 are recorded here
 | Board marking photos delivered (0.3 check 1: base board, Sense side, camera/ribbon, flash + PSRAM markings) | owner | PENDING |
 | Port re-identified at operation time (see §4 procedure — a previously recorded path is never trusted) | operator (this bot) | PENDING |
 | Lead released the reviewed Part A commit for device work | Team Leading developer | PENDING |
+| Electrical equipment staged (multimeter + inline USB-C power meter) for the owner-performed §3 step 4 | owner (availability confirmed by the lead 2026-11-28) | CONFIRMED available; staging at session PENDING |
 | `docs/hardware-identity.md` §1 rows transcribed from the photos | operator | PENDING |
 
 ## 2. Unit and host
@@ -35,6 +36,13 @@ This session may begin only when ALL wake conditions in §1 are recorded here
    `mem:` / `identity:` / board lines, boot-mode drill transcript including
    each raw `boot:0x..` word and reset reason).
 3. Port re-identification (procedure §4) as required by 1 and 2.
+4. **Owner-performed electrical checks** (plan §6 step 6; equipment confirmed
+   by the lead 2026-11-28): USB supply current during normal boot and at
+   idle via the **inline USB-C power meter**, and 3V3 rail voltage via the
+   **multimeter**. The OWNER does every measurement and supplies the
+   readings for `docs/hardware-identity.md` §3; the agent never probes,
+   wires or handles leads. Out-of-range reading = stop, record verbatim,
+   escalate.
 
 ## 4. Forbidden
 
@@ -42,6 +50,8 @@ This session may begin only when ALL wake conditions in §1 are recorded here
 - eFuse writes of any kind (no read of raw eFuse values into logs either).
 - Format of any filesystem; NVS overwrite; filesystem upload.
 - Any battery wiring or charging operation (battery stays disconnected).
+- Any electrical probing by the agent — multimeter leads and the inline
+  USB-C power meter are handled by the owner only (§3 item 4).
 - Monitor sessions beyond the recorded one; any operation on a port path
   that was not re-identified for that transition.
 
@@ -68,6 +78,6 @@ transition:
 | Boot transcript summary (`vdog_recovery_classify` per line, `boot:0x..`, reset reason) | PENDING |
 | `mem:` / `identity:` lines (verbatim) → transcribed to hardware-identity.md §2 | PENDING |
 | Recovery drill outcome (USB/BOOT → download mode reproducible?) | PENDING |
-| Rails/current | **UNVERIFIED — not authorized** (no confirmed multimeter/current-limited supply; plan §7) |
+| Rails/current | **PENDING — owner-performed** (§3 item 4; multimeter + inline USB-C power meter confirmed by the lead 2026-11-28); readings recorded by the owner in hardware-identity.md §3; agent never claims an unrecorded value |
 | GPIO21 / SD-CS vs user-LED | **not claimed** (0.3/E07 pending, Jada's sign-off) |
 | Microphone | **never initialized** (product baseline) |

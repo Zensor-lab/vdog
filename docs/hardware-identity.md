@@ -31,7 +31,6 @@ Plus/N16R8-shaped, 4 MiB-flash, no-PSRAM and quad-only-PSRAM reports with a
 specific code + field (host-proven, plan 1.2 acceptance 2).
 
 ## 2. Sanitized device report (filled by the Part B session)
-
 The boot console emits the two lines below per boot (`firmware/src/main.c`,
 after the 1.1 board line). They are the ONLY identity data this firmware
 logs: the identity struct is structurally unable to hold a full MAC, eFuse
@@ -58,9 +57,31 @@ section 1 records a unit label.)
 Rules (from the plan; restated here so a Part B transcript can be checked
 against them):
 
-1. No rail-voltage or current-draw row may be completed — the bench has no
-   confirmed multimeter/current-limited supply (UNVERIFIED, plan §7).
+1. Rails/current come only from the bounded owner-performed measurements in
+   §3 — the agent never measures, and nothing may be claimed before the
+   owner records a reading.
 2. No GPIO21 claim: SD-CS vs user-LED sharing stays unresolved until
    0.3/E07 (Jada's sign-off) is recorded here.
 3. The microphone stays uninitialized; no audio row may ever appear.
 4. Any sensor probing is 1.3 work, not Part B of this package.
+
+## 3. Electrical checks (bounded, OWNER-performed — plan §6 step 6)
+
+Equipment confirmed by the lead on 2026-11-28: a multimeter and an inline
+USB-C power meter. The **owner performs every measurement** and supplies the
+readings; the agent never probes, wires or handles meter leads and never
+claims a value it did not receive from the owner. Power stays USB from the
+Mac with the **battery physically disconnected**; the inline meter sits on
+that existing Mac-USB path. These rows become DEVICE evidence only once the
+owner records them — until then they are PENDING and the topic stays
+unverified.
+
+| Measurement | Instrument | Reading | Meter ID / timestamp | Status |
+| --- | --- | --- | --- | --- |
+| USB supply current — normal boot | inline USB-C power meter | `PENDING` | PENDING | PENDING |
+| USB supply current — idle after boot | inline USB-C power meter | `PENDING` | PENDING | PENDING |
+| 3V3 rail voltage | multimeter | `PENDING` | PENDING | PENDING |
+
+An out-of-range reading (3V3 far from 3.3 V nominal, or current behaving
+like a short/brownout) stops the session: record verbatim, escalate — do not
+continue flashing or monitoring past that point.
