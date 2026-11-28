@@ -264,13 +264,26 @@ python -m serial.tools.miniterm /dev/cu.usbmodem123 115200
 ```
 
 Expected startup lines (the exact identity values come from *your* bundle's
-`VERSION.json` / `manifest.json`):
+`VERSION.json` / `manifest.json`; the `board:`, `mem:` and `identity:` lines
+are the expected console output of the current source — `firmware/src/main.c`
+— and are **not** DEVICE evidence; no device function is proven by these
+lines):
 
 ```text
 I (xxx) vdog: vdog firmware 0.2.0-proto (0.2 proto build)
 I (xxx) vdog: build identity: build_id=main-<sha12> source_sha=<sha12>
+I (xxx) vdog: board: vdog 0.2.0-proto board=seeed_xiao_esp32s3 target=esp32s3 flash=8MB-qio-80m psram=8MB-opi-80m
+I (xxx) vdog: mem: flash_size=8MB[measured] flash_mode=qio[configured] flash_freq=80m[configured] psram=8MB[measured:init-ok] psram_mode=opi[configured] psram_speed=80m[configured]
+I (xxx) vdog: identity: chip=esp32s3 rev=0.2 mem=8MB-flash/8MB-psram[opi-configured] mac=**:**:**:**:<xx>:<xx>
 I (xxx) vdog: esp32-camera linked: yes
 ```
+
+The `board:` line (Stage 1.1) renders this image's own board profile; the
+`mem:` line (Stage 1.2) tags each field `measured` (read from the chip) or
+`configured` (this build's configuration); the `identity:` line is the
+sanitized chip model/revision plus the MAC tail only. A rejected board or
+memory baseline prints a `board config rejected:` /
+`memory check rejected:` error line instead — that is a stop, not a warning.
 
 The line you must match is
 
@@ -297,12 +310,14 @@ other device function — that verification is still outstanding.
 | Port appears and disappears | Try another cable and another USB port; a charge-only cable is the usual cause |
 | `Permission denied` opening the port (Linux) | Add yourself to the `dialout` group and re-login; do not run the installer as root |
 | Port busy | Close the monitor or other program holding it, then retry |
-| `esptool version … is not the qualified 5.4.0` | Rerun through `sh ./install.sh` / `.\install.ps1` so the locked environment is used, or pass `--esptool-python` to that environment's interpreter. The installer will not silently use an ambient `esptool` |
+| `esptool version … is not the qualified 5.4.0` | Rerun through `sh ./install.sh` / `.\install.ps1` so the **whole installer** runs in the locked environment. `--esptool-python <path>` scopes only the read-only CLI probe; the install session's esptool API backend must load exactly esptool 5.4.0 **in the interpreter executing install.py**, so a mismatch there means rerun via the wrapper (or use that environment's interpreter to run install.py itself). The installer will not silently use an ambient `esptool` |
 | `serial port enumeration needs the locked installer dependencies` | First setup had no network, or the environment was deleted; rerun `sh ./install.sh check` with network access |
 | `check` fails on a hash | Re-download from the Release and re-verify; do not install a bundle that fails |
 | Device reports the wrong chip or flash size | You have a different board or revision. Stop; this bundle is only for the XIAO ESP32S3 Sense |
 | Secure boot / flash encryption is reported | Stop. This prototype route does not install onto protected devices and provides no security bypass |
-| An install failed partway | Rerun the same validated command: the same four segments are re-validated before any write |
+| An install failed partway | **Stop first.** If it failed before any write (connection or classification stage), rerunning the same validated command is safe. If it failed during or after a write, do NOT blindly rerun: verify the physical board is the one you plugged in and that an interrupted vdog install actually happened — rerun only what you are sure was your own failed session |
+| `port … disappeared mid-session` | The installer holds ONE verified connection for the whole run (classification, consent, writes, read-back, reset), so the native USB port should not move; if the connection drops it never continues and never follows a renumbered path. Run `sh ./install.sh ports` and rerun with the **current** path |
+| `on-device partition table is unreadable/unknown` (exit 3) | **Stop — do not rerun to force it through.** A generic unknown-table refusal is never routed into an overwrite: verify the physical board is the expected XIAO ESP32S3 Sense and whether an interrupted vdog install actually happened. If (and only if) confirmed, recovery uses the separately authorized route (re-flash from a source build per [installation.md](installation.md), which writes the table from scratch); otherwise leave the device untouched and investigate |
 | `uv: command not found` | Install `uv`, or export `VDOG_INSTALLER_UV=/path/to/uv`, then rerun |
 
 ## 10. What the installer will never do

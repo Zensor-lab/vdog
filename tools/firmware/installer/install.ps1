@@ -105,27 +105,46 @@ function Invoke-Uv {
     param([string[]]$UvArgs, [switch]$Capture)
     # ArgumentList as an array: PowerShell quotes each element, so paths with
     # spaces or non-ASCII characters survive unchanged.
+    #
+    # Explicit result channels: native uv stdout NEVER joins this function's
+    # return value. The caller reads exactly two properties: .Status (uv's
+    # exit code, captured immediately after the native call) and .Output (the
+    # captured lines, only for -Capture). A failing command that printed
+    # anything therefore can neither look truthy to an `if` test nor hand a
+    # caller its bogus stdout as a usable value.
     if ($Capture) {
-        & $UvBin @UvArgs 2>$null
+        $lines = @(& $UvBin @UvArgs 2>$null)
+        $status = $LASTEXITCODE
+        return [pscustomobject]@{ Status = $status; Output = $lines }
     }
-    else {
-        & $UvBin @UvArgs
+    # Uncaptured uv chatter goes to the host, not to the return stream.
+    & $UvBin @UvArgs | ForEach-Object { Write-Host $_ }
+    $status = $LASTEXITCODE
+    return [pscustomobject]@{ Status = $status; Output = @() }
+}
+
+function Get-UvFirstLine {
+    param([object]$Result)
+    # First non-blank captured line of a successful -Capture run, or $null.
+    if ($null -eq $Result -or $Result.Status -ne 0) { return $null }
+    foreach ($line in @($Result.Output)) {
+        if ($line -and "$line".Trim()) { return "$line".Trim() }
     }
-    if ($LASTEXITCODE -ne 0) { return $null }
-    return $true
+    return $null
 }
 
 # --- select the qualified CPython 3.12 --------------------------------------
-$Py = (Invoke-Uv @('python', 'find', $QualifiedPython) -Capture) | Select-Object -First 1
+$Py = Get-UvFirstLine (Invoke-Uv @('python', 'find', $QualifiedPython) -Capture)
 if (-not $Py) {
     Write-Host "installer: CPython $QualifiedPython not found locally; installing it with uv (needs network)"
-    if (-not (Invoke-Uv @('python', 'install', $QualifiedPython))) {
-        Stop-Installer "uv could not provision CPython $QualifiedPython." @(
+    $installed = Invoke-Uv @('python', 'install', $QualifiedPython)
+    if ($installed.Status -ne 0) {
+        Stop-Installer "uv could not provision CPython $QualifiedPython (exit $($installed.Status))." @(
             'Check network access, or pick another qualified 3.12 patch with',
             '$env:VDOG_INSTALLER_PYTHON (for example "3.12").'
         )
     }
-    $Py = (Invoke-Uv @('python', 'find', $QualifiedPython) -Capture) | Select-Object -First 1
+    $Py = Get-UvFirstLine (Invoke-Uv @('python', 'find', $QualifiedPython) -Capture)
 }
 if (-not $Py) {
     Stop-Installer "uv still cannot locate CPython $QualifiedPython after installation." @(
@@ -149,8 +168,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not (Test-Path -
 }
 if (-not (Test-Path -LiteralPath $VenvDir -PathType Container)) {
     Write-Host "installer: creating the isolated environment $VenvDir"
-    if (-not (Invoke-Uv @('venv', '--python', $Py, $VenvDir))) {
-        Stop-Installer "uv could not create the isolated environment at '$VenvDir'." @(
+    $venv = Invoke-Uv @('venv', '--python', $Py, $VenvDir)
+    if ($venv.Status -ne 0) {
+        Stop-Installer "uv could not create the isolated environment at '$VenvDir' (exit $($venv.Status))." @(
             'Check that the parent directory is writable, or set',
             'VDOG_INSTALLER_VENV_DIR to a writable path.'
         )
@@ -176,7 +196,8 @@ if ($Resolved.Trim() -ne $QualifiedMinor) {
 & $VenvPython -c $DepProbe *> $null
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'installer: installing the pinned installer dependencies (needs network on first setup)'
-    if (-not (Invoke-Uv @('pip', 'install', '--python', $VenvPython, '--require-hashes', '-r', $RequirementsLock))) {
+    $deps = Invoke-Uv @('pip', 'install', '--python', $VenvPython, '--require-hashes', '-r', $RequirementsLock)
+    if ($deps.Status -ne 0) {
         Stop-Installer 'the locked installer dependencies could not be installed.' @(
             'First setup needs network access. If the hash check itself failed,',
             "the bundle's requirements-installer.lock was tampered with or is",

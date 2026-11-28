@@ -454,6 +454,55 @@ def test_install_ps1_structural_invariants_without_pwsh() -> None:
     assert "& $VenvPython $InstallPy @args" in text
 
 
+def test_install_ps1_invoke_uv_separates_status_from_stdout() -> None:
+    """P1-2: a failing uv that printed stdout must not look truthy.
+
+    ``Invoke-Uv`` must return ONLY an explicit {Status; Output} object and
+    must never let native uv stdout flow into the function's return stream.
+    Windows live execution stays UNVERIFIED (no pwsh on this host; CI-T09
+    pending) — this is the structural half of the evidence.
+    """
+    import re as _re
+
+    text = INSTALL_PS1.read_text(encoding="utf-8")
+    body = _re.search(
+        r"function Invoke-Uv \{.*?\n\}", text, _re.DOTALL
+    )
+    assert body, "Invoke-Uv function not found in install.ps1"
+    fn = body.group(0)
+
+    # Both branches capture $LASTEXITCODE into an explicit Status property.
+    assert fn.count("$status = $LASTEXITCODE") == 2
+    assert fn.count("return [pscustomobject]@{ Status = $status;") == 2
+    # The captured branch keeps stdout in an explicit Output property...
+    assert "$lines = @(& $UvBin @UvArgs 2>$null)" in fn
+    assert "Output = $lines" in fn
+    # ...and the uncaptured branch routes every native line to the host, so
+    # nothing from uv can join the success/return stream.
+    assert "& $UvBin @UvArgs | ForEach-Object { Write-Host $_ }" in fn
+    # The old truthiness shape is gone entirely.
+    for banned in ("return $true", "return $null", "if (-not (Invoke-Uv"):
+        assert banned not in fn, f"legacy Invoke-Uv pattern {banned!r} remains"
+
+    # Every call site branches on the explicit status, never on output
+    # truthiness: either assigned to a variable followed by a Status test,
+    # or passed through the status-aware Get-UvFirstLine helper.
+    call_lines = [
+        line.strip() for line in text.splitlines() if "Invoke-Uv @(" in line
+    ]
+    assert len(call_lines) == 5, call_lines  # 2 find + install + venv + pip
+    for line in call_lines:
+        assert line.startswith("function") or line in (
+            "$Py = Get-UvFirstLine (Invoke-Uv @('python', 'find', $QualifiedPython) -Capture)",
+        ) or line.endswith("-Capture)") or _re.match(r"^\$[A-Za-z]+ = Invoke-Uv ", line), line
+    for var in ("installed", "venv", "deps"):
+        assert f"${var} = Invoke-Uv " in text
+        assert f"if (${var}.Status -ne 0)" in text
+    # The helper itself refuses a nonzero status before returning any line.
+    helper = _re.search(r"function Get-UvFirstLine \{.*?\n\}", text, _re.DOTALL)
+    assert helper and "$Result.Status -ne 0" in helper.group(0)
+
+
 def test_wrappers_are_shipped_in_the_package(tmp_path: Path) -> None:
     """The ZIP the user extracts really contains these two scripts."""
     zip_path, _digest, payload, _manifest = support.package_from_build_dir(tmp_path / "b")

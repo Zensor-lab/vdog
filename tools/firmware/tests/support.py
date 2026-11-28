@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
+import types
 from pathlib import Path
 from typing import Any
 
@@ -104,7 +105,9 @@ def make_partitions_bin(entries: list[tuple[str, int, int, int, int]] | None = N
     for index in range(3072):
         table[index] = 0xFF
     used = bytearray()
-    for name, type_, subtype, offset, size in entries:
+    for entry_spec in entries:
+        name, type_, subtype, offset, size = entry_spec[:5]
+        flags = entry_spec[5] if len(entry_spec) > 5 else 0
         entry = bytearray(32)
         entry[0:2] = struct.pack("<H", 0x50AA)
         entry[2] = type_
@@ -112,6 +115,7 @@ def make_partitions_bin(entries: list[tuple[str, int, int, int, int]] | None = N
         entry[4:8] = struct.pack("<I", offset)
         entry[8:12] = struct.pack("<I", size)
         entry[12:28] = name.encode("ascii").ljust(16, b"\x00")
+        entry[28:32] = struct.pack("<I", flags)
         table[(index_pos := len(used)):(index_pos + 32)] = entry
         used += entry
     count = len(used)
@@ -132,6 +136,49 @@ def make_partitions_bin(entries: list[tuple[str, int, int, int, int]] | None = N
 
 def make_ota_initial(size: int = 0x2000) -> bytes:
     return b"\xFF" * size
+
+
+# ---------------------------------------------------------------------------
+# On-device otadata fixtures (pinned ESP-IDF v6.1 esp_ota_select_entry_t)
+# ---------------------------------------------------------------------------
+
+
+def esp_crc32_le(seed: int, data: bytes) -> int:
+    """Reference implementation of esp_rom_crc32_le for fixtures (deliberately
+    independent of contract.esp_ota_crc32; equality is asserted in tests).
+    IDF ROM-compat semantics (components/esp_rom/patches/esp_rom_crc.c):
+    complements the seed on entry and inverts the result."""
+    crc = seed ^ 0xFFFFFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
+    return crc ^ 0xFFFFFFFF
+
+
+def make_ota_record(seq: int, state: int) -> bytes:
+    """One valid 32-byte v6.1 select entry (seq_label left erased/opaque)."""
+    entry = bytearray(32)
+    entry[0:4] = seq.to_bytes(4, "little")
+    entry[4:24] = b"\xFF" * 20
+    entry[24:28] = state.to_bytes(4, "little")
+    entry[28:32] = esp_crc32_le(0xFFFFFFFF, bytes(entry[0:4])).to_bytes(4, "little")
+    return bytes(entry)
+
+
+def make_ota_data(sectors: list[bytes | None]) -> bytes:
+    """Two-sector otadata image: None = erased sector, bytes = record."""
+    out = bytearray(b"\xFF" * 0x2000)
+    for index, record in enumerate(sectors):
+        if record is not None:
+            out[index * 0x1000: index * 0x1000 + len(record)] = record
+    return bytes(out)
+
+
+def first_boot_otadata(seq: int = 1, state: int = 0x00000002) -> bytes:
+    """What a first boot leaves behind: the bootloader's single select entry
+    in each sector (v6.1 writes one 32-byte record per sector), both valid."""
+    return make_ota_data([make_ota_record(seq, state), make_ota_record(seq, state)])
 
 
 # ---------------------------------------------------------------------------
@@ -682,6 +729,13 @@ class FakeTransport:
         fail_on_write: int | None = None,
         fail_reset: bool = False,
         corrupt_store: bool = False,
+        short_read_at: tuple[int, int] | None = None,
+        short_read_by: int = 1,
+        short_read_when: str = "always",
+        drop_port_after: int | None = None,
+        mac: str = "00:11:22:33:44:55",
+        preflight_mac: str | None = None,
+        swap_mac: str | None = None,
     ) -> None:
         from tools.firmware.installer.install import EsptoolFailure
 
@@ -702,11 +756,49 @@ class FakeTransport:
         self.writes: list[tuple[int, str]] = []
         self.reads: list[tuple[int, int]] = []
         self.resets: list[str] = []
+        # P1-1 session mirroring: --before channel per op + port identity.
+        self.befores: list[str] = []
+        self.session_port: str | None = None
+        self.session_verified = False
+        self.port_exists = True
+        self.drop_port_after = drop_port_after
+        self.short_read_at = short_read_at
+        self.short_read_by = short_read_by
+        self.short_read_when = short_read_when
+        self.mac = mac
+        self.preflight_mac = preflight_mac
+        self.swap_mac = swap_mac
 
     # -- adapter surface -----------------------------------------------------
     def _maybe_fail(self, kind: str) -> None:
         if self.fail_on_call is not None and len(self.calls) == self.fail_on_call:
             raise self._failure_cls(f"injected serial failure at call {kind}")
+
+    def _port_state(self) -> None:
+        if self.drop_port_after is not None and len(self.calls) >= self.drop_port_after:
+            self.port_exists = False
+        if not self.port_exists:
+            gone = self.session_port or "the session port"
+            self.session_port = None
+            self.session_verified = False
+            raise self._failure_cls(
+                f"port {gone} disappeared mid-session (USB re-enumeration)"
+            )
+
+    def _begin(self, port: str) -> str:
+        """Mirror EsptoolTransport: first op on a port is the one
+        session-establishing default-reset; later ops reuse the session."""
+        self._port_state()
+        if self.session_verified and self.session_port == port:
+            before = "no-reset"
+        else:
+            before = "default-reset"
+        self.befores.append(before)
+        return before
+
+    def _establish(self, port: str) -> None:
+        self.session_port = port
+        self.session_verified = True
 
     def version(self) -> str:
         self.calls.append(["version"])
@@ -716,21 +808,26 @@ class FakeTransport:
         return self.fail_version or self.version_value
 
     def flash_id(self, port: str) -> tuple[str, int]:
-        self.calls.append(["flash-id", port])
+        before = self._begin(port)
+        self.calls.append(["flash-id", port, before])
         self._maybe_fail("flash-id")
         if self.chip != "esp32s3":
             raise self._failure_cls(
                 f"device is not an ESP32-S3: {ESPTOOL_540_CHIP_LINE_C3!r}"
             )
+        self._establish(port)
         return self.chip, self.flash_size
 
     def security_flags(self, port: str) -> dict[str, bool]:
-        self.calls.append(["get-security-info", port])
+        before = self._begin(port)
+        self.calls.append(["get-security-info", port, before])
         self._maybe_fail("security")
+        self._establish(port)
         return dict(self.security)
 
     def read_flash(self, port: str, offset: int, size: int) -> bytes:
-        self.calls.append(["read-flash", port, offset, size])
+        before = self._begin(port)
+        self.calls.append(["read-flash", port, offset, size, before])
         self._maybe_fail("read-flash")
         self.reads.append((offset, size))
         out = bytearray(b"\xFF" * size)
@@ -742,14 +839,21 @@ class FakeTransport:
                 out[overlap_start - offset:overlap_end - offset] = region[
                     overlap_start - region_start:overlap_end - region_start
                 ]
+        if (self.short_read_at == (offset, size)
+                and (self.short_read_when == "always" or self.writes)):
+            out = out[: max(0, size - self.short_read_by)]
+        self._establish(port)
         return bytes(out)
 
     def write_flash(self, port: str, offset: int, image_path: Path) -> None:
+        before = self._begin(port)
         # Mirrors EsptoolTransport: every write keeps the board in the
         # bootloader (--after no-reset); reset() is the only reset.
-        self.calls.append(["write-flash", port, offset, str(image_path)])
+        self.calls.append(["write-flash", port, offset, str(image_path), before])
         self._maybe_fail("write-flash")
         if self.fail_on_write is not None and len(self.writes) == self.fail_on_write:
+            self.session_verified = False
+            self.session_port = None
             raise self._failure_cls(f"injected write failure at segment {offset:#x}")
         data = Path(image_path).read_bytes()
         self.writes.append((offset, sha256_bytes(data)))
@@ -760,20 +864,197 @@ class FakeTransport:
             self.flash_map[offset] = bytes(flipped)
         else:
             self.flash_map[offset] = data
+        self._establish(port)
 
     def reset(self, port: str) -> None:
-        self.calls.append(["reset", port])
+        before = self._begin(port)
+        self.calls.append(["reset", port, before])
         self._maybe_fail("reset")
         if self.fail_reset:
             raise self._failure_cls("injected reset failure")
         self.resets.append(port)
+        # The session ends with the one reset: the port re-enumerates.
+        self.session_port = None
+        self.session_verified = False
+
+    # -- verified-session backend surface (mirrors EsptoolSessionBackend) ----
+    def read_mac(self, port: str) -> str:
+        before = self._begin(port)
+        self.calls.append(["read-mac", port, before])
+        self._maybe_fail("read-mac")
+        self._establish(port)
+        return self.preflight_mac or self.mac
+
+    def connect(self, port: str, *, expect: dict) -> dict:
+        """Open the ONE live connection: the identity returned comes from the
+        connection itself; hooks let tests present a different board that
+        took the same path after preflight."""
+        before = self._begin(port)
+        self.calls.append(["connect", port, before])
+        self._maybe_fail("connect")
+        if self.chip != "esp32s3":
+            raise self._failure_cls(
+                f"device is not an ESP32-S3: {ESPTOOL_540_CHIP_LINE_C3!r}"
+            )
+        self._establish(port)
+        return {
+            "chip": self.chip,
+            "flash_bytes": self.flash_size,
+            "mac": (self.swap_mac if self.swap_mac is not None else self.mac),
+            "secure_boot": self.security["secure_boot"],
+            "flash_encryption": self.security["flash_encryption"],
+        }
+
+    def close(self) -> None:
+        self.calls.append(["close"])
+        self.session_port = None
+        self.session_verified = False
 
 
-def blank_device_table(build_dir_payload: dict[str, bytes]) -> dict[int, bytes]:
-    """flash_map simulating a device already holding the dev layout."""
+# ---------------------------------------------------------------------------
+# Offline stand-ins for the esptool 5.4.0 API surface (PR-R2 review): these
+# emulate the REAL library semantics that bit the first backend revision —
+# read_mac only answers mac_type "BASE_MAC" (else None), _get_flash_info
+# returns a display string like "8MB", and flash encryption is
+# flash_crypt_cnt bit parity, not a flag bit.
+# ---------------------------------------------------------------------------
+
+
+class FakeEspConnection:
+    """A mocked I/O ESPLoader: one live connection object for init,
+    identity, reads, writes and the single reset. ``calls`` preserves the
+    exact operation order so tests can assert the CLI-equivalent
+    initialization sequence."""
+
+    def __init__(self, *, chip_name: str = "ESP32-S3",
+                 mac: tuple[int, ...] | None = (0x00, 0x11, 0x22, 0x33, 0x44, 0x55),
+                 security: dict[str, int] | None = None,
+                 flash_map: dict[int, bytes] | None = None,
+                 is_stub: bool = True) -> None:
+        self.CHIP_NAME = chip_name
+        self.IS_STUB = is_stub
+        self._mac = mac
+        self._security = security if security is not None else {
+            "flags": 0, "flash_crypt_cnt": 0}
+        self.flash_map = dict(flash_map or {})
+        self.writes: list[tuple[int, bytes]] = []
+        self.reads: list[tuple[int, int]] = []
+        self.resets = 0
+        self.closed = 0
+        self.calls: list[str] = []
+        self.attachments: list[int] = []
+        self.params_configured: list[str] = []
+        # fault-injection hooks (native, non-esptool errors on purpose)
+        self.fail_read: Exception | None = None
+        self.fail_write: Exception | None = None
+        self.fail_reset: Exception | None = None
+        # the backend monkey-patches _port.open to deny reconnects
+        self._port = self
+
+    def open(self) -> None:  # replaced by the backend after connect
+        self.calls.append("open")
+
+    def close(self) -> None:
+        self.closed += 1
+
+    def flash_spi_attach(self, value: int) -> None:
+        self.calls.append(f"flash_spi_attach({value})")
+        self.attachments.append(value)
+
+    def set_flash_params(self, size: str) -> None:
+        self.calls.append(f"set_flash_params({size})")
+        self.params_configured.append(size)
+
+    def flash_id(self, cache: bool = True) -> int:
+        return 0x16  # 8MB-class JEDEC device id
+
+    def read_mac(self, mac_type: str = "BASE_MAC"):
+        if mac_type != "BASE_MAC":
+            return None  # exactly what esptool 5.4.0 S3 does for other types
+        return None if self._mac is None else tuple(self._mac)
+
+    def get_security_info(self, cache: bool = True) -> dict[str, int]:
+        return dict(self._security)
+
+    def read_flash(self, offset: int, length: int, progress_fn=None) -> bytes:
+        if self.fail_read is not None:
+            raise self.fail_read
+        self.reads.append((offset, length))
+        out = bytearray(b"\xFF" * length)
+        for base, region in self.flash_map.items():
+            end = base + len(region)
+            if offset < end and base < offset + length:
+                lo, hi = max(offset, base), min(offset + length, end)
+                out[lo - offset:hi - offset] = region[lo - base:hi - base]
+        return bytes(out)
+
+    def hard_reset(self, uses_usb: bool = False) -> None:
+        if self.fail_reset is not None:
+            raise self.fail_reset
+        self.calls.append("hard_reset")
+        self.resets += 1
+
+
+class FakeEsptoolModule:
+    """Stub of the qualified esptool module surface consumed by
+    EsptoolSessionBackend._library()/connect(): esptool.__version__,
+    detect_chip, run_stub, _get_flash_info, _set_flash_parameters and
+    cmds.write_flash."""
+
+    def __init__(self, *, esp: FakeEspConnection | None = None,
+                 version: str | None = "5.4.0",
+                 flash_size: str = "8MB",
+                 stub_upload_returns_rom: bool = False) -> None:
+        self.esptool = types.SimpleNamespace(__version__=version)
+        self.esp = esp or FakeEspConnection()
+        self._flash_size = flash_size
+        self._stub_upload_returns_rom = stub_upload_returns_rom
+        self.detect_calls: list[dict[str, Any]] = []
+        self.stub_uploads = 0
+
+    def detect_chip(self, port: str, *, connect_mode: str | None = None,
+                    connect_attempts: int | None = None) -> FakeEspConnection:
+        self.detect_calls.append({"port": port, "connect_mode": connect_mode,
+                                  "connect_attempts": connect_attempts})
+        return self.esp
+
+    def run_stub(self, esp: FakeEspConnection) -> FakeEspConnection:
+        self.stub_uploads += 1
+        esp.calls.append("run_stub")
+        if not self._stub_upload_returns_rom:
+            esp.IS_STUB = True  # the normal outcome: stub flasher loaded
+        return esp
+
+    def _get_flash_info(self, esp: FakeEspConnection) -> tuple[int, int, str | None]:
+        return (0xBF, 0x00, self._flash_size)
+
+    def _set_flash_parameters(self, esp: FakeEspConnection,
+                              flash_size: str = "keep") -> str:
+        esp.set_flash_params(flash_size)
+        return flash_size
+
+    def write_flash(self, esp: FakeEspConnection, addr_data, *,
+                    flash_mode: str | None = None, flash_size: str | None = None,
+                    flash_freq: str | None = None) -> None:
+        if esp.fail_write is not None:
+            raise esp.fail_write
+        for offset, source in addr_data:
+            data = Path(source).read_bytes() if not isinstance(source, bytes) else source
+            esp.writes.append((offset, data))
+            esp.flash_map[offset] = data
+
+
+def blank_device_table(build_dir_payload: dict[str, bytes], *,
+                       otadata: bytes | None = None) -> dict[int, bytes]:
+    """flash_map simulating a device already holding the dev layout.
+
+    ``otadata`` overrides the packaged all-erased initializer, e.g. with
+    ``first_boot_otadata()`` to model the state after a real first boot.
+    """
     return {
         0x8000: build_dir_payload["images/partitions.bin"],
-        0xF000: build_dir_payload["images/ota_data_initial.bin"],
+        0xF000: (otadata if otadata is not None
+                 else build_dir_payload["images/ota_data_initial.bin"]),
     }
 
 
