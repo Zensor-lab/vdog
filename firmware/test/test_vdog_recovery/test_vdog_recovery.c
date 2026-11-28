@@ -447,7 +447,7 @@ static void test_boot_evidence_cause_privacy_mac_token(void)
  * ESP32-S3 classify KNOWN with the canonical stored (citations live in
  * core/vdog_recovery.c: XIAO ESP32-S3 capture #10588 for 0x3, the
  * ESP-Techpedia watchdog doc "Common LOG" for 0x7/0x8, esp-idf issue
- * #14243 (ESP-IDF v5.0-rc1, S3) for 0x12, community issue #6980
+ * #14243 (board ESP32-S3-WROOM-1, IDF version v5.1.2) for 0x12, community issue #6980
  * (S3-DevKitC-1) for the 0x10 short form). The rtc.h enum spellings stay
  * accepted; the STORED name is always the entry's canonical primary and
  * the input alias bytes appear nowhere in the evidence struct. */
@@ -497,9 +497,10 @@ static void test_boot_evidence_watchdog_rom_aliases(void)
     TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "TG1WDT_SYS_RESET"),
                              "input alias bytes must not be stored");
 
-    /* 0x12 (SUPER_WDT_RST) — #14243 capture verbatim (boot:0x3). */
+    /* 0x12 (SUPER_WDT_RST) — verbatim capture line from espressif/esp-idf
+     * issue #14243 (boot:0x2a is free-form hex under the banner rule). */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
-        "rst:0x12 (SUPER_WDT_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+        "rst:0x12 (SUPER_WDT_RST),boot:0x2a (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_UINT8(18u, ev.rst_value);

@@ -196,9 +196,10 @@ static int banner_in_set(const char *banner, size_t len,
  *                       ("rst:0x8 (TG1WDT_SYS_RST),boot:0xc
  *                       (SPI_FAST_FLASH_BOOT)"); alias TG1WDT_SYS_RESET —
  *                       rtc.h enum (= 8).
- *   0x12 SUPER_WDT_RST — esp-idf issue #14243 capture (ESP32-S3, firmware
- *                       built with ESP-IDF v5.0-rc1: "rst:0x12
- *                       (SUPER_WDT_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)");
+ *   0x12 SUPER_WDT_RST — capture per espressif/esp-idf issue #14243
+ *                       (board ESP32-S3-WROOM-1, IDF version v5.1.2,
+ *                       "ESP-ROM:esp32s3-20210327"): "rst:0x12
+ *                       (SUPER_WDT_RST),boot:0x2a (SPI_FAST_FLASH_BOOT)";
  *                       alias SUPER_WDT_RESET — rtc.h enum (= 18).
  * WHERE THE ROM PRINT IS PUBLISHED, primary = that ROM print (consistent
  * with the 0x1/0xc precedent) and the rtc.h enum name stays the accepted

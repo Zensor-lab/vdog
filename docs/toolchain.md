@@ -783,7 +783,7 @@ the table comment:
 | 0x3 | `RTC_SW_SYS_RST` | `RTC_SW_SYS_RESET` (rtc.h) | arduino-esp32 issue #10588 (Seeed XIAO ESP32-S3): `rst:0x3 (RTC_SW_SYS_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)` |
 | 0x7 | `TG0WDT_SYS_RST` | `TG0WDT_SYS_RESET` (rtc.h) | Espressif ESP-Techpedia "Watchdog" doc (docs.espressif.com, TimerGroup Watchdog "Common LOG"): `rst:0x7 (TG0WDT_SYS_RST),boot:0xc (SPI_FAST_FLASH_BOOT)`; corroborated by ESP-IDF S3 flash_psram_config doc + S3 FAQ + esp-idf #10405 captures |
 | 0x8 | `TG1WDT_SYS_RST` | `TG1WDT_SYS_RESET` (rtc.h) | same ESP-Techpedia "Common LOG": `rst:0x8 (TG1WDT_SYS_RST),boot:0xc (SPI_FAST_FLASH_BOOT)` |
-| 0x12 | `SUPER_WDT_RST` | `SUPER_WDT_RESET` (rtc.h) | esp-idf issue #14243 capture (ESP32-S3, firmware built with ESP-IDF v5.0-rc1, confirmed on the merged doc PR): `rst:0x12 (SUPER_WDT_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)` |
+| 0x12 | `SUPER_WDT_RST` | `SUPER_WDT_RESET` (rtc.h) | capture per espressif/esp-idf issue #14243 (board ESP32-S3-WROOM-1, IDF version v5.1.2, "ESP-ROM:esp32s3-20210327"): `rst:0x12 (SUPER_WDT_RST),boot:0x2a (SPI_FAST_FLASH_BOOT)` |
 | 0x10 | `RTCWDT_RTC_RESET` (unchanged primary) | `RTCWDT_RTC_RST` added | short form: arduino-esp32 issue #6980 (ESP32-S3-DevKitC-1): `rst:0x10 (RTCWDT_RTC_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)`; primary form stays per installed rtc_wdt.h docs + techpedia "Common LOG" |
 
 Audit boundary (documented in the table comment, "do not invent"): the
