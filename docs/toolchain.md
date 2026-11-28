@@ -634,3 +634,37 @@ this block restates a count it supersedes the Part A table above.
 | HOST re-run | `pio test -d firmware -e native` exit 0: **64 cases: 64 succeeded** = 42 new (mem 16, recovery 13, straps 13 incl. the CSV cross-check) + inherited 22/22. Reviewer flip-cases re-probed out-of-tree (13/38/47/48 -> PROVISIONAL, 39 -> PROVISIONAL camera SCCB, 42 -> REJECT disabled, 7 -> SD SPI_SCK role): all MATCH. |
 | BUILD re-run | `-t clean` + run exit 0: 1109 compiles, 0 warnings, purity line + board-gate at both registrations; `-t size` text 153229 / data 63012 / bss 376829 (bin 216352 B); embedded `--without-uploading --without-testing` all five groups `[SKIPPED]`, 0 warnings; `pytest tools/firmware/tests` 471 passed; standalone gates exit 0. |
 | libdeps trap | `firmware/core/library.json` 1.2.0 -> 1.2.1: PlatformIO caches local `lib_deps` copies per VERSION, so content-only core/ edits do not refresh `.pio/libdeps/native/vdog-core` (caught this round when a stale copy compiled the old strap table). Version bumps are the invalidation lever; a clean `-t clean`/fresh-core run is unaffected. |
+
+#### F-5 correction — size row (append-only, 2026-11-28)
+
+The BUILD re-run row above (`text 153229 / data 63012 / bss 376829`,
+bin 216352 B) reflected the pre-commit round-1 measurement, not a clean
+run at the committed tip; reviewer round 2 flagged it as stale (their
+clean runs at `adf288d` give data 63016 / bss 376821 / bin 216368, text
+153229 identical). Correction from fresh `-t clean` + `pio run -e
+vdog_xiao_sense_proto` + `-t size` runs taken at the final tip `adf288d`
+on this host, output pasted verbatim:
+
+Run 1 (clean rebuild):
+```
+   text	   data	    bss	    dec	    hex	filename
+ 153229	  63012	 376829	 593070	  90cae	.pio/build/vdog_xiao_sense_proto/firmware.elf
+```
+`firmware.bin` bytes: 216352
+
+Run 2 (clean rebuild, same commit, same host):
+```
+   text	   data	    bss	    dec	    hex	filename
+ 153229	  63016	 376829	 593074	  90cb2	.pio/build/vdog_xiao_sense_proto/firmware.elf
+```
+`firmware.bin` bytes: 216368
+
+Observations: text is stable at **153229** across all runs and hosts;
+`data` (63012 vs 63016), `bss` (376829 vs the reviewer's 376821) and
+`firmware.bin` (216352 vs 216368) fluctuate between independent clean
+runs here and between hosts, so no single triple should be treated as
+the canonical constant — the pair of runs above is the authoritative
+record at `adf288d`, and Part B size checkpoints must record the full
+`-t size` output (with the commit and host) rather than a single
+remembered triple. This note is an append; the row above is preserved
+as recorded.
