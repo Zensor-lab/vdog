@@ -573,13 +573,16 @@ def parse_partition_entries(data: bytes, *, where: str = "partition table") -> l
 
 def esp_ota_crc32(data: bytes) -> int:
     """Mirror of contract.esp_ota_crc32 (esp_rom_crc32_le with the bootloader's
-    UINT32_MAX seed); equality is enforced by test_install_cli."""
-    crc = 0xFFFFFFFF
+    UINT32_MAX seed — the IDF ROM-compat implementation complements the seed
+    on entry and inverts the result, components/esp_rom/patches/esp_rom_crc.c,
+    composing to zlib.crc32(data, 0xFFFFFFFF)); equality is enforced by
+    test_install_cli."""
+    crc = 0  # esp_rom_crc32_le complements the seed: UINT32_MAX ^ UINT32_MAX
     for byte in data:
         crc ^= byte
         for _ in range(8):
             crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
-    return crc
+    return crc ^ 0xFFFFFFFF  # ...and complements the result
 
 
 def require_ota_data_records(data: bytes, *, where: str = "on-device otadata") -> None:

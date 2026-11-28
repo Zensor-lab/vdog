@@ -142,15 +142,17 @@ def make_ota_initial(size: int = 0x2000) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def esp_crc32_le(init: int, data: bytes) -> int:
+def esp_crc32_le(seed: int, data: bytes) -> int:
     """Reference implementation of esp_rom_crc32_le for fixtures (deliberately
-    independent of contract.esp_ota_crc32; equality is asserted in tests)."""
-    crc = init
+    independent of contract.esp_ota_crc32; equality is asserted in tests).
+    IDF ROM-compat semantics (components/esp_rom/patches/esp_rom_crc.c):
+    complements the seed on entry and inverts the result."""
+    crc = seed ^ 0xFFFFFFFF
     for byte in data:
         crc ^= byte
         for _ in range(8):
             crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
-    return crc
+    return crc ^ 0xFFFFFFFF
 
 
 def make_ota_record(seq: int, state: int) -> bytes:

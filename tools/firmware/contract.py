@@ -1279,14 +1279,19 @@ OTA_IMG_STATE_NAMES: dict[int, str] = {
 
 
 def esp_ota_crc32(data: bytes) -> int:
-    """esp_rom_crc32_le(UINT32_MAX, data, len) — reflected CRC-32 (poly
-    0xEDB88320), initial value passed through, no final inversion."""
-    crc = 0xFFFFFFFF
+    """esp_rom_crc32_le(UINT32_MAX, data, len) — NOT the plain reflected
+    loop: the IDF ROM-compat implementation (components/esp_rom/patches/
+    esp_rom_crc.c) complements the seed on entry AND inverts the result
+    (`crc = ~crc; table loop; return ~crc`), which composes to
+    ``zlib.crc32(data, 0xFFFFFFFF)``. Independent known answers from real
+    ESP-IDF v6.1 first-boot select entries: seq 1 -> 0x4743989a,
+    seq 2 -> 0x55f63774."""
+    crc = 0  # esp_rom_crc32_le complements the seed: UINT32_MAX ^ UINT32_MAX
     for byte in data:
         crc ^= byte
         for _ in range(8):
             crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
-    return crc
+    return crc ^ 0xFFFFFFFF  # ...and complements the result
 
 
 def validate_ota_data_records(data: bytes, *, where: str = "ota data") -> list[str]:

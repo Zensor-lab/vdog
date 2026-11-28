@@ -302,14 +302,32 @@ def test_ota_data_initial_rejects_prebaked_records() -> None:
 
 
 def test_esp_ota_crc32_matches_the_zlib_composition() -> None:
-    """esp_rom_crc32_le(UINT32_MAX, d, len) == zlib.crc32(d) ^ 0xFFFFFFFF
-    (the raw CRC without zlib's final inversion, since ~UINT32_MAX == 0)."""
+    """esp_rom_crc32_le(UINT32_MAX, d, len) == zlib.crc32(d, 0xFFFFFFFF):
+    the IDF ROM-compat port (components/esp_rom/patches/esp_rom_crc.c)
+    complements the seed on entry and inverts the result, so it is NOT the
+    plain reflected loop with the seed passed through."""
     import zlib
 
     for sample in (b"", b"\x01", b"123456789", bytes(range(256)),
                    b"\xc9\x3a\x3a\xc9" * 40):
-        want = zlib.crc32(sample, 0) ^ 0xFFFFFFFF
+        want = zlib.crc32(sample, 0xFFFFFFFF)
         assert contract.esp_ota_crc32(sample) == want, sample[:8]
+
+
+def test_esp_ota_crc32_independent_known_answers() -> None:
+    """Literal CRCs observed in REAL ESP-IDF v6.1 first-boot select entries
+    (bootloader writes seq 1): any regression in either parser direction
+    breaks these constants, which are independent of both implementations."""
+    known = {1: 0x4743989a, 2: 0x55f63774}
+    for seq, crc in known.items():
+        assert contract.esp_ota_crc32(seq.to_bytes(4, "little")) == crc, seq
+    # A literal first-boot record (seq=1, crc as flashed by IDF v6.1) is
+    # accepted even though every fixture builder is bypassed.
+    record = (1).to_bytes(4, "little") + b"\xFF" * 20 \
+        + (0x00000002).to_bytes(4, "little") + (0x4743989a).to_bytes(4, "little")
+    image = bytearray(b"\xFF" * 0x2000)
+    image[0:32] = record
+    assert contract.validate_ota_data_records(bytes(image)) == []
 
 
 def test_ota_data_records_accept_erased_and_valid_records() -> None:
