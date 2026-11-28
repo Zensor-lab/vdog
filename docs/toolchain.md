@@ -766,3 +766,37 @@ evidence API. Both fixed; everything else verified by the reviewer.
 | R3-B evidence hygiene | (a) cause_name is populated ONLY for KNOWN pairs (canonical table spelling, never the input bytes): a MAC-shaped cause token (`rst:0x1 (001122334455)`) leaves the whole 24-byte field zero and appears NOWHERE in the evidence struct (grep-style byte-scan assert); unrecognised tokens live only in the caller's verbatim transcript, which Part B keeps outside this API (documented). (b) Whole-struct zeroing at every entry point (evidence_init memset) + explicit cause_name memset at commit from a fully zero-initialized scratch buffer — the round-2 bug (stale stack bytes past the NUL after a boot-only line over a reused struct) is pinned: tests do cause-line-then-boot-only-line into one struct + dirty-struct entry and assert EVERY byte of cause_name. |
 | Tests | Recovery suite 22 -> **26** cases: +ROM-printed-alias pairs (doc fixtures verbatim incl. USB_JTAG_CHIP_RESET@0x16, DEEPSLEEP@0x5, RTCWDT_RTC_RESET@0x10, case-insensitive), +pair-mismatch (bot probes + out-of-table value), +MAC-cause privacy (byte-scan), +stale-bytes. Re-pinned: alias inputs yield the canonical name ("POWERON_RESET" -> "POWERON"), UNRECOGNISED name is "" (was verbatim). native total **82/82** (recovery 26 + mem 19 + straps 15 + board 15 + core 7); embedded [SKIPPED] x5 0 warnings; pytest 471; standalone gates exit 0. |
 | BUILD | `-t clean` + `pio run -e vdog_xiao_sense_proto` exit 0: **1109** compiles, **0** warnings, purity line + board-config gate at both registrations. `-t size` (F-5 full paste; tree based on `eb9c98e` + this round, host `Tims-MacBook-Pro.local` / macOS 26.6.2): `text 153829 / data 62996 / bss 376829 / dec 593654 / hex 90ef6`; **firmware.bin 216944 B** (unchanged size vs round 2). `core/library.json` 1.2.3 -> 1.2.4 (libdeps invalidation). pins/lock/sdkconfig 0-change; tools untouched. Out-of-tree probe mirroring the bot's round-3 cases (ROM-printed pairs KNOWN, mismatch pairs UNRECOGNISED with empty canonical, MAC-cause absent from struct bytes, stale-bytes zeroed, tag regressions): ALL MATCH. No device, no port, no push. |
+
+### Package 1.2 Part A — review round 4 R4 (append-only, 2026-11-28)
+
+PR-bot re-review at `df91cc8`: ONE Medium — the reset-cause pair table
+accepted only rtc.h enum names for the watchdog/system rows, so the
+shortened ROM prints published for ESP32-S3 (`rst:0x3 (RTC_SW_SYS_RST)`,
+`rst:0x7 (TG0WDT_SYS_RST)`, `rst:0x8 (TG1WDT_SYS_RST)`, `rst:0x12
+(SUPER_WDT_RST)`) lost the structured cause exactly when Part B needs to
+diagnose watchdog reset loops. Fixed; the four bot-cited rows now carry
+verified ROM-print primaries + enum aliases, each with its citation in
+the table comment:
+
+| Row | Stored canonical (primary) | Accepted alias | Verified source (fetched this round, capture quoted verbatim) |
+| --- | --- | --- | --- |
+| 0x3 | `RTC_SW_SYS_RST` | `RTC_SW_SYS_RESET` (rtc.h) | arduino-esp32 issue #10588 (Seeed XIAO ESP32-S3): `rst:0x3 (RTC_SW_SYS_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)` |
+| 0x7 | `TG0WDT_SYS_RST` | `TG0WDT_SYS_RESET` (rtc.h) | Espressif ESP-Techpedia "Watchdog" doc (docs.espressif.com, TimerGroup Watchdog "Common LOG"): `rst:0x7 (TG0WDT_SYS_RST),boot:0xc (SPI_FAST_FLASH_BOOT)`; corroborated by ESP-IDF S3 flash_psram_config doc + S3 FAQ + esp-idf #10405 captures |
+| 0x8 | `TG1WDT_SYS_RST` | `TG1WDT_SYS_RESET` (rtc.h) | same ESP-Techpedia "Common LOG": `rst:0x8 (TG1WDT_SYS_RST),boot:0xc (SPI_FAST_FLASH_BOOT)` |
+| 0x12 | `SUPER_WDT_RST` | `SUPER_WDT_RESET` (rtc.h) | esp-idf issue #14243 capture (ESP32-S3, firmware built with ESP-IDF v5.0-rc1, confirmed on the merged doc PR): `rst:0x12 (SUPER_WDT_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)` |
+| 0x10 | `RTCWDT_RTC_RESET` (unchanged primary) | `RTCWDT_RTC_RST` added | short form: arduino-esp32 issue #6980 (ESP32-S3-DevKitC-1): `rst:0x10 (RTCWDT_RTC_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)`; primary form stays per installed rtc_wdt.h docs + techpedia "Common LOG" |
+
+Audit boundary (documented in the table comment, "do not invent"): the
+`_RST`-shortening is NOT uniform across the ROM table, so only
+shortenings with a citable published S3 capture/doc were admitted.
+`RTCWDT_SYS_RST` (0x9) and `RTCWDT_BROWN_OUT_RST` (0xf) had no published
+S3 capture in the sources consulted (the TRM reset-source table 7.1-1
+prints no names; rtc.h has no OTHERS_RESET entry) — those rows keep the
+enum spelling alone; a future round may add them with a citation. Pair
+semantics, canonical-only storage (ROM print stored where published —
+consistent with the 0x1/0xc rows), zeroing and privacy are unchanged.
+
+| Item | State |
+| --- | --- |
+| Tests | Recovery suite 26 -> **27** cases: +watchdog ROM-alias test (the four captured lines verbatim incl. boot:0xc/0x3 banner variants, enum-alias acceptance with byte-scan "alias bytes never stored", 0x10 short-form alias, case-insensitivity); pair-mismatch test extended: shortened aliases against wrong values (0x3 TG0WDT / 0x7 RTC_SW_SYS / 0x8 TG0WDT / 0x12 RTC_SW_SYS) -> UNRECOGNISED, and the UNVERIFIED shortenings pinned OUT (`0x9 (RTCWDT_SYS_RST)`, `0xf (RTCWDT_BROWN_OUT_RST)` -> UNRECOGNISED). cpp smoke untouched (row 9 canonical unchanged). native total **83/83** = recovery 27 + mem 19 + straps 15 + board 15 + core 7; embedded [SKIPPED] x5, 0 warnings; pytest 471; standalone gates exit 0. |
+| BUILD | `-t clean` + `pio run -e vdog_xiao_sense_proto` exit 0: **1109** compiles, **0** warnings, purity line + board-config gate at both registrations. `-t size` (F-5 full paste; tree based on `df91cc8` + this round, host `Tims-MacBook-Pro.local` / macOS 26.6.2): `text 153829 / data 63000 / bss 376829 / dec 593658 / hex 90efa`; **firmware.bin 216944 B** (+4 B data for the new alias strings, bin unchanged at flash-block granularity). `core/library.json` 1.2.4 -> 1.2.5 (libdeps invalidation). pins/lock/sdkconfig 0-change; tools untouched. Out-of-tree probe mirroring the bot's round-4 cases (four captures KNOWN+canonical, enum-alias acceptance + alias-bytes-absent, four wrong-value alias pairs UNRECOGNISED, exclusion pins, case-insensitivity, round-3 regressions incl. MAC privacy + stale bytes, tag rules): ALL MATCH. No device, no port, no push. |

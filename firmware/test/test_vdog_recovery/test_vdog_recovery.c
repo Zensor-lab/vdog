@@ -359,6 +359,39 @@ static void test_boot_evidence_pair_mismatch(void)
         "rst:0x22 (INTRUSION_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
                             (uint8_t)ev.cause_state);
+
+    /* Review round 4: the shortened ROM-print aliases pair ONLY with
+     * their own value — each bot probe form against a wrong value is
+     * UNRECOGNISED (verdict still from the banner), never "closest". */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x3 (TG0WDT_SYS_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("", ev.cause_name);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x7 (RTC_SW_SYS_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x8 (TG0WDT_SYS_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x12 (RTC_SW_SYS_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+
+    /* Audit boundary: the UNVERIFIED shortenings stay out (see the
+     * table's citation comment) — these tokens are UNRECOGNISED even at
+     * the value they would have if published. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x9 (RTCWDT_SYS_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0xf (RTCWDT_BROWN_OUT_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
 }
 
 /* grep-style substring search over the RAW evidence bytes. */
@@ -408,6 +441,90 @@ static void test_boot_evidence_cause_privacy_mac_token(void)
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
                             (uint8_t)ev.cause_state);
     TEST_ASSERT_NULL(ev_find_bytes(&ev, "AABB"));
+}
+
+/* Review round 4: the shortened watchdog/system ROM prints published for
+ * ESP32-S3 classify KNOWN with the canonical stored (citations live in
+ * core/vdog_recovery.c: XIAO ESP32-S3 capture #10588 for 0x3, the
+ * ESP-Techpedia watchdog doc "Common LOG" for 0x7/0x8, esp-idf issue
+ * #14243 (ESP-IDF v5.0-rc1, S3) for 0x12, community issue #6980
+ * (S3-DevKitC-1) for the 0x10 short form). The rtc.h enum spellings stay
+ * accepted; the STORED name is always the entry's canonical primary and
+ * the input alias bytes appear nowhere in the evidence struct. */
+static void test_boot_evidence_watchdog_rom_aliases(void)
+{
+    vdog_boot_evidence_t ev;
+
+    /* 0x3 (RTC_SW_SYS_RST) — the vdog board's own capture (#10588). */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x3 (RTC_SW_SYS_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(3u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("RTC_SW_SYS_RST", ev.cause_name);
+    /* Enum alias accepted, canonical stored, alias bytes not stored. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x3 (RTC_SW_SYS_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("RTC_SW_SYS_RST", ev.cause_name);
+    TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "RTC_SW_SYS_RESET"),
+                             "input alias bytes must not be stored");
+
+    /* 0x7 / 0x8 — ESP-Techpedia watchdog doc "Common LOG" lines. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x7 (TG0WDT_SYS_RST),boot:0xc (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(7u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("TG0WDT_SYS_RST", ev.cause_name);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x8 (TG1WDT_SYS_RST),boot:0xc (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(8u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("TG1WDT_SYS_RST", ev.cause_name);
+    /* Enum _RESET spellings stay accepted (union rule), canonical stored
+     * and the input bytes never land in the struct. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x7 (TG0WDT_SYS_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("TG0WDT_SYS_RST", ev.cause_name);
+    TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "TG0WDT_SYS_RESET"),
+                             "input alias bytes must not be stored");
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x8 (TG1WDT_SYS_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("TG1WDT_SYS_RST", ev.cause_name);
+    TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "TG1WDT_SYS_RESET"),
+                             "input alias bytes must not be stored");
+
+    /* 0x12 (SUPER_WDT_RST) — #14243 capture verbatim (boot:0x3). */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x12 (SUPER_WDT_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(18u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("SUPER_WDT_RST", ev.cause_name);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x12 (SUPER_WDT_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("SUPER_WDT_RST", ev.cause_name);
+    TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "SUPER_WDT_RESET"),
+                             "input alias bytes must not be stored");
+
+    /* 0x10 keeps RTCWDT_RTC_RESET canonical; the short form from the
+     * S3-DevKitC-1 capture is accepted as alias. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x10 (RTCWDT_RTC_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(16u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("RTCWDT_RTC_RESET", ev.cause_name);
+    TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "RTCWDT_RTC_RST"),
+                             "input alias bytes must not be stored");
+    /* Case-insensitivity of the new aliases (documented rule). */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x7 (tg0wdt_sys_rst),boot:0xc (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("TG0WDT_SYS_RST", ev.cause_name);
 }
 
 /* Review R3-B(b): stale stack bytes. A cause line then a boot-only line
@@ -904,6 +1021,7 @@ void app_main(void)
     RUN_TEST(test_boot_evidence_poweron_verbatim);
     RUN_TEST(test_boot_evidence_cause_states);
     RUN_TEST(test_boot_evidence_rom_printed_aliases);
+    RUN_TEST(test_boot_evidence_watchdog_rom_aliases);
     RUN_TEST(test_boot_evidence_pair_mismatch);
     RUN_TEST(test_boot_evidence_cause_privacy_mac_token);
     RUN_TEST(test_boot_evidence_no_stale_bytes);
@@ -936,6 +1054,7 @@ int main(void)
     RUN_TEST(test_boot_evidence_poweron_verbatim);
     RUN_TEST(test_boot_evidence_cause_states);
     RUN_TEST(test_boot_evidence_rom_printed_aliases);
+    RUN_TEST(test_boot_evidence_watchdog_rom_aliases);
     RUN_TEST(test_boot_evidence_pair_mismatch);
     RUN_TEST(test_boot_evidence_cause_privacy_mac_token);
     RUN_TEST(test_boot_evidence_no_stale_bytes);

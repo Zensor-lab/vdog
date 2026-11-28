@@ -174,10 +174,43 @@ static int banner_in_set(const char *banner, size_t len,
  *                       = 12).
  *   0x10 RTCWDT_RTC_RESET — installed framework's rtc_wdt.h docs comment
  *                       ("rst:0x10 (RTCWDT_RTC_RESET),boot:
- *                       0x13 (SPI_FAST_FLASH_BOOT)"); rtc.h value 16.
- *   0x5 DEEPSLEEP_RESET / 0x7 TG0WDT_SYS_RESET — ESP-IDF S3 get-started
- *                       monitor captures; rtc.h values 5/7.
- * All other entries carry the rtc.h enum name/value alone. Mismatched
+ *                       0x13 (SPI_FAST_FLASH_BOOT)") and the ESP-Techpedia
+ *                       watchdog doc ("Common LOG"); alias RTCWDT_RTC_RST —
+ *                       community issue #6980 (ESP32-S3-DevKitC-1
+ *                       monitor capture "rst:0x10 (RTCWDT_RTC_RST),boot:
+ *                       0x8 (SPI_FAST_FLASH_BOOT)"); rtc.h value 16.
+ *   0x5 DEEPSLEEP_RESET — ESP-IDF S3 get-started monitor captures; rtc.h
+ *                       value 5.
+ *   0x3 RTC_SW_SYS_RST — community issue #10588 (Seeed XIAO ESP32-S3,
+ *                       the vdog board: "rst:0x3 (RTC_SW_SYS_RST),boot:
+ *                       0x8 (SPI_FAST_FLASH_BOOT)"); alias RTC_SW_SYS_RESET
+ *                       — rtc.h enum (RTC_SW_SYS_RESET = 3).
+ *   0x7 TG0WDT_SYS_RST — Espressif ESP-Techpedia watchdog doc
+ *                       (docs.espressif.com, "TimerGroup Watchdog / Common
+ *                       LOG": "rst:0x7 (TG0WDT_SYS_RST),boot:0xc
+ *                       (SPI_FAST_FLASH_BOOT)"); also the ESP-IDF S3 flash/
+ *                       PSRAM config doc and S3 FAQ captures. Alias
+ *                       TG0WDT_SYS_RESET — rtc.h enum (= 7), same docs'
+ *                       _RESET form.
+ *   0x8 TG1WDT_SYS_RST — same ESP-Techpedia watchdog doc "Common LOG"
+ *                       ("rst:0x8 (TG1WDT_SYS_RST),boot:0xc
+ *                       (SPI_FAST_FLASH_BOOT)"); alias TG1WDT_SYS_RESET —
+ *                       rtc.h enum (= 8).
+ *   0x12 SUPER_WDT_RST — esp-idf issue #14243 capture (ESP32-S3, firmware
+ *                       built with ESP-IDF v5.0-rc1: "rst:0x12
+ *                       (SUPER_WDT_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)");
+ *                       alias SUPER_WDT_RESET — rtc.h enum (= 18).
+ * WHERE THE ROM PRINT IS PUBLISHED, primary = that ROM print (consistent
+ * with the 0x1/0xc precedent) and the rtc.h enum name stays the accepted
+ * alias; every other row carries the rtc.h enum name/value alone.
+ * AUDIT BOUNDARY (review round 4, "do not invent"): the _RST-shortening
+ * pattern is NOT known to be uniform across the ROM table, so only the
+ * shortenings with a citable published S3 capture/doc are admitted —
+ * above. The analogous RTCWDT_SYS_RST (0x9) and RTCWDT_BROWN_OUT_RST
+ * (0xf) had no published S3 capture in the sources consulted (TRM table
+ * 7.1-1 prints no names; the ROM header has no OTHERS_RESET entry at
+ * all), so those rows keep the enum spelling alone; a future round may
+ * add them the moment a citable capture exists. Mismatched
  * pairs (name-known-but-wrong-value or value-known-but-wrong-name) are
  * UNRECOGNISED — never "closest match"; the boot verdict always comes
  * from the BANNER alone. The structured cause_name stores ONLY the
@@ -192,20 +225,20 @@ typedef struct {
 } vdog_cause_entry_t;
 
 static const vdog_cause_entry_t g_vdog_causes[] = {
-    {1u, "POWERON", "POWERON_RESET"},            /* see citation above    */
-    {3u, "RTC_SW_SYS_RESET", NULL},
+    {1u, "POWERON", "POWERON_RESET"},            /* ROM print stored       */
+    {3u, "RTC_SW_SYS_RST", "RTC_SW_SYS_RESET"},   /* ROM print stored (#10588) */
     {5u, "DEEPSLEEP_RESET", NULL},
-    {7u, "TG0WDT_SYS_RESET", NULL},
-    {8u, "TG1WDT_SYS_RESET", NULL},
-    {9u, "RTCWDT_SYS_RESET", NULL},
+    {7u, "TG0WDT_SYS_RST", "TG0WDT_SYS_RESET"},   /* ROM print stored (techpedia) */
+    {8u, "TG1WDT_SYS_RST", "TG1WDT_SYS_RESET"},   /* ROM print stored (techpedia) */
+    {9u, "RTCWDT_SYS_RESET", NULL}, /* _RST form unverified: excluded    */
     {10u, "INTRUSION_RESET", NULL},
     {11u, "TG0WDT_CPU_RESET", NULL},
-    {12u, "RTC_SW_CPU_RST", "RTC_SW_CPU_RESET"}, /* see citation above    */
+    {12u, "RTC_SW_CPU_RST", "RTC_SW_CPU_RESET"},  /* ROM print stored       */
     {13u, "RTCWDT_CPU_RESET", NULL},
-    {15u, "RTCWDT_BROWN_OUT_RESET", NULL},
-    {16u, "RTCWDT_RTC_RESET", NULL},
+    {15u, "RTCWDT_BROWN_OUT_RESET", NULL}, /* _RST form unverified: excluded */
+    {16u, "RTCWDT_RTC_RESET", "RTCWDT_RTC_RST"},  /* ROM print stored (#6980 alias) */
     {17u, "TG1WDT_CPU_RESET", NULL},
-    {18u, "SUPER_WDT_RESET", NULL},
+    {18u, "SUPER_WDT_RST", "SUPER_WDT_RESET"},    /* ROM print stored (#14243) */
     {19u, "GLITCH_RTC_RESET", NULL},
     {20u, "EFUSE_RESET", NULL},
     {21u, "USB_UART_CHIP_RESET", NULL},
