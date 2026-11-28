@@ -139,22 +139,24 @@ void vdog_mem_detected_init(vdog_mem_detected_t *det);
 int vdog_mem_check_baseline(const vdog_mem_detected_t *det);
 
 /* Record the flash chip capacity from the adapter's two IDF queries.
- * flash_size_bytes takes the PHYSICAL size — the honest MEASURED value.
- * The adapter's two IDF flash queries return DIFFERENT capacities: the
- * header-capacity query reports the size from the BINARY IMAGE HEADER,
+ * flash_size_bytes takes the PHYSICAL size — the honest MEASURED value;
+ * the header-capacity query reports the size from the BINARY IMAGE HEADER,
  * so a 16 MiB chip flashed with an 8 MiB image would otherwise masquerade
  * as "8MB[measured]" and pass the baseline (PR-review round 1 High
- * finding; the ESP-IDF docs say the same). Rules: NULL →
- * VDOG_ERR_INVALID_ARG; either input 0 → field left UNSET (missing beats
- * invented) + VDOG_ERR_INVALID_ARG; the physical value is recorded
- * MEASURED; VDOG_OK when header == physical (and clears any earlier
- * flash_cross_fail), otherwise VDOG_ERR_MEM_FLASH with
- * vdog_mem_error_field() naming flash_size_bytes AND det->flash_cross_fail
- * set to 1 — a sticky rejection state so the baseline check keeps failing
- * this set even when the physical value alone equals the baseline
- * (round-2 review: a cross-check failure must never produce success-form
- * memory logs); a mismatch is reported, never averaged or silently
- * preferred. */
+ * finding; the ESP-IDF docs say the same). REFRESH-CLEARS CONTRACT
+ * (round-3 review): every call RESETS the flash fields first — value,
+ * source tag, field bit and flash_cross_fail — so a failed call (see
+ * below) leaves an honest UNSET, never a stale MEASURED field from a
+ * previous successful read. Rules: NULL → VDOG_ERR_INVALID_ARG; either
+ * input 0 → field UNSET (missing beats invented) + VDOG_ERR_INVALID_ARG;
+ * the physical value is recorded MEASURED; VDOG_OK when header == physical
+ * (and clears any earlier flash_cross_fail), otherwise VDOG_ERR_MEM_FLASH
+ * with vdog_mem_error_field() naming flash_size_bytes AND
+ * det->flash_cross_fail set to 1 — a sticky rejection state so the
+ * baseline check keeps failing this set even when the physical value alone
+ * equals the baseline (round-2 review: a cross-check failure must never
+ * produce success-form memory logs); a mismatch is reported, never
+ * averaged or silently preferred. */
 int vdog_mem_record_flash_size(vdog_mem_detected_t *det,
                                uint32_t header_size_bytes,
                                uint32_t physical_size_bytes);

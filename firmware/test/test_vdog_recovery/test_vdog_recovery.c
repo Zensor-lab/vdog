@@ -141,15 +141,62 @@ static void test_classify_usb_jtag(void)
                               "ESP-ROM:esp32s3-usb-jtag-20211025"));
     TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_USBJTAG,
                           vdog_recovery_classify(
-                              "esp-rom: esp32s3 usb_jtag 20211025"));
-    /* USBJTAG wins over a download word inside the recognized banner. */
-    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_USBJTAG,
+                              "esp-rom:esp32s3-usb-jtag-20211025"));
+    /* SUPPORTED SHAPE ONLY (round-3 review): marker prose without the
+     * documented banner shape stays UNKNOWN. */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
                           vdog_recovery_classify(
                               "ESP-ROM:esp32s3-usb-jtag download"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify("ESP-ROM:esp32s3-usb-jtag"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "ESP-ROM:esp32s3-usb-jtag-20211025 extra"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "ESP-ROM:prefix esp32s3-usb-jtag-20211025"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify("ESP-ROM:esp32s3-20210327"));
     /* Not documented inside boot-words: a usb_jtag token WITHOUT a ROM
-     * banner form is no longer classified (round 2). */
+     * banner form is not classified (round 2). */
     TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
                           vdog_recovery_classify("boot:0x2(usb_jtag)"));
+}
+
+/* Round-3 High finding: truncated or malformed descriptions must never
+ * become recovery evidence — the COMPLETE supported description matches,
+ * including balanced parentheses and nothing after them. */
+static void test_classify_rejects_truncation_and_prose(void)
+{
+    /* truncations of each valid form */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify("boot:0x3 (DOWNLOAD"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify("boot:0x3 (SPI_FAST_FLASH_BOOT"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "boot:0x3 (DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2"));
+    /* only one of the two closing parens present */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "boot:0x3 (DOWNLOAD_BOOT(UART0)"));
+    /* prose appended after the leading token */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "boot:0x8 (SPI_FAST_FLASH_BOOT failed)"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify("boot:0x3 (DOWNLOAD more text)"));
+    /* prose appended after the closed group */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "boot:0x3 (SPI_FAST_FLASH_BOOT) followed by junk"));
+    /* the un-truncated forms still classify (positive control) */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_DOWNLOAD,
+                          vdog_recovery_classify(
+                              "boot:0x3 (DOWNLOAD_BOOT(UART0))"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_NORMAL,
+                          vdog_recovery_classify(
+                              "boot:0x3 (SPI_FAST_FLASH_BOOT)  ")); /* trailing spaces OK */
 }
 
 static void test_boot_mode_names(void)
@@ -267,6 +314,18 @@ static void test_board_tag_validator(void)
                           vdog_identity_set_board_tag(&id, hex16));
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
                           vdog_identity_set_board_tag(&id, "deadbeef"));
+    /* Round-3 Medium: separator-normalized MAC shapes — dots/dashes are
+     * legal in the charset, so strip . _ - and reject bare 48/64-bit hex
+     * addresses. */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "0200.0000.0001"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "1a-2b-3c-4d-5e-6f"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "0200.0000.0000.0001"));
+    /* non-MAC-shaped labels with the same separators remain legal */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, "dev.01"));
+    TEST_ASSERT_EQUAL_UINT8(6u, id.tag_len);
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
                           vdog_identity_set_board_tag(&id, "bad%tag"));
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
@@ -396,6 +455,7 @@ void app_main(void)
     RUN_TEST(test_classify_normal);
     RUN_TEST(test_classify_download);
     RUN_TEST(test_classify_usb_jtag);
+    RUN_TEST(test_classify_rejects_truncation_and_prose);
     RUN_TEST(test_boot_mode_names);
     RUN_TEST(test_identity_init_zeroes);
     RUN_TEST(test_chip_model_closed_set);
@@ -418,6 +478,7 @@ int main(void)
     RUN_TEST(test_classify_normal);
     RUN_TEST(test_classify_download);
     RUN_TEST(test_classify_usb_jtag);
+    RUN_TEST(test_classify_rejects_truncation_and_prose);
     RUN_TEST(test_boot_mode_names);
     RUN_TEST(test_identity_init_zeroes);
     RUN_TEST(test_chip_model_closed_set);

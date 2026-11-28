@@ -88,6 +88,14 @@ int vdog_mem_record_flash_size(vdog_mem_detected_t *det,
     if (det == NULL) {
         return VDOG_ERR_INVALID_ARG;
     }
+    /* Round-3 review Medium: a REFRESH must never preserve earlier
+     * evidence. Clear the flash fields FIRST — every exit path below
+     * leaves either the new values or an honest UNSET, never a stale
+     * MEASURED field from a previous successful read. */
+    det->flash_size_bytes = 0u;
+    det->flash_size_src = 0u; /* meaningless while UNSET (same as init)   */
+    det->field_set &= ~VDOG_MEM_FIELD_FLASH_SIZE;
+    det->flash_cross_fail = 0u;
     if (header_size_bytes == 0u || physical_size_bytes == 0u) {
         /* A failed query leaves the field UNSET (never guessed): the
          * baseline check then reports VDOG_ERR_MEM_MISSING_FIELD. */

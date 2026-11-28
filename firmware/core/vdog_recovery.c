@@ -31,6 +31,16 @@ static int is_hex_digit(char c)
            (c >= 'A' && c <= 'F');
 }
 
+/* Number of leading space/tab characters (usage: p += skip_spaces(p)). */
+static size_t skip_spaces(const char *s)
+{
+    size_t n = 0u;
+    while (s[n] == ' ' || s[n] == '\t') {
+        ++n;
+    }
+    return n;
+}
+
 /* Case-insensitive exact compare of a token slice against a lowercase
  * literal. */
 static int token_ci_eq(const char *tok, size_t len, const char *lit)
@@ -148,42 +158,47 @@ vdog_boot_mode_t vdog_recovery_classify(const char *rom_line)
         return VDOG_BOOT_MODE_UNKNOWN;
     }
 
-    /* ROM banner form: ESP-ROM:esp32s3-usb-jtag-<date>. The "esp-rom:"
-     * prefix is what makes this a ROM form; the usb-jtag marker may sit
-     * inside hyphen-joined banner text. (The ordinary version banner
-     * "ESP-ROM:esp32s3-<date>" has no marker and stays UNKNOWN.) */
+    /* ROM banner form, SUPPORTED SHAPE ONLY (round-3 review: not "any
+     * occurrence of the marker"): ESP-ROM:esp32s3-usb-jtag-<digits>
+     * followed by end of line. The ordinary version banner
+     * "ESP-ROM:esp32s3-<date>" and any prose carrying the marker stay
+     * UNKNOWN. */
     if (starts_with_ci(rom_line, "esp-rom:")) {
-        const char *m;
-        const char *rest = rom_line + 8;
-        static const char *const markers[] = {"usb_jtag", "usb-jtag",
-                                              "usbjtag"};
-        size_t i;
-        for (i = 0; i < MODE_SET_COUNT(markers); ++i) {
-            m = find_ci(rest, markers[i]);
-            if (m != NULL) {
-                return VDOG_BOOT_MODE_USBJTAG;
-            }
+        const char *rest = rom_line + 8; /* strlen("esp-rom:") */
+        rest += skip_spaces(rest);
+        if (!token_ci_eq(rest, 17u, "esp32s3-usb-jtag-")) {
+            return VDOG_BOOT_MODE_UNKNOWN;
         }
-        return VDOG_BOOT_MODE_UNKNOWN;
+        rest += 17;
+        len = 0u;
+        while (*rest >= '0' && *rest <= '9') {
+            ++rest;
+            ++len;
+        }
+        if (len == 0u) {
+            return VDOG_BOOT_MODE_UNKNOWN; /* no <date> digits */
+        }
+        rest += skip_spaces(rest);
+        return (*rest == '\0') ? VDOG_BOOT_MODE_USBJTAG
+                               : VDOG_BOOT_MODE_UNKNOWN;
     }
 
     /* ROM boot-word form, EXACTLY as documented:
      *   rst:0xNN (REASON),boot:0xNN (DESCRIPTION)
-     * Requirements beyond the "boot:" word boundary: a hex strap value
-     * 0xNN and a PARENTHESIZED description — "boot: download",
-     * "boot:0x3 DOWNLOAD_BOOT" and "reboot: download failed" are
-     * malformed lookalikes and stay UNKNOWN (round-2 review). The token
-     * is the word before the first inner '(' so
-     * "(DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2))" yields
-     * "DOWNLOAD_BOOT". */
+     * Round-3 review: the COMPLETE description must match — balanced
+     * parentheses and nothing after them. Truncations
+     * ("boot:0x3 (DOWNLOAD", "(DOWNLOAD_BOOT(UART0)", one missing close
+     * paren) and prose appended after the leading token
+     * ("(SPI_FAST_FLASH_BOOT failed)") are malformed lookalikes ->
+     * UNKNOWN. Accepted description shapes: (TOKEN) or
+     * (TOKEN(inner)) — the leading token (word before the first inner
+     * '(') must then be an exact member of the documented sets. */
     p = find_boot_word(rom_line);
     if (p == NULL) {
         return VDOG_BOOT_MODE_UNKNOWN;
     }
     p += 5; /* strlen("boot:") */
-    while (*p == ' ' || *p == '\t') {
-        ++p;
-    }
+    p += skip_spaces(p);
     if (p[0] != '0' || (p[1] != 'x' && p[1] != 'X')) {
         return VDOG_BOOT_MODE_UNKNOWN; /* documented form carries 0xNN */
     }
@@ -196,9 +211,7 @@ vdog_boot_mode_t vdog_recovery_classify(const char *rom_line)
     if (len == 0u) {
         return VDOG_BOOT_MODE_UNKNOWN; /* "boot:0x(" is not a boot word */
     }
-    while (*p == ' ' || *p == '\t') {
-        ++p;
-    }
+    p += skip_spaces(p);
     if (*p != '(') {
         return VDOG_BOOT_MODE_UNKNOWN; /* DESCRIPTION must be parenthesized */
     }
@@ -210,6 +223,32 @@ vdog_boot_mode_t vdog_recovery_classify(const char *rom_line)
     len = (size_t)(p - tok);
     if (len == 0u) {
         return VDOG_BOOT_MODE_UNKNOWN;
+    }
+    /* Complete the description: TOKEN must be followed directly by the
+     * closing ')' or by one balanced inner group then ')'. */
+    if (*p == ')') {
+        ++p; /* simple documented form, e.g. (SPI_FAST_FLASH_BOOT) */
+    } else if (*p == '(') {
+        ++p; /* documented form, e.g. (DOWNLOAD_BOOT(UART0/...)) */
+        while (*p != '\0' && *p != ')' && *p != '(') {
+            ++p;
+        }
+        if (*p != ')') {
+            return VDOG_BOOT_MODE_UNKNOWN; /* unterminated inner group */
+        }
+        ++p;
+        if (*p != ')') {
+            return VDOG_BOOT_MODE_UNKNOWN; /* outer group not closed */
+        }
+        ++p;
+    } else {
+        /* Prose or anything else after the leading token
+         * ("(SPI_FAST_FLASH_BOOT failed)", "(DOWNLOAD more)") -> malformed */
+        return VDOG_BOOT_MODE_UNKNOWN;
+    }
+    p += skip_spaces(p);
+    if (*p != '\0') {
+        return VDOG_BOOT_MODE_UNKNOWN; /* nothing after the closed group */
     }
     return mode_from_token(tok, len);
 }
@@ -300,12 +339,32 @@ int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag)
         }
     }
     /* Round-2 review Medium: a delimiter-free 12-hex-digit MAC passes the
-     * charset above, so pure-hex labels are rejected outright — an opaque
-     * board tag must be distinguishable from a raw MAC/eFuse blob. (A
-     * legal tag needs at least one non-hex character: a letter like g/k/p,
-     * or a . _ - separator.) */
+     * charset above, so pure-hex labels are rejected outright. */
     if (all_hex != 0) {
         return VDOG_ERR_INVALID_ARG;
+    }
+    /* Round-3 review Medium: dots/dashes are legal in the charset, so a
+     * dotted MAC ("0200.0000.0001") is NOT pure hex — normalize by
+     * dropping the permitted separators and reject when what remains is a
+     * bare 48-bit (12) or 64-bit (16) hex address. Ordinary opaque labels
+     * ("vdog-pa-01", "dev.01") keep their non-hex characters and pass. */
+    {
+        size_t hex_run = 0u;
+        size_t stripped_all_hex = 1;
+        for (i = 0; i < n; ++i) {
+            char c = tag[i];
+            if (c == '.' || c == '_' || c == '-') {
+                continue;
+            }
+            ++hex_run;
+            if (!is_hex_digit(c)) {
+                stripped_all_hex = 0;
+                break;
+            }
+        }
+        if (stripped_all_hex != 0 && (hex_run == 12u || hex_run == 16u)) {
+            return VDOG_ERR_INVALID_ARG;
+        }
     }
     memcpy(id->tag, tag, n);
     id->tag[n] = '\0'; /* fits: array is TAG_MAX+1 (terminator slot) */

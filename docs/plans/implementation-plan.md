@@ -324,7 +324,7 @@ stage the dependencies listed in each package override simple numeric order.
   `opencode/1.2-board-bringup-mine` / PR #6 ([package 1.2 assignment](1.2-assignment.md),
   plan v3)**: portable `core/vdog_mem`/`vdog_recovery`/`vdog_straps`, IDF
   adapters `components/vdog_board/vdog_board_hw.{h,c}`, sanitized `mem:` +
-  `identity:` boot lines, 65/65 host cases (22 inherited + 43 new), BUILD
+  `identity:` boot lines, 67/67 host cases (22 inherited + 45 new), BUILD
   green with both gates and `-t size` recorded; PR in review. **Device half
   PENDING** — gated on owner board-marking photos (E01), operation-time port
   re-identification and Part A merge; no DEVICE evidence exists (all rows in

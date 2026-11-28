@@ -152,6 +152,45 @@ static void test_record_flash_size_agree_and_failures(void)
                           vdog_mem_record_flash_size(NULL, 8u, 8u));
 }
 
+/* Round-3 Medium finding: a failed REFRESH must never preserve earlier
+ * measured evidence — record() resets the flash fields on EVERY call. */
+static void test_record_flash_size_refresh_clears_stale(void)
+{
+    vdog_mem_detected_t det;
+
+    /* successful first read: 8MB agreeing */
+    det = baseline_ok();
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_mem_record_flash_size(
+                              &det, 8u * 1024u * 1024u, 8u * 1024u * 1024u));
+    TEST_ASSERT(det.field_set & VDOG_MEM_FIELD_FLASH_SIZE);
+
+    /* second reading FAILS (header query returned 0): the old MEASURED
+     * field must be GONE, not retained */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_mem_record_flash_size(&det, 0u, 8u * 1024u * 1024u));
+    TEST_ASSERT_EQUAL_UINT(0u, det.field_set & VDOG_MEM_FIELD_FLASH_SIZE);
+    TEST_ASSERT_EQUAL_UINT32(0u, det.flash_size_bytes);
+    TEST_ASSERT_EQUAL_UINT8(0u, det.flash_cross_fail);
+    /* and the baseline check now fails as MISSING, not as a stale pass */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_MEM_MISSING_FIELD,
+                          vdog_mem_check_baseline(&det));
+    TEST_ASSERT_EQUAL_STRING("flash_size_bytes", vdog_mem_error_field());
+
+    /* physical=0 fails the same way */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_mem_record_flash_size(&det, 8u * 1024u * 1024u, 0u));
+    TEST_ASSERT_EQUAL_UINT(0u, det.field_set & VDOG_MEM_FIELD_FLASH_SIZE);
+
+    /* a subsequent GOOD read restores the field honestly */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_mem_record_flash_size(
+                              &det, 8u * 1024u * 1024u, 8u * 1024u * 1024u));
+    TEST_ASSERT(det.field_set & VDOG_MEM_FIELD_FLASH_SIZE);
+    TEST_ASSERT_EQUAL_UINT32(8u * 1024u * 1024u, det.flash_size_bytes);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_mem_check_baseline(&det));
+}
+
 /* Round-2 Medium finding: a cross-check failure must NEVER produce
  * success-form memory logs. The bug shape was header=16MB vs
  * physical=8MB: the physical value equals the baseline, so check_baseline
@@ -395,6 +434,7 @@ void app_main(void)
     RUN_TEST(test_record_flash_size_mismatch);
     RUN_TEST(test_record_flash_size_agree_and_failures);
     RUN_TEST(test_record_flash_size_cross_check_sticky);
+    RUN_TEST(test_record_flash_size_refresh_clears_stale);
     RUN_TEST(test_rejects_source_violations);
     RUN_TEST(test_missing_outranks_source_and_value);
     RUN_TEST(test_rejects_flash_classes);
@@ -418,6 +458,7 @@ int main(void)
     RUN_TEST(test_record_flash_size_mismatch);
     RUN_TEST(test_record_flash_size_agree_and_failures);
     RUN_TEST(test_record_flash_size_cross_check_sticky);
+    RUN_TEST(test_record_flash_size_refresh_clears_stale);
     RUN_TEST(test_rejects_source_violations);
     RUN_TEST(test_missing_outranks_source_and_value);
     RUN_TEST(test_rejects_flash_classes);

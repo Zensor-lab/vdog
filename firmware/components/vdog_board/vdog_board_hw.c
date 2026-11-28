@@ -101,7 +101,11 @@ int vdog_mem_read_detected(vdog_mem_detected_t *det)
             failed = VDOG_ERR_MEM_FLASH; /* header != physical: reported   */
         }
     } else {
-        /* Query failed honestly: leave UNSET (missing beats invented). */
+        /* Query failed honestly: CLEAR any earlier flash evidence via the
+         * same portable recorder (0-input path = field UNSET, round-3
+         * review: a failed refresh must never preserve a stale MEASURED
+         * field), missing beats invented. */
+        (void)vdog_mem_record_flash_size(det, 0u, 0u);
         failed = VDOG_ERR_MEM_FLASH;
     }
 

@@ -52,14 +52,17 @@ typedef enum {
 
 /* Classify ONE ROM/console line. Recognized ROM forms ONLY — the two
  * forms documented in the esptool ESP32-S3 boot-mode-selection "Boot
- * Mode Message" (round-2 review: exact documented mode tokens, nothing
- * else classifies):
+ * Mode Message" (exact documented mode tokens, nothing else classifies):
  *   - the ROM boot word: a line containing the WORD "boot:" (a match at
  *     line start or after a non-token char — "reboot:" never matches),
  *     then optional spaces, a REQUIRED hex strap value 0xNN, optional
- *     spaces, and a PARENTHESIZED description whose leading token
- *     (word before the first inner '(') is an exact case-insensitive
- *     member of the closed documented sets:
+ *     spaces, and the COMPLETE parenthesized description: balanced
+ *     parentheses with the leading token (word before the first inner
+ *     '(') an exact case-insensitive member of the closed documented
+ *     sets, and NOTHING after the closing paren except trailing spaces
+ *     (round-3 review: truncations like "boot:0x3 (DOWNLOAD" or
+ *     "(DOWNLOAD_BOOT(UART0)" and appended prose like
+ *     "(SPI_FAST_FLASH_BOOT failed)" are UNKNOWN):
  *       DOWNLOAD: download_boot | download
  *                 (DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2),
  *                  DOWNLOAD(USB/UART0))
@@ -67,8 +70,9 @@ typedef enum {
  *     The documented unsupported modes (SPI_FLASH_BOOT,
  *     SDIO_REI_FEO_V1_BOOT, ATE_BOOT) are in NO set: neither normal,
  *     download nor usb-jtag -> UNKNOWN.
- *   - the USB-Serial-JTAG ROM banner: a line starting with "esp-rom:"
- *     (case-insensitive) whose remainder contains the usb-jtag token.
+ *   - the USB-Serial-JTAG ROM banner, SUPPORTED SHAPE ONLY:
+ *     "ESP-ROM:esp32s3-usb-jtag-<digits>" then end of line
+ *     (case-insensitive; any other text carrying the marker is UNKNOWN).
  * Anything else — malformed lookalikes ("reboot: download failed",
  * "boot: download", "boot:0x3 DOWNLOAD_BOOT"), console prose, the plain
  * "ESP-ROM:esp32s3-<date>" version banner — is VDOG_BOOT_MODE_UNKNOWN.
