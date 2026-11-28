@@ -7338,6 +7338,42 @@
     {
       "category": "active-record",
       "contract": "media-v1",
+      "corruption": "active_ambiguous_index",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CLIP_FILE_UNEXPECTED"
+      ],
+      "files": [
+        "active.json",
+        "frames.jsonl",
+        "frames.jsonl.part",
+        "video.mjpg.part"
+      ],
+      "id": "media/invalid/active-ambiguous-index",
+      "invariant": "AC-03 §6 double-name ambiguity on the other artifact: frames.jsonl and frames.jsonl.part are present at once beside active.json, proving the quarantine judges each file independently, payload renamed or not",
+      "kind": "active"
+    },
+    {
+      "category": "active-record",
+      "contract": "media-v1",
+      "corruption": "active_ambiguous_payload",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "CLIP_FILE_UNEXPECTED"
+      ],
+      "files": [
+        "active.json",
+        "frames.jsonl.part",
+        "video.mjpg",
+        "video.mjpg.part"
+      ],
+      "id": "media/invalid/active-ambiguous-payload",
+      "invariant": "AC-03 §6 double-name ambiguity: video.mjpg and video.mjpg.part are present at once with no valid manifest to arbitrate, so recovery cannot tell which bytes are the payload — the clip is quarantined as ambiguous rather than one name being selected",
+      "kind": "active"
+    },
+    {
+      "category": "active-record",
+      "contract": "media-v1",
       "corruption": "active_bad_type",
       "expected": "invalid",
       "expected_error_codes": [
@@ -7406,6 +7442,27 @@
     {
       "category": "active-record",
       "contract": "media-v1",
+      "corruption": "active_with_invalid_manifest",
+      "expected": "invalid",
+      "expected_error_codes": [
+        "ACTIVE_WITH_MANIFEST",
+        "MANIFEST_HASH_MISMATCH"
+      ],
+      "files": [
+        "active.json",
+        "frames.jsonl",
+        "frames.jsonl.part",
+        "manifest.json",
+        "video.mjpg",
+        "video.mjpg.part"
+      ],
+      "id": "media/invalid/active-with-invalid-manifest",
+      "invariant": "AC-03 §6 manifest precedence refused: the final names and manifest.json are all published, but the manifest's declared index digest is not the hash of those bytes, so it is not the valid completed record that would outrank the stale active metadata — the mixed directory is refused, not quietly finalized",
+      "kind": "active"
+    },
+    {
+      "category": "active-record",
+      "contract": "media-v1",
       "corruption": "active_with_manifest",
       "expected": "invalid",
       "expected_error_codes": [
@@ -7418,7 +7475,7 @@
         "video.mjpg.part"
       ],
       "id": "media/invalid/active-with-manifest",
-      "invariant": "AC-02 active record: an interrupted segment publishes active.json only, because a completion manifest here would claim a close that never happened",
+      "invariant": "AC-03 §6 manifest precedence refused: a completion manifest sits beside active.json while both segment files are still .part, so the manifest names final file names the directory does not hold — the close it claims cannot verify, and an interrupted segment may not publish one",
       "kind": "active"
     },
     {
@@ -8571,6 +8628,54 @@
       "id": "media/invalid/unsupported-version",
       "invariant": "AC-03 unsupported version: v 2 must be rejected, not partially honoured",
       "kind": "clip"
+    },
+    {
+      "category": "active-record",
+      "contract": "media-v1",
+      "corruption": "active_index_renamed_final",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "active.json",
+        "frames.jsonl",
+        "video.mjpg.part"
+      ],
+      "id": "media/valid/active-index-final-payload-part",
+      "invariant": "AC-02/§6 interrupted finalization, second rename order: frames.jsonl already carries its final name while video.mjpg is still .part — the other half of the independent-rename window section 5 step 4 leaves open",
+      "kind": "active"
+    },
+    {
+      "category": "recovery",
+      "contract": "media-v1",
+      "corruption": "active_manifest_precedence",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "active.json",
+        "frames.jsonl",
+        "frames.jsonl.part",
+        "manifest.json",
+        "video.mjpg",
+        "video.mjpg.part"
+      ],
+      "id": "media/valid/active-manifest-precedence",
+      "invariant": "AC-02/§6 manifest precedence: both files under their final names and a completed manifest that verifies against them, with the never-removed active.json and the stale .part copies still beside them — the directory section 5 step 4 leaves when the removal crashed, which recovery certifies and then cleans, never refuses",
+      "kind": "active"
+    },
+    {
+      "category": "active-record",
+      "contract": "media-v1",
+      "corruption": "active_payload_renamed_final",
+      "expected": "valid",
+      "expected_error_codes": [],
+      "files": [
+        "active.json",
+        "frames.jsonl.part",
+        "video.mjpg"
+      ],
+      "id": "media/valid/active-payload-final-index-part",
+      "invariant": "AC-02/§6 interrupted finalization, first rename order: the cutover renames payload and index independently, so video.mjpg already carries its final name while frames.jsonl is still .part — both names legal, neither doubled, active.json still naming the segment",
+      "kind": "active"
     },
     {
       "category": "active-record",

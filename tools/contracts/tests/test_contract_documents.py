@@ -3498,7 +3498,7 @@ def test_ota_deferral_reads_a_shared_body_like_its_inline_twin_and_refuses_malfo
         yaml.safe_dump(reused, sort_keys=False), encoding="utf-8"
     )
     report = validate_contracts(scratch)
-    assert (report.fixture_total, len(report.violations), report.passed) == (441, 0, True), [
+    assert (report.fixture_total, len(report.violations), report.passed) == (447, 0, True), [
         violation.render() for violation in report.violations
     ]
 
@@ -3723,7 +3723,7 @@ def test_a_ref_sibling_unevaluated_properties_agrees_with_the_standard_validator
     now judges the raw node against the whole document through an offline
     local-reference registry, and this pins it against a standard Draft
     2020-12 validator on the actual contract: the valid pair request reports
-    zero errors and the corpus certifies the edited document 441/0, while the
+    zero errors and the corpus certifies the edited document 447/0, while the
     extra property earns exactly the errors — and only the errors — the
     standard validator names.
     """
@@ -3776,7 +3776,7 @@ def test_a_ref_sibling_unevaluated_properties_agrees_with_the_standard_validator
         yaml.safe_dump(weakened, sort_keys=False), encoding="utf-8"
     )
     result = validate_contracts(tmp_path)
-    assert result.fixture_total == 441 and result.passed, [
+    assert result.fixture_total == 447 and result.passed, [
         violation.render() for violation in result.violations
     ]
 
@@ -4027,7 +4027,7 @@ def test_the_ota_deferral_gate_refuses_a_schema_reference_under_any_applicator(
             composed = weakened
 
     # The complete corpus run on the composed-ref document reports the
-    # finding — it does not PASS — and the committed corpus stays 441/0/PASS.
+    # finding — it does not PASS — and the committed corpus stays 447/0/PASS.
     broken = tmp_path / "contracts"
     shutil.copytree(CONTRACTS, broken)
     (broken / "device-v1.yaml").write_text(
@@ -4041,7 +4041,7 @@ def test_the_ota_deferral_gate_refuses_a_schema_reference_under_any_applicator(
         for violation in result.violations
     ), [violation.render() for violation in result.violations]
     baseline = validate_contracts(REPO_ROOT)
-    assert baseline.fixture_total == 441 and not baseline.violations and baseline.passed
+    assert baseline.fixture_total == 447 and not baseline.violations and baseline.passed
 
 
 #: The one dialect a contract component may legally spell on its own: OpenAPI
@@ -4160,7 +4160,7 @@ def test_the_corpus_certifies_a_backend_annotated_with_the_supported_dialect(
     ``contracts/backend-v1.yaml`` of a temporary copy — adding the supported
     dialect to ``components/schemas/DerivativeRecord``, nothing else — and
     at 225e3ba the complete validator reported ``441 / 5 / False``. The
-    same run now answers ``441 / 0 / True``: a legal dialect declaration
+    same run now answers ``447 / 0 / True``: a legal dialect declaration
     on a referenced component changes no fixture's verdict and nothing else
     either.
     """
@@ -4174,7 +4174,7 @@ def test_the_corpus_certifies_a_backend_annotated_with_the_supported_dialect(
         yaml.safe_dump(annotated, sort_keys=False), encoding="utf-8"
     )
     result = validate_contracts(tmp_path)
-    assert result.fixture_total == 441 and not result.violations and result.passed, (
+    assert result.fixture_total == 447 and not result.violations and result.passed, (
         result.fixture_total,
         [violation.render() for violation in result.violations],
         result.passed,

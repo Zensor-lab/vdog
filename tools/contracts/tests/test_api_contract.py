@@ -2690,7 +2690,7 @@ def test_the_body_parsers_read_exact_numbers() -> None:
 
     targets = {
         "tools/contracts/api_validate.py": {"validate_api_fixture", "validate_manifest_binding"},
-        "tools/contracts/media_validate.py": {"validate_media_fixture", "_walk_index"},
+        "tools/contracts/media_validate.py": {"_validate_segment", "_walk_index"},
         "tools/contracts/validate.py": {"clip_dimensions"},
     }
     for name, wanted in targets.items():

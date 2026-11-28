@@ -37,6 +37,7 @@ from .bounds import (
     MANIFEST_NAME,
     MAX_ACTIVE_BYTES,
     MAX_MANIFEST_BYTES,
+    PART_SUFFIX,
     UINT53_MAX,
 )
 from .fixture_spec import (
@@ -725,12 +726,81 @@ def _mutate_active_with_manifest(
     )
 
 
+def _mutate_active_rename_final(name: str) -> FileMutation:
+    """Rename one active file to its final name: the independent cutover of §6.
+
+    The active build ships both segment files under ``.part``; renaming one key is
+    exactly what section 5 step 4 does to that file before power fails between the two
+    renames — and because no byte of the file changes, every active-state rule still
+    judges those bytes under the name they now carry.
+    """
+
+    def mutate(_fixture: MediaFixture, _built: BuiltClip, files: dict[str, bytes]) -> dict[str, bytes]:
+        files[name] = files.pop(name + PART_SUFFIX)
+        return files
+
+    return mutate
+
+
+def _mutate_active_ambiguous(name: str) -> FileMutation:
+    """Ship one active file under both names at once: the §6 double-name ambiguity.
+
+    The two names carry identical bytes, so the defect is not any file's content but
+    the claim on recovery that it pick which file is real — the very choice section 6
+    forbids ("quarantine the clip as ambiguous rather than selecting one").
+    """
+
+    def mutate(_fixture: MediaFixture, _built: BuiltClip, files: dict[str, bytes]) -> dict[str, bytes]:
+        files[name] = files[name + PART_SUFFIX]
+        return files
+
+    return mutate
+
+
+def _mutate_active_manifest_precedence(
+    fixture: MediaFixture,
+    built: BuiltClip,
+    files: dict[str, bytes],
+    *,
+    corrupt_index_hash: bool = False,
+) -> dict[str, bytes]:
+    """Take an active segment through cutover, then fail the cleanup after it.
+
+    Both files gain their final names — the ``.part`` copies stay behind as the stale
+    pre-rename residue an interrupted cleanup really leaves — and the completed
+    manifest is published over those bytes. With ``corrupt_index_hash`` the manifest's
+    index digest loses one hex digit, which is precisely the field whose verification
+    earns a manifest its precedence.
+    """
+    for base in CLIP_FILE_NAMES:
+        files[base] = files[base + PART_SUFFIX]
+    document = manifest_document(fixture.plan, built.payload, built.index)
+    if corrupt_index_hash:
+        entry = document["files"][CLIP_FILE_NAMES[1]]
+        entry["sha256"] = _flip_hex(entry["sha256"])
+    files[MANIFEST_NAME] = dump_json(document)
+    return files
+
+
+def _mutate_active_with_invalid_manifest(
+    fixture: MediaFixture, built: BuiltClip, files: dict[str, bytes]
+) -> dict[str, bytes]:
+    """A manifest beside active.json that cannot verify: precedence must be refused."""
+    return _mutate_active_manifest_precedence(fixture, built, files, corrupt_index_hash=True)
+
+
 FILE_MUTATIONS: Final[Mapping[str, FileMutation]] = {
     "manifest_not_json": _mutate_manifest_not_json,
     "manifest_absent": _mutate_manifest_absent,
     "active_not_json": _mutate_active_not_json,
     "active_too_large": _mutate_active_too_large,
     "active_with_manifest": _mutate_active_with_manifest,
+    "active_payload_renamed_final": _mutate_active_rename_final(CLIP_FILE_NAMES[0]),
+    "active_index_renamed_final": _mutate_active_rename_final(CLIP_FILE_NAMES[1]),
+    "active_ambiguous_payload": _mutate_active_ambiguous(CLIP_FILE_NAMES[0]),
+    "active_ambiguous_index": _mutate_active_ambiguous(CLIP_FILE_NAMES[1]),
+    "active_manifest_precedence": _mutate_active_manifest_precedence,
+    "active_with_invalid_manifest": _mutate_active_with_invalid_manifest,
     "duration_too_long_decimal": _raw_manifest_number("duration_us", "120000001.0"),
     "duration_too_long_exponent": _raw_manifest_number("duration_us", "1.20000001e8"),
     "dimensions_oversized_decimal": _raw_manifest_number("width", "1601.0"),

@@ -28,6 +28,7 @@ from tools.contracts.bounds import (
     MAX_MANIFEST_BYTES,
     MAX_PAYLOAD_BYTES,
     MEDIA_VERSION,
+    PART_SUFFIX,
     UINT53_MAX,
 )
 from tools.contracts.jpeg import decode_size, sof_dimensions
@@ -63,8 +64,21 @@ def index() -> list[dict]:
     return [entry for entry in document["fixtures"] if entry["kind"] in {"clip", "active"}]
 
 
-def _suffix(entry: dict) -> str:
-    return ".part" if entry["kind"] == "active" else ""
+def _committed_media_name(entry: dict, base: str) -> str:
+    """The name under which this vector ships one of the two segment files.
+
+    media-format.md §6 lets an interrupted directory carry each file under either its
+    final or its ``.part`` name — the cutover renames the two independently — while a
+    directory judged against its manifest (finalized, or active under manifest
+    precedence) is read through the final names. An ambiguity vector carries both
+    names; the ``.part`` half is what a walk would have reached for first, so that is
+    the copy these readers surface, and the committed vector keeps the two identical.
+    """
+    files = set(entry["files"])
+    part = base + PART_SUFFIX
+    if MANIFEST_NAME in files and base in files:
+        return base
+    return part if part in files else base
 
 
 def _read(fixture_id: str, name: str) -> bytes:
@@ -72,11 +86,11 @@ def _read(fixture_id: str, name: str) -> bytes:
 
 
 def _index_bytes(entry: dict) -> bytes:
-    return _read(entry["id"], INDEX_NAME + _suffix(entry))
+    return _read(entry["id"], _committed_media_name(entry, INDEX_NAME))
 
 
 def _payload_bytes(entry: dict) -> bytes:
-    return _read(entry["id"], PAYLOAD_NAME + _suffix(entry))
+    return _read(entry["id"], _committed_media_name(entry, PAYLOAD_NAME))
 
 
 def _records(entry: dict) -> list[dict]:
@@ -188,11 +202,12 @@ def test_gap_fixture_exercises_a_large_timestamp_jump(index: list[dict]) -> None
 def test_every_valid_frame_is_a_real_jpeg_matching_the_profile(index: list[dict]) -> None:
     """AC-02: SOI/EOI, a real Pillow decode, and SOF dimensions that match the manifest."""
     for entry in media_entries(index, "valid"):
-        active = entry["kind"] == "active"
         payload = _payload_bytes(entry)
-        document = json.loads(
-            _read(entry["id"], "active.json" if active else "manifest.json").decode("utf-8")
-        )
+        # The record that judges this directory states the profile: the manifest when
+        # the directory is read against one (finalized, or active under §6 manifest
+        # precedence), the active record only for a purely interrupted segment.
+        record = MANIFEST_NAME if MANIFEST_NAME in entry["files"] else ACTIVE_NAME
+        document = json.loads(_read(entry["id"], record).decode("utf-8"))
         width = document["profile"]["width"]
         height = document["profile"]["height"]
         for record in _records(entry):
@@ -260,8 +275,7 @@ def test_index_encoding_bounds_on_every_vector(index: list[dict]) -> None:
         codes = set(entry["expected_error_codes"])
         if E.INDEX_EMPTY in codes:
             continue  # this vector's whole point is an index with no records at all
-        active = entry["kind"] == "active"
-        index_bytes = _read(entry["id"], INDEX_NAME + (".part" if active else ""))
+        index_bytes = _index_bytes(entry)
         if "INDEX_ENCODING_INVALID" not in codes:
             assert not index_bytes.startswith(b"\xef\xbb\xbf"), entry["id"]
             assert b"\r" not in index_bytes, entry["id"]
@@ -284,8 +298,11 @@ def test_index_encoding_bounds_on_every_vector(index: list[dict]) -> None:
 
 def test_valid_manifests_respect_the_size_bound(index: list[dict]) -> None:
     for entry in media_entries(index, "valid"):
-        name = "active.json" if entry["kind"] == "active" else "manifest.json"
-        assert len(_read(entry["id"], name)) <= MAX_MANIFEST_BYTES, entry["id"]
+        names = [MANIFEST_NAME] if MANIFEST_NAME in entry["files"] else []
+        if entry["kind"] == "active":
+            names.append(ACTIVE_NAME)  # stale under precedence or naming the segment, still bounded
+        for name in names:
+            assert len(_read(entry["id"], name)) <= MAX_MANIFEST_BYTES, (entry["id"], name)
 
 
 def test_close_reasons_and_recovery_agree_across_the_valid_corpus(index: list[dict]) -> None:
@@ -300,13 +317,207 @@ def test_close_reasons_and_recovery_agree_across_the_valid_corpus(index: list[di
     assert {"duration", "size", "recovery", "shutdown", "ota"} <= reasons
 
 
-def test_active_vector_is_the_partial_file_set(index: list[dict]) -> None:
-    active = next(entry for entry in index if entry["kind"] == "active")
-    assert set(active["files"]) == {
-        PAYLOAD_NAME + ".part",
-        INDEX_NAME + ".part",
-        "active.json",
+_AMBIGUOUS_VECTORS = frozenset(
+    {"media/invalid/active-ambiguous-payload", "media/invalid/active-ambiguous-index"}
+)
+
+
+def test_interrupted_vectors_name_each_file_under_one_of_the_two_names(index: list[dict]) -> None:
+    """AC-02/§6: a purely interrupted directory holds each artifact under exactly one
+    name — the two ambiguity vectors ship their defect in the file set itself."""
+    interrupted = [
+        entry
+        for entry in index
+        if entry["kind"] == "active" and MANIFEST_NAME not in entry["files"]
+    ]
+    assert interrupted, "the corpus lost every interrupted segment"
+    for entry in interrupted:
+        if entry["id"] in _AMBIGUOUS_VECTORS:
+            continue
+        names = set(entry["files"])
+        assert ACTIVE_NAME in names, entry["id"]
+        for base in CLIP_FILE_NAMES:
+            assert (base in names) ^ (base + PART_SUFFIX in names), (entry["id"], base)
+    canonical = next(item for item in index if item["id"] == "media/valid/active-unknown-clock")
+    assert set(canonical["files"]) == {
+        PAYLOAD_NAME + PART_SUFFIX,
+        INDEX_NAME + PART_SUFFIX,
+        ACTIVE_NAME,
     }
+
+
+# --- media-format.md §6: interrupted-finalization names and manifest precedence -------
+
+
+def _flip_hex(value: str) -> str:
+    """Same one-hex-digit flip the generator uses for its integrity defects."""
+    from tools.contracts.generate_fixtures import _flip_hex as flip
+
+    return flip(value)
+
+
+_RENAMED_ACTIVE_VECTORS = (
+    ("media/valid/active-payload-final-index-part", PAYLOAD_NAME, INDEX_NAME),
+    ("media/valid/active-index-final-payload-part", INDEX_NAME, PAYLOAD_NAME),
+)
+
+
+@pytest.mark.parametrize(
+    ("vector_id", "renamed", "still_part"),
+    _RENAMED_ACTIVE_VECTORS,
+    ids=["payload-renamed", "index-renamed"],
+)
+def test_an_independently_renamed_active_segment_is_a_valid_in_progress_state(
+    index: list[dict], schemas: dict, vector_id: str, renamed: str, still_part: str
+) -> None:
+    """§6: the cutover renames payload and index independently, so *both* orders are legal."""
+    entry = next(item for item in index if item["id"] == vector_id)
+    assert entry["kind"] == "active" and entry["expected"] == "valid"
+    assert set(entry["files"]) == {renamed, still_part + PART_SUFFIX, ACTIVE_NAME}
+    assert validate_media_fixture(FIXTURES, entry, schemas) == []
+
+
+@pytest.mark.parametrize(
+    ("vector_id", "renamed", "still_part"),
+    _RENAMED_ACTIVE_VECTORS,
+    ids=["payload-renamed", "index-renamed"],
+)
+def test_a_defect_is_still_walked_under_a_renamed_active_file_set(
+    tmp_path, schemas, vector_id: str, renamed: str, still_part: str
+) -> None:
+    """Accepting the name does not skip the judgment: the same CRC flip speaks under it."""
+    source = FIXTURES / vector_id
+    files = {path.name: path.read_bytes() for path in sorted(source.iterdir())}
+    index_name = INDEX_NAME + PART_SUFFIX if INDEX_NAME + PART_SUFFIX in files else INDEX_NAME
+    lines = files[index_name].split(b"\n")
+    record = json.loads(lines[1])
+    record["crc32"] = _flip_hex(record["crc32"])
+    lines[1] = json.dumps(record, separators=(",", ":")).encode("utf-8")
+    files[index_name] = b"\n".join(lines)
+    entry = synthetic_media_entry(
+        tmp_path, f"renamed-crc-flip-{renamed}", files, kind="active"
+    )
+    observed = {
+        violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)
+    }
+    assert observed == {E.FRAME_CRC_MISMATCH}, sorted(observed)
+
+
+def test_an_active_segment_naming_neither_of_a_files_two_names_is_a_missing_file(
+    tmp_path, schemas
+) -> None:
+    """The resolve step refuses to guess: an artifact under *no* name names no file at all."""
+    files = _active_files()
+    del files[INDEX_NAME + PART_SUFFIX]
+    entry = synthetic_media_entry(tmp_path, "active-no-index-name", files, kind="active")
+    observed = {
+        violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)
+    }
+    assert observed == {E.FIXTURE_FILE_MISSING}, sorted(observed)
+
+
+@pytest.mark.parametrize(
+    ("vector_id", "doubled"),
+    [
+        ("media/invalid/active-ambiguous-payload", PAYLOAD_NAME),
+        ("media/invalid/active-ambiguous-index", INDEX_NAME),
+    ],
+    ids=["payload-doubled", "index-doubled"],
+)
+def test_an_active_artifact_under_both_names_at_once_is_quarantined(
+    index: list[dict], schemas: dict, vector_id: str, doubled: str
+) -> None:
+    """§6: final and ``.part`` together for one artifact is ambiguity — flag it, never select one."""
+    entry = next(item for item in index if item["id"] == vector_id)
+    assert entry["expected"] == "invalid"
+    assert {doubled, doubled + PART_SUFFIX} <= set(entry["files"])
+    found = validate_media_fixture(FIXTURES, entry, schemas)
+    assert {violation.code for violation in found} == {E.CLIP_FILE_UNEXPECTED}, [
+        violation.render() for violation in found
+    ]
+    assert found[0].location.endswith(doubled + PART_SUFFIX)
+
+
+def test_both_artifacts_under_both_names_are_quarantined_too(tmp_path, schemas) -> None:
+    """Each ambiguous artifact is named: the quarantine does not stop at the first pair."""
+    files = _active_files()
+    for base in CLIP_FILE_NAMES:
+        files[base] = files[base + PART_SUFFIX]
+    entry = synthetic_media_entry(tmp_path, "active-ambiguous-both", files, kind="active")
+    found = validate_media_fixture(tmp_path, entry, schemas)
+    assert {violation.code for violation in found} == {E.CLIP_FILE_UNEXPECTED}
+    assert len(found) == 2, [violation.render() for violation in found]
+
+
+def test_a_valid_manifest_takes_precedence_over_stale_active_metadata(
+    index: list[dict], schemas: dict
+) -> None:
+    """§6: a verified manifest certifies the final names, and the never-removed active
+    record and ``.part`` residue are what recovery gets to *delete*, not refuse."""
+    entry = next(
+        item for item in index if item["id"] == "media/valid/active-manifest-precedence"
+    )
+    assert entry["kind"] == "active" and entry["expected"] == "valid"
+    assert set(entry["files"]) == {
+        PAYLOAD_NAME,
+        PAYLOAD_NAME + PART_SUFFIX,
+        INDEX_NAME,
+        INDEX_NAME + PART_SUFFIX,
+        MANIFEST_NAME,
+        ACTIVE_NAME,
+    }
+    assert validate_media_fixture(FIXTURES, entry, schemas) == []
+    manifest = json.loads(_read(entry["id"], MANIFEST_NAME))
+    for base in CLIP_FILE_NAMES:
+        data = _read(entry["id"], base)
+        assert manifest["files"][base]["bytes"] == len(data), (entry["id"], base)
+        assert manifest["files"][base]["sha256"] == hashlib.sha256(data).hexdigest()
+        # The stale copy holds the pre-rename bytes: residue, not a second file.
+        assert _read(entry["id"], base + PART_SUFFIX) == data
+
+
+def test_a_manifest_naming_files_the_directory_lacks_cannot_take_precedence(
+    index: list[dict], schemas: dict
+) -> None:
+    """The committed half: a completion record whose final names never arrived is refused."""
+    entry = next(item for item in index if item["id"] == "media/invalid/active-with-manifest")
+    found = validate_media_fixture(FIXTURES, entry, schemas)
+    assert {violation.code for violation in found} == {E.ACTIVE_WITH_MANIFEST}, [
+        violation.render() for violation in found
+    ]
+
+
+def _damage_precedence_not_json(files: dict[str, bytes]) -> None:
+    files[MANIFEST_NAME] = b"not json\n"
+
+
+def _damage_precedence_payload_hash(files: dict[str, bytes]) -> None:
+    record = json.loads(files[MANIFEST_NAME])
+    entry_document = record["files"][PAYLOAD_NAME]
+    entry_document["sha256"] = _flip_hex(entry_document["sha256"])
+    files[MANIFEST_NAME] = json.dumps(record, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+@pytest.mark.parametrize(
+    ("damage", "codes"),
+    [
+        (_damage_precedence_not_json, {E.ACTIVE_WITH_MANIFEST, E.MANIFEST_JSON_INVALID}),
+        (_damage_precedence_payload_hash, {E.ACTIVE_WITH_MANIFEST, E.MANIFEST_HASH_MISMATCH}),
+    ],
+    ids=["manifest-not-json", "payload-hash-flipped"],
+)
+def test_an_invalid_manifest_beside_active_metadata_is_refused(
+    tmp_path, schemas, damage, codes
+) -> None:
+    """Precedence is earned by verifying, so a manifest that cannot verify refuses the mix."""
+    source = FIXTURES / "media" / "valid" / "active-manifest-precedence"
+    files = {path.name: path.read_bytes() for path in sorted(source.iterdir())}
+    damage(files)
+    entry = synthetic_media_entry(tmp_path, "active-precedence-damaged", files, kind="active")
+    observed = {
+        violation.code for violation in validate_media_fixture(tmp_path, entry, schemas)
+    }
+    assert observed == codes, sorted(observed)
 
 
 def test_unknown_clock_vector_has_two_nulls(index: list[dict]) -> None:
@@ -370,6 +581,12 @@ REQUIRED_MEDIA_DEFECTS: dict[str, tuple[str, ...]] = {
     "media/invalid/checksums-size-non-integer": (E.CHECKSUMS_SCHEMA,),
     "media/invalid/index-records-above-clip-ceiling": (E.FRAME_COUNT_MISMATCH,),
     "media/invalid/clock-uncertainty-above-uint53": (E.CLOCK_NULLITY_MISMATCH, E.MANIFEST_SCHEMA),
+    # media-format.md §6: the interrupted-finalization names and the manifest that
+    # must verify before it may outrank the stale active metadata.
+    "media/invalid/active-with-manifest": (E.ACTIVE_WITH_MANIFEST,),
+    "media/invalid/active-with-invalid-manifest": (E.ACTIVE_WITH_MANIFEST, E.MANIFEST_HASH_MISMATCH),
+    "media/invalid/active-ambiguous-payload": (E.CLIP_FILE_UNEXPECTED,),
+    "media/invalid/active-ambiguous-index": (E.CLIP_FILE_UNEXPECTED,),
 }
 
 
