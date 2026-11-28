@@ -6,10 +6,21 @@
 # vdog_board_idf.c is the TARGET-SIDE adapter: it turns this build's CONFIG_*
 # macros into a vdog_board_profile_t. It contains no policy of its own; the
 # accept/reject decision lives in core/vdog_board.c.
+#
+# Package 1.2 (plan A3): vdog_board_hw.c is the second target-side adapter —
+# read-only chip queries behind the portable vdog_mem/vdog_recovery modules
+# (core/vdog_mem.c, core/vdog_recovery.c, core/vdog_straps.c are pure C and
+# shared verbatim with the `native` test env exactly like vdog_board.c). The
+# REQUIRES list carries ONLY the read-only query components (chip info / MAC
+# helper, flash size, PSRAM size); no policy enters the component.
 idf_component_register(SRCS "${CMAKE_CURRENT_LIST_DIR}/../../core/vdog_board.c"
+                            "${CMAKE_CURRENT_LIST_DIR}/../../core/vdog_mem.c"
+                            "${CMAKE_CURRENT_LIST_DIR}/../../core/vdog_recovery.c"
+                            "${CMAKE_CURRENT_LIST_DIR}/../../core/vdog_straps.c"
                             "vdog_board_idf.c"
+                            "vdog_board_hw.c"
                        INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../core" "."
-                       REQUIRES vdog_core)
+                       REQUIRES vdog_core esp_hw_support esp_psram spi_flash)
 
 # Board identity and PSRAM capacity are BUILD CONFIGURATION inputs, not
 # detected hardware (plan 1.1 §4.1/§4.3; physical detection is DEVICE

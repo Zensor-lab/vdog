@@ -23,6 +23,9 @@
 #include "vdog_core.h"
 #include "vdog_board.h"
 #include "vdog_board_idf.h"
+#include "vdog_board_hw.h"
+#include "vdog_mem.h"
+#include "vdog_recovery.h"
 
 /* Generated before compilation by firmware/scripts/gen_build_meta.py from
  * validated VDOG_SOURCE_SHA/VDOG_BUILD_ID inputs (gitignored; on the
@@ -57,6 +60,27 @@ static const char *vdog_board_error_name(int code)
 typedef esp_err_t (*vdog_camera_deinit_fn_t)(void);
 static volatile vdog_camera_deinit_fn_t vdog_camera_deinit_ref =
     esp_camera_deinit;
+
+/* Same boot-log policy as vdog_board_error_name(): the DECISION and the
+ * offending field come from the portable validator (core/vdog_mem.c), this
+ * only words the code for the console. */
+static const char *vdog_mem_error_name(int code)
+{
+    switch (code) {
+    case VDOG_ERR_MEM_MISSING_FIELD:
+        return "field never probed";
+    case VDOG_ERR_MEM_FLASH:
+        return "flash detection mismatch";
+    case VDOG_ERR_MEM_PSRAM:
+        return "PSRAM detection mismatch";
+    case VDOG_ERR_MEM_SOURCE:
+        return "evidence-source violation";
+    case VDOG_ERR_INVALID_ARG:
+        return "invalid argument";
+    default:
+        return "unknown error";
+    }
+}
 
 void app_main(void)
 {
@@ -93,6 +117,55 @@ void app_main(void)
             ESP_LOGE(TAG, "board config rejected: %s (field %s)",
                      vdog_board_error_name(board_rc),
                      (field != NULL) ? field : "unspecified");
+        }
+    }
+
+    /* Stage 1.2: memory baseline + sanitized identity (plan A3). Read-only
+     * chip queries only — the CONFIGURED fields come from this image's own
+     * build configuration, the MEASURED fields from the chip; each renders
+     * with its evidence tag (core/vdog_mem.h, finding 2). The identity line
+     * is structurally sanitized (MAC tail only, no eFuse raw values) and
+     * still initializes NO peripheral, pin, card, camera or microphone. */
+    {
+        vdog_mem_detected_t mem = vdog_mem_detected_from_sdkconfig();
+        char mem_line[256];
+        const int read_rc = vdog_mem_read_detected(&mem);
+        const int check_rc = vdog_mem_check_baseline(&mem);
+
+        if (read_rc != VDOG_OK) {
+            ESP_LOGW(TAG, "memory read incomplete: a chip query failed, the"
+                          " affected fields stay unset (never guessed)");
+        }
+        if (check_rc == VDOG_OK) {
+            if (vdog_mem_format_detected(&mem, mem_line, sizeof(mem_line)) ==
+                VDOG_OK) {
+                ESP_LOGI(TAG, "mem: %s", mem_line);
+            } else {
+                ESP_LOGE(TAG, "memory line formatting failed");
+            }
+        } else {
+            const char *field = vdog_mem_error_field();
+            ESP_LOGE(TAG, "memory check rejected: %s (field %s)",
+                     vdog_mem_error_name(check_rc),
+                     (field != NULL) ? field : "unspecified");
+        }
+
+        /* Sanitized identity: chip model/revision + MAC tail only. The
+         * board tag stays empty (no unit identity is claimed until the owner
+         * records it in docs/hardware-identity.md, Part B), and the compact
+         * mem summary renders only when the baseline check just passed. */
+        vdog_identity_t id;
+        char id_line[192];
+        vdog_identity_init(&id);
+        vdog_identity_read_esp(&id);
+        if (check_rc == VDOG_OK) {
+            id.mem = mem;
+            id.mem_valid = 1u;
+        }
+        if (vdog_identity_format(&id, id_line, sizeof(id_line)) == VDOG_OK) {
+            ESP_LOGI(TAG, "identity: %s", id_line);
+        } else {
+            ESP_LOGE(TAG, "identity formatting failed");
         }
     }
 
