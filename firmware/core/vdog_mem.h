@@ -96,6 +96,16 @@ typedef struct {
     vdog_mem_source_t psram_size_src;
     vdog_mem_source_t psram_mode_src;
     vdog_mem_source_t psram_speed_src;
+    uint8_t flash_cross_fail; /* 1 = vdog_mem_record_flash_size() saw the
+                               * image-header capacity disagree with the
+                               * physical capacity. STICKY rejection state:
+                               * the baseline check then fails as
+                               * VDOG_ERR_MEM_FLASH (field flash_size_bytes)
+                               * even when the recorded physical value
+                               * equals the baseline — a cross-check failure
+                               * must never produce success-form memory
+                               * logs (round-2 review). Cleared by an
+                               * agreeing re-record; 0 from init.        */
 } vdog_mem_detected_t;
 
 /* ---- documented XIAO ESP32S3 Sense baseline (NOT Plus/N16R8/classic) ---
@@ -137,9 +147,14 @@ int vdog_mem_check_baseline(const vdog_mem_detected_t *det);
  * finding; the ESP-IDF docs say the same). Rules: NULL →
  * VDOG_ERR_INVALID_ARG; either input 0 → field left UNSET (missing beats
  * invented) + VDOG_ERR_INVALID_ARG; the physical value is recorded
- * MEASURED; VDOG_OK when header == physical, otherwise VDOG_ERR_MEM_FLASH
- * with vdog_mem_error_field() naming flash_size_bytes — a mismatch is
- * reported, never averaged or silently preferred. */
+ * MEASURED; VDOG_OK when header == physical (and clears any earlier
+ * flash_cross_fail), otherwise VDOG_ERR_MEM_FLASH with
+ * vdog_mem_error_field() naming flash_size_bytes AND det->flash_cross_fail
+ * set to 1 — a sticky rejection state so the baseline check keeps failing
+ * this set even when the physical value alone equals the baseline
+ * (round-2 review: a cross-check failure must never produce success-form
+ * memory logs); a mismatch is reported, never averaged or silently
+ * preferred. */
 int vdog_mem_record_flash_size(vdog_mem_detected_t *det,
                                uint32_t header_size_bytes,
                                uint32_t physical_size_bytes);

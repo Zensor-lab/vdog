@@ -99,9 +99,12 @@ int vdog_mem_record_flash_size(vdog_mem_detected_t *det,
     det->flash_size_src = VDOG_MEM_SOURCE_MEASURED;
     det->field_set |= VDOG_MEM_FIELD_FLASH_SIZE;
     if (header_size_bytes != physical_size_bytes) {
+        det->flash_cross_fail = 1u; /* sticky: keeps check_baseline rejecting
+                                     * this set (round-2 review)          */
         remember_field("flash_size_bytes");
         return VDOG_ERR_MEM_FLASH;
     }
+    det->flash_cross_fail = 0u; /* agreeing record clears an earlier fail */
     return VDOG_OK;
 }
 
@@ -149,6 +152,13 @@ static const vdog_mem_field_desc_t *first_offender(
 static const vdog_mem_field_desc_t *first_mismatch(
     const vdog_mem_detected_t *det)
 {
+    /* Sticky cross-check failure outranks the bare value comparison: a set
+     * whose header/physical capacities disagreed stays REJECTED (flash
+     * class, field flash_size_bytes) even when the recorded physical value
+     * happens to equal the baseline (round-2 review). */
+    if (det->flash_cross_fail != 0u) {
+        return &g_vdog_mem_fields[0];
+    }
     if (det->flash_size_bytes != VDOG_MEM_BASELINE_FLASH_SIZE_BYTES) {
         return &g_vdog_mem_fields[0];
     }

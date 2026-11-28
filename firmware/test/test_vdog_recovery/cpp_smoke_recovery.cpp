@@ -25,13 +25,17 @@ extern "C" int vdog_recovery_cpp_smoke(void)
     vdog_identity_t id;
     char buf[256];
 
-    if (vdog_recovery_classify("boot:0x13(spi_fast)") != VDOG_BOOT_MODE_NORMAL) {
+    if (vdog_recovery_classify(
+            "rst:0x3 (POWERON_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)") !=
+        VDOG_BOOT_MODE_NORMAL) {
         return 10;
     }
-    if (vdog_recovery_classify("boot:0x02(download)") != VDOG_BOOT_MODE_DOWNLOAD) {
+    if (vdog_recovery_classify("boot:0x2 (DOWNLOAD(USB/UART0))") !=
+        VDOG_BOOT_MODE_DOWNLOAD) {
         return 11;
     }
-    if (vdog_recovery_classify(NULL) != VDOG_BOOT_MODE_UNKNOWN) {
+    if (vdog_recovery_classify("reboot: download failed") !=
+        VDOG_BOOT_MODE_UNKNOWN) {
         return 12;
     }
 

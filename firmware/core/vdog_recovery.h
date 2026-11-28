@@ -50,21 +50,29 @@ typedef enum {
     VDOG_BOOT_MODE_USBJTAG      /* USB-Serial-JTAG ROM boot banner         */
 } vdog_boot_mode_t;
 
-/* Classify ONE ROM/console line. Recognized ROM forms ONLY:
- *   - a line containing "boot:" (case-insensitive) followed by an optional
- *     "0x..." hex word and a mode token of [A-Za-z0-9_-] (parentheses or
- *     other punctuation delimit, they are not part of the token); the token
- *     must be an EXACT (case-insensitive) member of the closed sets:
- *       USBJTAG:   usb_jtag | usb-jtag | usbjtag | usb_jtag_serial
- *       DOWNLOAD:  download | spi_fast_download | basic_download | usb_download
- *       NORMAL:    spi_fast | spi_boot | basic | normal | spi_fast_boot
- *     (checked in that order so a combined JTAG word cannot be labelled
- *     plain DOWNLOAD; sets are disjoint today — order is belt-and-braces).
+/* Classify ONE ROM/console line. Recognized ROM forms ONLY — the two
+ * forms documented in the esptool ESP32-S3 boot-mode-selection "Boot
+ * Mode Message" (round-2 review: exact documented mode tokens, nothing
+ * else classifies):
+ *   - the ROM boot word: a line containing the WORD "boot:" (a match at
+ *     line start or after a non-token char — "reboot:" never matches),
+ *     then optional spaces, a REQUIRED hex strap value 0xNN, optional
+ *     spaces, and a PARENTHESIZED description whose leading token
+ *     (word before the first inner '(') is an exact case-insensitive
+ *     member of the closed documented sets:
+ *       DOWNLOAD: download_boot | download
+ *                 (DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2),
+ *                  DOWNLOAD(USB/UART0))
+ *       NORMAL:   spi_fast_flash_boot
+ *     The documented unsupported modes (SPI_FLASH_BOOT,
+ *     SDIO_REI_FEO_V1_BOOT, ATE_BOOT) are in NO set: neither normal,
+ *     download nor usb-jtag -> UNKNOWN.
  *   - the USB-Serial-JTAG ROM banner: a line starting with "esp-rom:"
  *     (case-insensitive) whose remainder contains the usb-jtag token.
- * Anything else — including console prose like "download failed", "basic
- * settings loaded", "Download Mode", or "usb_jtag download mode" without a
- * ROM form — is VDOG_BOOT_MODE_UNKNOWN. NULL/empty → UNKNOWN. */
+ * Anything else — malformed lookalikes ("reboot: download failed",
+ * "boot: download", "boot:0x3 DOWNLOAD_BOOT"), console prose, the plain
+ * "ESP-ROM:esp32s3-<date>" version banner — is VDOG_BOOT_MODE_UNKNOWN.
+ * NULL/empty → UNKNOWN. */
 vdog_boot_mode_t vdog_recovery_classify(const char *rom_line);
 
 /* Stable lowercase name for a boot mode (for logs/records). */
@@ -91,8 +99,12 @@ typedef struct {
     uint16_t mac_tail;       /* LAST TWO BYTES only (0xABCD -> 0xABCD);
                               * a full MAC cannot exist in this struct.    */
     uint8_t mac_valid;       /* 0 = MAC not read (never invented)          */
-    char tag[VDOG_IDENTITY_TAG_MAX]; /* valid only when tag_len > 0; bytes
-                                      * were charset-validated by the setter */
+    char tag[VDOG_IDENTITY_TAG_MAX + 1]; /* valid only when tag_len > 0;
+                                          * bytes were charset-validated by
+                                          * the setter; +1 = terminator slot
+                                          * (round-2 review: the old 16-byte
+                                          * array overflowed on a valid
+                                          * 16-char tag)                */
     uint8_t tag_len;         /* 0 = absent (never rendered)                */
 } vdog_identity_t;
 
@@ -111,9 +123,12 @@ int vdog_identity_set_chip_model(vdog_identity_t *id, const char *model);
 void vdog_identity_set_revision(vdog_identity_t *id, uint16_t sdk_revision);
 
 /* Opaque board tag: stored ONLY if it matches [A-Za-z0-9._-]{1,16} exactly
- * (VDOG_OK); an empty string clears it (VDOG_OK, tag_len 0); NULL or any
- * other byte (including '%' or control chars) returns VDOG_ERR_INVALID_ARG
- * and leaves the previous value untouched. */
+ * AND is not composed purely of hex digits ([0-9a-fA-F]) — a pure-hex label
+ * is indistinguishable from an unredacted compact MAC and is rejected
+ * (round-2 review; the boot path keeps the tag empty anyway). An empty
+ * string clears it (VDOG_OK, tag_len 0); NULL or any other byte (including
+ * '%' or control chars) returns VDOG_ERR_INVALID_ARG and leaves the
+ * previous value untouched. */
 int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag);
 
 /* Compose ONE sanitized log line, e.g.

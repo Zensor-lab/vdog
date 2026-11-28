@@ -133,8 +133,19 @@ void app_main(void)
         const int check_rc = vdog_mem_check_baseline(&mem);
 
         if (read_rc != VDOG_OK) {
-            ESP_LOGW(TAG, "memory read incomplete: a chip query failed, the"
-                          " affected fields stay unset (never guessed)");
+            /* Honest wording for the two different failures (round-2
+             * review): a cross-check DISAGREEMENT is not a query failure.
+             * Either way check_baseline below rejects — the sticky
+             * flash_cross_fail state rules out success-form lines. */
+            if (mem.flash_cross_fail != 0u) {
+                ESP_LOGW(TAG, "memory flash cross-check: image-header"
+                              " capacity disagrees with physical capacity"
+                              " (rejected below, field flash_size_bytes)");
+            } else {
+                ESP_LOGW(TAG, "memory read incomplete: a chip query failed,"
+                              " the affected fields stay unset (never"
+                              " guessed)");
+            }
         }
         if (check_rc == VDOG_OK) {
             if (vdog_mem_format_detected(&mem, mem_line, sizeof(mem_line)) ==

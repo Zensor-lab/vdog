@@ -94,24 +94,25 @@ static const char *find_ci(const char *haystack, const char *needle_lower)
     return NULL;
 }
 
-/* Closed mode-token sets (checked in this order; disjoint today). */
-static const char *const g_mode_usbjtag[] = {
-    "usb_jtag", "usb-jtag", "usbjtag", "usb_jtag_serial"
-};
+/* Closed sets of DOCUMENTED ROM mode tokens (esptool boot-mode-selection
+ * "Boot Mode Message", ESP32-S3): the only DESCRIPTION strings the ROM
+ * prints inside "boot:0xNN (DESCRIPTION)". Round-2 review: nothing else
+ * classifies — invented tokens are gone, and the documented unsupported
+ * modes (SPI_FLASH_BOOT, SDIO_REI_FEO_V1_BOOT, ATE_BOOT) are deliberately
+ * NOT in any set (UNKNOWN: neither normal, download, nor usb-jtag). */
 static const char *const g_mode_download[] = {
-    "download", "spi_fast_download", "basic_download", "usb_download"
+    /* DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2), DOWNLOAD(USB/UART0) …
+     * the token is the word before the first inner '('. */
+    "download_boot", "download"
 };
 static const char *const g_mode_normal[] = {
-    "spi_fast", "spi_boot", "basic", "normal", "spi_fast_boot"
+    "spi_fast_flash_boot" /* the normal SPI flash boot mode */
 };
 
 #define MODE_SET_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
 static vdog_boot_mode_t mode_from_token(const char *tok, size_t len)
 {
-    if (token_in_set(tok, len, g_mode_usbjtag, MODE_SET_COUNT(g_mode_usbjtag))) {
-        return VDOG_BOOT_MODE_USBJTAG;
-    }
     if (token_in_set(tok, len, g_mode_download, MODE_SET_COUNT(g_mode_download))) {
         return VDOG_BOOT_MODE_DOWNLOAD;
     }
@@ -119,6 +120,22 @@ static vdog_boot_mode_t mode_from_token(const char *tok, size_t len)
         return VDOG_BOOT_MODE_NORMAL;
     }
     return VDOG_BOOT_MODE_UNKNOWN;
+}
+
+/* Find the next ROM boot-word marker "boot:" that is a WORD, not a
+ * substring: the match must start the line or follow a non-token
+ * character. This is what keeps "reboot: download failed" from ever
+ * classifying (round-2 review High finding). */
+static const char *find_boot_word(const char *line)
+{
+    const char *p = line;
+    while ((p = find_ci(p, "boot:")) != NULL) {
+        if (p == line || !is_token_char(p[-1])) {
+            return p;
+        }
+        ++p;
+    }
+    return NULL;
 }
 
 vdog_boot_mode_t vdog_recovery_classify(const char *rom_line)
@@ -133,7 +150,8 @@ vdog_boot_mode_t vdog_recovery_classify(const char *rom_line)
 
     /* ROM banner form: ESP-ROM:esp32s3-usb-jtag-<date>. The "esp-rom:"
      * prefix is what makes this a ROM form; the usb-jtag marker may sit
-     * inside hyphen-joined banner text. */
+     * inside hyphen-joined banner text. (The ordinary version banner
+     * "ESP-ROM:esp32s3-<date>" has no marker and stays UNKNOWN.) */
     if (starts_with_ci(rom_line, "esp-rom:")) {
         const char *m;
         const char *rest = rom_line + 8;
@@ -149,24 +167,42 @@ vdog_boot_mode_t vdog_recovery_classify(const char *rom_line)
         return VDOG_BOOT_MODE_UNKNOWN;
     }
 
-    /* ROM boot-word form: "boot:0x..(<mode>)" (punctuation-delimited). */
-    p = find_ci(rom_line, "boot:");
+    /* ROM boot-word form, EXACTLY as documented:
+     *   rst:0xNN (REASON),boot:0xNN (DESCRIPTION)
+     * Requirements beyond the "boot:" word boundary: a hex strap value
+     * 0xNN and a PARENTHESIZED description — "boot: download",
+     * "boot:0x3 DOWNLOAD_BOOT" and "reboot: download failed" are
+     * malformed lookalikes and stay UNKNOWN (round-2 review). The token
+     * is the word before the first inner '(' so
+     * "(DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2))" yields
+     * "DOWNLOAD_BOOT". */
+    p = find_boot_word(rom_line);
     if (p == NULL) {
         return VDOG_BOOT_MODE_UNKNOWN;
     }
     p += 5; /* strlen("boot:") */
-    while (*p != '\0' && !is_token_char(*p)) {
+    while (*p == ' ' || *p == '\t') {
         ++p;
     }
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        p += 2;
-        while (*p != '\0' && is_hex_digit(*p)) {
-            ++p;
-        }
-        while (*p != '\0' && !is_token_char(*p)) {
-            ++p;
-        }
+    if (p[0] != '0' || (p[1] != 'x' && p[1] != 'X')) {
+        return VDOG_BOOT_MODE_UNKNOWN; /* documented form carries 0xNN */
     }
+    p += 2;
+    len = 0u;
+    while (is_hex_digit(*p)) {
+        ++p;
+        ++len;
+    }
+    if (len == 0u) {
+        return VDOG_BOOT_MODE_UNKNOWN; /* "boot:0x(" is not a boot word */
+    }
+    while (*p == ' ' || *p == '\t') {
+        ++p;
+    }
+    if (*p != '(') {
+        return VDOG_BOOT_MODE_UNKNOWN; /* DESCRIPTION must be parenthesized */
+    }
+    ++p;
     tok = p;
     while (*p != '\0' && is_token_char(*p)) {
         ++p;
@@ -238,6 +274,7 @@ int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag)
 {
     size_t n;
     size_t i;
+    int all_hex;
 
     if (id == NULL || tag == NULL) {
         return VDOG_ERR_INVALID_ARG;
@@ -250,6 +287,7 @@ int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag)
     if (n > VDOG_IDENTITY_TAG_MAX) {
         return VDOG_ERR_INVALID_ARG;
     }
+    all_hex = 1;
     for (i = 0; i < n; ++i) {
         char c = tag[i];
         int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -257,9 +295,20 @@ int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag)
         if (!ok) {
             return VDOG_ERR_INVALID_ARG;
         }
+        if (!is_hex_digit(c)) {
+            all_hex = 0;
+        }
+    }
+    /* Round-2 review Medium: a delimiter-free 12-hex-digit MAC passes the
+     * charset above, so pure-hex labels are rejected outright — an opaque
+     * board tag must be distinguishable from a raw MAC/eFuse blob. (A
+     * legal tag needs at least one non-hex character: a letter like g/k/p,
+     * or a . _ - separator.) */
+    if (all_hex != 0) {
+        return VDOG_ERR_INVALID_ARG;
     }
     memcpy(id->tag, tag, n);
-    id->tag[n] = '\0';
+    id->tag[n] = '\0'; /* fits: array is TAG_MAX+1 (terminator slot) */
     id->tag_len = (uint8_t)n;
     return VDOG_OK;
 }

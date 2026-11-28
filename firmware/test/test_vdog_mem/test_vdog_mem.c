@@ -137,6 +137,7 @@ static void test_record_flash_size_agree_and_failures(void)
                               &det, 8u * 1024u * 1024u, 8u * 1024u * 1024u));
     TEST_ASSERT_EQUAL_UINT32(8u * 1024u * 1024u, det.flash_size_bytes);
     TEST_ASSERT_EQUAL_INT(VDOG_MEM_SOURCE_MEASURED, (int)det.flash_size_src);
+    TEST_ASSERT_EQUAL_UINT8(0u, det.flash_cross_fail);
 
     /* a failed query (0 from either getter) leaves the field UNSET */
     memset(&det, 0xA5, sizeof(det));
@@ -149,6 +150,43 @@ static void test_record_flash_size_agree_and_failures(void)
     TEST_ASSERT_EQUAL_UINT8(0u, det.field_set);
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
                           vdog_mem_record_flash_size(NULL, 8u, 8u));
+}
+
+/* Round-2 Medium finding: a cross-check failure must NEVER produce
+ * success-form memory logs. The bug shape was header=16MB vs
+ * physical=8MB: the physical value equals the baseline, so check_baseline
+ * passed and main.c printed the success "mem:" line next to a warning.
+ * Sticky flash_cross_fail rules that out in BOTH directions. */
+static void test_record_flash_size_cross_check_sticky(void)
+{
+    vdog_mem_detected_t det;
+
+    /* direction 1: header BIGGER than physical (physical == baseline) */
+    det = baseline_ok();
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_MEM_FLASH,
+                          vdog_mem_record_flash_size(
+                              &det, 16u * 1024u * 1024u, 8u * 1024u * 1024u));
+    TEST_ASSERT_EQUAL_UINT8(1u, det.flash_cross_fail);
+    TEST_ASSERT_EQUAL_UINT32(8u * 1024u * 1024u, det.flash_size_bytes);
+    /* the recorded value alone WOULD pass — the sticky state rejects it */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_MEM_FLASH, vdog_mem_check_baseline(&det));
+    TEST_ASSERT_EQUAL_STRING("flash_size_bytes", vdog_mem_error_field());
+
+    /* direction 2: header SMALLER than physical (value already wrong) */
+    det = baseline_ok();
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_MEM_FLASH,
+                          vdog_mem_record_flash_size(
+                              &det, 8u * 1024u * 1024u, 16u * 1024u * 1024u));
+    TEST_ASSERT_EQUAL_UINT8(1u, det.flash_cross_fail);
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_MEM_FLASH, vdog_mem_check_baseline(&det));
+    TEST_ASSERT_EQUAL_STRING("flash_size_bytes", vdog_mem_error_field());
+
+    /* an agreeing re-record clears the sticky state */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_mem_record_flash_size(
+                              &det, 8u * 1024u * 1024u, 8u * 1024u * 1024u));
+    TEST_ASSERT_EQUAL_UINT8(0u, det.flash_cross_fail);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_mem_check_baseline(&det));
 }
 
 static void test_rejects_source_violations(void)
@@ -356,6 +394,7 @@ void app_main(void)
     RUN_TEST(test_rejects_null_detector);
     RUN_TEST(test_record_flash_size_mismatch);
     RUN_TEST(test_record_flash_size_agree_and_failures);
+    RUN_TEST(test_record_flash_size_cross_check_sticky);
     RUN_TEST(test_rejects_source_violations);
     RUN_TEST(test_missing_outranks_source_and_value);
     RUN_TEST(test_rejects_flash_classes);
@@ -378,6 +417,7 @@ int main(void)
     RUN_TEST(test_rejects_null_detector);
     RUN_TEST(test_record_flash_size_mismatch);
     RUN_TEST(test_record_flash_size_agree_and_failures);
+    RUN_TEST(test_record_flash_size_cross_check_sticky);
     RUN_TEST(test_rejects_source_violations);
     RUN_TEST(test_missing_outranks_source_and_value);
     RUN_TEST(test_rejects_flash_classes);
