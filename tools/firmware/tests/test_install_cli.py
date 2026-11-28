@@ -788,7 +788,7 @@ def test_backend_flash_encryption_is_crypt_cnt_parity_not_a_flag_bit() -> None:
     record = backend.connect("/dev/ttyX", expect={})
     assert record["flash_encryption"] is False and record["secure_boot"] is False
     encrypted = support.FakeEspConnection(
-        security={"flags": 0x1, "flash_crypt_cnt": 0b0000_0101})
+        security={"flags": 0x1, "flash_crypt_cnt": 0b0000_0111})
     backend = inst.EsptoolSessionBackend(
         esptool_module=support.FakeEsptoolModule(esp=encrypted))
     record = backend.connect("/dev/ttyX", expect={})
