@@ -800,3 +800,76 @@ consistent with the 0x1/0xc rows), zeroing and privacy are unchanged.
 | --- | --- |
 | Tests | Recovery suite 26 -> **27** cases: +watchdog ROM-alias test (the four captured lines verbatim incl. boot:0xc/0x3 banner variants, enum-alias acceptance with byte-scan "alias bytes never stored", 0x10 short-form alias, case-insensitivity); pair-mismatch test extended: shortened aliases against wrong values (0x3 TG0WDT / 0x7 RTC_SW_SYS / 0x8 TG0WDT / 0x12 RTC_SW_SYS) -> UNRECOGNISED, and the UNVERIFIED shortenings pinned OUT (`0x9 (RTCWDT_SYS_RST)`, `0xf (RTCWDT_BROWN_OUT_RST)` -> UNRECOGNISED). cpp smoke untouched (row 9 canonical unchanged). native total **83/83** = recovery 27 + mem 19 + straps 15 + board 15 + core 7; embedded [SKIPPED] x5, 0 warnings; pytest 471; standalone gates exit 0. |
 | BUILD | `-t clean` + `pio run -e vdog_xiao_sense_proto` exit 0: **1109** compiles, **0** warnings, purity line + board-config gate at both registrations. `-t size` (F-5 full paste; tree based on `df91cc8` + this round, host `Tims-MacBook-Pro.local` / macOS 26.6.2): `text 153829 / data 63000 / bss 376829 / dec 593658 / hex 90efa`; **firmware.bin 216944 B** (+4 B data for the new alias strings, bin unchanged at flash-block granularity). `core/library.json` 1.2.4 -> 1.2.5 (libdeps invalidation). pins/lock/sdkconfig 0-change; tools untouched. Out-of-tree probe mirroring the bot's round-4 cases (four captures KNOWN+canonical, enum-alias acceptance + alias-bytes-absent, four wrong-value alias pairs UNRECOGNISED, exclusion pins, case-insensitivity, round-3 regressions incl. MAC privacy + stale bytes, tag rules): ALL MATCH. No device, no port, no push. |
+
+### Package 1.2 Part A — review round 5 R5 (append-only, 2026-11-28)
+
+PR-bot re-review at `dad4523`: ONE Medium — authoritative coverage. The
+reset-cause KNOWN set was rebuilt from the ESP32-S3 ROM's OWN
+reset-reason label table (source of truth), superseding the per-entry
+publication hunt. Extraction (auditable record):
+
+- ELF (installed): `~/.platformio/packages/tool-esp-rom-elfs/esp32s3_rev0_rom.elf`
+  sha256 `c0ce0f338d1de1bdc6efbef1591779a2a42c1ab7d759d3c6ae8ae63a7dd34cfd`
+- Release comparison: `https://github.com/espressif/esp-rom-elfs/releases/tag/20241011`
+  (assets `esp-rom-elfs-20241011.tar.gz` sha256
+  `921f000164a421c7628fbfee55b173384aafaa51883adc65cd27bf9b0af9e9a9`
+  verified with `shasum -a 256 -c esp-rom-elfs-20241011-checksum.sha256`,
+  extracted `esp32s3_rev0_rom.elf` -> `shasum -a 256` + `cmp` against the
+  installed copy: **byte-identical**, confirming the bot's claim).
+- Method: python3/struct parse of the 32-bit ELF program headers;
+  PT_LOAD at vaddr `0x3ff18c00` (filesz 0x5f3c) covers the table vaddr
+  `0x3ff18e10` -> file offset `0x5be10`; 24 little-endian 32-bit
+  pointers read at that offset, each dereferenced to a NUL-terminated
+  string. (ELF: class 1, endian LE, type 2/EM 94.)
+
+Extracted 24-entry table (index = rst:0xNN code):
+
+| idx | ROM print | idx | ROM print |
+| --- | --- | --- | --- |
+| 0 | `N/A` (shared) | 12 | `RTC_SW_CPU_RST` |
+| 1 | `POWERON` | 13 | `RTCWDT_CPU_RST` |
+| 2 | `N/A` (shared) | 14 | `N/A` (shared) |
+| 3 | `RTC_SW_SYS_RST` | 15 | `BROWNOUT_RST` |
+| 4 | `N/A` (shared) | 16 | `RTCWDT_RTC_RST` |
+| 5 | `DSLEEP` | 17 | `TG1WDT_CPU_RST` |
+| 6 | `N/A` (shared) | 18 | `SUPER_WDT_RST` |
+| 7 | `TG0WDT_SYS_RST` | 19 | `GLITCH_RTC_RST` |
+| 8 | `TG1WDT_SYS_RST` | 20 | `EFUSE_RST` |
+| 9 | `RTCWDT_SYS_RST` | 21 | `USB_UART_CHIP_RESET` |
+| 10 | `INTRUSION_RST` | 22 | `USB_JTAG_CHIP_RESET` |
+| 11 | `TG0WDT_CPU_RST` | 23 | `POWER_GLITCH_RESET` |
+
+Indices 0/2/4/6/14 share one `N/A` string: the ROM prints no label
+there, so those codes get NO row (any token at those values is
+UNRECOGNISED; pinned by tests `rst:0x2 (POWERON)` / `rst:0xe
+(EFUSE_RST)`). The 19 named entries are the table's rows: per row
+primary = extracted ROM label (canonical, stored), alias = rtc.h enum
+spelling when it differs (union rule, case-insensitive, pair-match
+semantics unchanged). Reconciliations: rounds 3/4 had 10 rows storing
+rtc.h enum names as primary where the ROM prints a shorter label —
+5 DEEPSLEEP_RESET->DSLEEP, 9 RTCWDT_SYS_RESET->RTCWDT_SYS_RST, 10
+INTRUSION_RESET->INTRUSION_RST, 11 TG0WDT_CPU_RESET->TG0WDT_CPU_RST,
+13 RTCWDT_CPU_RESET->RTCWDT_CPU_RST, 15
+RTCWDT_BROWN_OUT_RESET->BROWNOUT_RST, 16
+RTCWDT_RTC_RESET->RTCWDT_RTC_RST, 17
+TG1WDT_CPU_RESET->TG1WDT_CPU_RST, 19
+GLITCH_RTC_RESET->GLITCH_RTC_RST, 20 EFUSE_RESET->EFUSE_RST — all now
+stored as label with the enum demoted to alias (both accepted; only the
+label is ever stored, byte-scanned in tests). Rows already matching the
+label (1 POWERON, 3 RTC_SW_SYS_RST, 7/8 TG0WDT, 12 RTC_SW_CPU_RST, 18
+SUPER_WDT_RST, 21/22/23 full-form) unchanged; earlier rounds' claim
+that `DSLEEP`@5 and the EFUSE-family print were "C-series only" was
+WRONG for the S3 ROM and is superseded. The nine bot-flagged rejections
+(0x5 DSLEEP, 0x9 RTCWDT_SYS_RST, 0xa INTRUSION_RST, 0xb TG0WDT_CPU_RST,
+0xd RTCWDT_CPU_RST, 0xf BROWNOUT_RST, 0x11 TG1WDT_CPU_RST, 0x13
+GLITCH_RTC_RST, 0x14 EFUSE_RST) are all independently reproduced by the
+extraction, plus one more the bot did not list: 0x10's label is the
+short `RTCWDT_RTC_RST` (round-4 primary RTCWDT_RTC_RESET demoted to
+alias). `RTCWDT_BROWN_OUT_RST` (invented shortening, not the label,
+not the enum) stays UNRECOGNISED; `0xf BROWNOUT_RST` now diagnoses the
+Part B reset-loop check.
+
+| Item | State |
+| --- | --- |
+| Tests | Recovery suite 27 -> **29**: +table-generated fixture suite (all 19 extracted pairs: label line KNOWN+canonical, enum line KNOWN+label-stored+enum-bytes-absent via byte-scan, wrong-name pair from the adjacent row UNRECOGNISED+whole-buffer-zero, 57 generated cases), +MAC-cause refusal on new values 0x13/0xb. Flipped as required: the round-4 pin `0x9 (RTCWDT_SYS_RST)` now asserts KNOWN+canonical; cpp smoke and stale-bytes asserts re-pinned to the label spellings (0x9, 0x16 cases); DEEPSLEEP@5 now stores `DSLEEP`; N/A-code rejections pinned (0x2/0xe). native total **85/85** = recovery 29 + mem 19 + straps 15 + board 15 + core 7; embedded [SKIPPED] x5, 0 warnings; pytest 471; standalone gates exit 0. |
+| BUILD | `-t clean` + `pio run -e vdog_xiao_sense_proto` exit 0: **1109** compiles, **0** warnings, purity line + board-config gate at both registrations. `-t size` (F-5 full paste; tree based on `dad4523` + this round, host `Tims-MacBook-Pro.local` / macOS 26.6.2): `text 153829 / data 62996 / bss 376829 / dec 593654 / hex 90ef6`; **firmware.bin 216944 B** (data back to the round-3 value — net string-table shortening from the label-canonical flip). `core/library.json` 1.2.5 -> 1.2.6 (libdeps invalidation). pins/lock/sdkconfig 0-change; tools untouched. Out-of-tree probe mirroring round 5 (generated 19x3 pairs, N/A codes, flips, privacy, #14243 boot:0x2a/#10588/stale-bytes/tags/download regressions): ALL MATCH. No device, no port, no push. |

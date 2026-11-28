@@ -55,12 +55,16 @@ typedef enum {
 #define VDOG_BOOT_CAUSE_MAX 23
 
 /* State of the optional rst:0xNN (CAUSE), prefix of a ROM line. KNOWN
- * means the (VALUE, NAME) PAIR matched the core's cited ROM table
- * (review R3-A): per value the union of the ROM-printed spelling (the
- * ESP-IDF Reset-Reasons docs and the published example/boot-log captures)
- * and the ROM reset-reason header's enum spelling — e.g. 0x1 accepts
- * "POWERON" and "POWERON_RESET"; 0xc accepts "RTC_SW_CPU_RST" and
- * "RTC_SW_CPU_RESET". A known name with the wrong value, or a known
+ * means the (VALUE, NAME) PAIR matched the core's ROM table (review
+ * R3-A; ground truth per review round 5: the ESP32-S3 ROM's OWN
+ * reset-reason label table, extracted from the vendor ROM ELF — path,
+ * sha256 and method documented in core/vdog_recovery.c). Per value the
+ * union of the extracted ROM label (the canonical stored) and the ROM
+ * reset-reason header's enum spelling — e.g. 0x1 accepts "POWERON" and
+ * "POWERON_RESET"; 0x9 accepts "RTCWDT_SYS_RST" (ROM label) and
+ * "RTCWDT_SYS_RESET" (enum). Codes at which the ROM table carries no
+ * label (indices 0/2/4/6/14, shared "N/A") have no pair and are always
+ * UNRECOGNISED. A known name with the wrong value, or a known
  * value with the wrong name, is UNRECOGNISED (never "closest match");
  * the boot-mode verdict always comes from the BANNER alone. */
 typedef enum {

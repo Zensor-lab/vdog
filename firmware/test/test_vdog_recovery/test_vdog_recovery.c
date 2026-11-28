@@ -18,6 +18,7 @@
  * narrow "vdg-" project label (never a hardware identifier — no MAC
  * spelling stores or renders), MAC-tail-only storage. No device.
  */
+#include <stdio.h>
 #include <string.h>
 
 #include "unity.h"
@@ -265,10 +266,11 @@ static void test_boot_evidence_cause_states(void)
     TEST_ASSERT_EACH_EQUAL_CHAR('\0', ev.cause_name, sizeof(ev.cause_name));
 }
 
-/* Review R3-A: the ROM's OWN printed spellings (published S3 captures)
- * classify KNOWN — the old table wrongly demanded the rtc.h enum names.
- * Pair citations live in core/vdog_recovery.c (partitions_ota README,
- * boot-log/startup docs, rtc.h, rtc_wdt.h). */
+/* Review R3-A: the ROM's OWN printed spellings classify KNOWN — the
+ * old table wrongly demanded the rtc.h enum names. Round 5: the
+ * spellings are now the ESP32-S3 ROM's own label table extracted from
+ * the vendor ROM ELF (provenance in core/vdog_recovery.c); published
+ * captures (partitions_ota README, boot-log docs) corroborate. */
 static void test_boot_evidence_rom_printed_aliases(void)
 {
     vdog_boot_evidence_t ev;
@@ -281,8 +283,8 @@ static void test_boot_evidence_rom_printed_aliases(void)
     TEST_ASSERT_EQUAL_UINT8(1u, ev.rst_value);
     TEST_ASSERT_EQUAL_STRING("POWERON", ev.cause_name);
 
-    /* rst:0xc (RTC_SW_CPU_RST) — ROM print differs from rtc.h enum name
-     * (RTC_SW_CPU_RESET); both accepted, canonical is the ROM print. */
+    /* rst:0xc (RTC_SW_CPU_RST) — ROM label differs from rtc.h enum name
+     * (RTC_SW_CPU_RESET); both accepted, canonical is the label. */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
         "rst:0xc (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
@@ -293,12 +295,19 @@ static void test_boot_evidence_rom_printed_aliases(void)
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_STRING("RTC_SW_CPU_RST", ev.cause_name);
 
-    /* Enum-spelling rows (rtc.h values), incl. deep-sleep and USB-JTAG. */
+    /* Round-5 reconciliation: the S3 ROM prints DSLEEP at 5 (the old
+     * "C-series only" note was WRONG for this ROM); the rtc.h enum
+     * DEEPSLEEP_RESET stays accepted and stores the label. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x5 (DSLEEP),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(5u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("DSLEEP", ev.cause_name);
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
         "rst:0x5 (DEEPSLEEP_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_UINT8(5u, ev.rst_value);
-    TEST_ASSERT_EQUAL_STRING("DEEPSLEEP_RESET", ev.cause_name);
+    TEST_ASSERT_EQUAL_STRING("DSLEEP", ev.cause_name);
 
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
         "rst:0x16 (USB_JTAG_CHIP_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
@@ -306,10 +315,13 @@ static void test_boot_evidence_rom_printed_aliases(void)
     TEST_ASSERT_EQUAL_UINT8(22u, ev.rst_value);
     TEST_ASSERT_EQUAL_STRING("USB_JTAG_CHIP_RESET", ev.cause_name);
 
+    /* ROM label at 0x10 is RTCWDT_RTC_RST (extracted); the enum/published
+     * RTCWDT_RTC_RESET form stays accepted (alias). */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
         "rst:0x10 (RTCWDT_RTC_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_UINT8(16u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("RTCWDT_RTC_RST", ev.cause_name);
 
     /* Case-insensitivity of the pair match (documented). */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
@@ -326,7 +338,8 @@ static void test_boot_evidence_pair_mismatch(void)
     vdog_boot_evidence_t ev;
 
     /* The bot's probe: 0xf (POWERON_RESET) — POWERON_RESET is known (at
-     * 0x1) but value 15 pairs with RTCWDT_BROWN_OUT_RESET. */
+     * 0x1) but value 15 pairs with BROWNOUT_RST (ROM label) /
+     * RTCWDT_BROWN_OUT_RESET (enum). */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
         "rst:0xf (POWERON_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
@@ -381,15 +394,28 @@ static void test_boot_evidence_pair_mismatch(void)
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
                             (uint8_t)ev.cause_state);
 
-    /* Audit boundary: the UNVERIFIED shortenings stay out (see the
-     * table's citation comment) — these tokens are UNRECOGNISED even at
-     * the value they would have if published. */
+    /* Round-5 ROM-table audit: RTCWDT_SYS_RST at 9 IS a ROM label (it was
+     * wrongly pinned OUT on the publication hunt) — now KNOWN, canonical
+     * is the label. RTCWDT_BROWN_OUT_RST at 0xf stays UNRECOGNISED: the
+     * extracted label is BROWNOUT_RST and the enum is
+     * RTCWDT_BROWN_OUT_RESET — this invented shortening is neither. */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
         "rst:0x9 (RTCWDT_SYS_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(9u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("RTCWDT_SYS_RST", ev.cause_name);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0xf (RTCWDT_BROWN_OUT_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    /* Codes where the ROM table carries no label (shared "N/A" at
+     * indices 0/2/4/6/14) never pair — even with a real label's token. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x2 (POWERON),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
                             (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
-        "rst:0xf (RTCWDT_BROWN_OUT_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+        "rst:0xe (EFUSE_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
                             (uint8_t)ev.cause_state);
 }
@@ -443,12 +469,15 @@ static void test_boot_evidence_cause_privacy_mac_token(void)
     TEST_ASSERT_NULL(ev_find_bytes(&ev, "AABB"));
 }
 
-/* Review round 4: the shortened watchdog/system ROM prints published for
- * ESP32-S3 classify KNOWN with the canonical stored (citations live in
- * core/vdog_recovery.c: XIAO ESP32-S3 capture #10588 for 0x3, the
- * ESP-Techpedia watchdog doc "Common LOG" for 0x7/0x8, esp-idf issue
- * #14243 (board ESP32-S3-WROOM-1, IDF version v5.1.2) for 0x12, community issue #6980
- * (S3-DevKitC-1) for the 0x10 short form). The rtc.h enum spellings stay
+/* Review round 4 (re-grounded round 5): the shortened watchdog/system
+ * ROM prints classify KNOWN with the canonical stored. They are the
+ * ESP32-S3 ROM's OWN labels at 0x3/0x7/0x8/0x10/0x12, extracted from
+ * the vendor ROM ELF (path+sha256+method in core/vdog_recovery.c); the
+ * published captures corroborate (Seeed XIAO ESP32-S3 capture #10588
+ * for 0x3, the ESP-Techpedia watchdog doc "Common LOG" for 0x7/0x8,
+ * esp-idf issue #14243 (board ESP32-S3-WROOM-1, IDF version v5.1.2)
+ * for 0x12, community issue #6980 (S3-DevKitC-1) for the 0x10 short
+ * form). The rtc.h enum spellings stay
  * accepted; the STORED name is always the entry's canonical primary and
  * the input alias bytes appear nowhere in the evidence struct. */
 static void test_boot_evidence_watchdog_rom_aliases(void)
@@ -512,20 +541,138 @@ static void test_boot_evidence_watchdog_rom_aliases(void)
     TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "SUPER_WDT_RESET"),
                              "input alias bytes must not be stored");
 
-    /* 0x10 keeps RTCWDT_RTC_RESET canonical; the short form from the
-     * S3-DevKitC-1 capture is accepted as alias. */
+    /* 0x10: the extracted ROM LABEL is the short RTCWDT_RTC_RST (canonical);
+     * the enum/published RTCWDT_RTC_RESET form stays accepted as alias. */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
         "rst:0x10 (RTCWDT_RTC_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_UINT8(16u, ev.rst_value);
-    TEST_ASSERT_EQUAL_STRING("RTCWDT_RTC_RESET", ev.cause_name);
-    TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "RTCWDT_RTC_RST"),
+    TEST_ASSERT_EQUAL_STRING("RTCWDT_RTC_RST", ev.cause_name);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x10 (RTCWDT_RTC_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("RTCWDT_RTC_RST", ev.cause_name);
+    TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "RTCWDT_RTC_RESET"),
                              "input alias bytes must not be stored");
     /* Case-insensitivity of the new aliases (documented rule). */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
         "rst:0x7 (tg0wdt_sys_rst),boot:0xc (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_STRING("TG0WDT_SYS_RST", ev.cause_name);
+}
+
+/* Review round 5: fixtures GENERATED from the extracted ROM label table
+ * (24 entries at vaddr 0x3ff18e10 of esp32s3_rev0_rom.elf, sha256
+ * c0ce0f33...7dd34cfd — provenance in core/vdog_recovery.c). The 19
+ * named entries below are the non-"N/A" rows exactly as extracted
+ * (index: ROM label, rtc.h enum). Per row: the complete captured-style
+ * line with the ROM label classifies KNOWN and stores the label; the
+ * rtc.h enum spelling classifies KNOWN storing the LABEL with the enum
+ * input bytes nowhere in the evidence struct; and pairing the value
+ * with another row's label (wrong name) is UNRECOGNISED with the whole
+ * cause_name buffer zero — verdict still from the banner. */
+static void test_boot_evidence_rom_table_generated(void)
+{
+    static const struct {
+        unsigned v;
+        const char *label; /* extracted ROM print (canonical) */
+        const char *e;     /* rtc.h enum spelling, NULL when equal */
+    } t[] = {
+        { 1u, "POWERON",             "POWERON_RESET" },
+        { 3u, "RTC_SW_SYS_RST",      "RTC_SW_SYS_RESET" },
+        { 5u, "DSLEEP",              "DEEPSLEEP_RESET" },
+        { 7u, "TG0WDT_SYS_RST",      "TG0WDT_SYS_RESET" },
+        { 8u, "TG1WDT_SYS_RST",      "TG1WDT_SYS_RESET" },
+        { 9u, "RTCWDT_SYS_RST",      "RTCWDT_SYS_RESET" },
+        {10u, "INTRUSION_RST",       "INTRUSION_RESET" },
+        {11u, "TG0WDT_CPU_RST",      "TG0WDT_CPU_RESET" },
+        {12u, "RTC_SW_CPU_RST",      "RTC_SW_CPU_RESET" },
+        {13u, "RTCWDT_CPU_RST",      "RTCWDT_CPU_RESET" },
+        {15u, "BROWNOUT_RST",        "RTCWDT_BROWN_OUT_RESET" },
+        {16u, "RTCWDT_RTC_RST",      "RTCWDT_RTC_RESET" },
+        {17u, "TG1WDT_CPU_RST",      "TG1WDT_CPU_RESET" },
+        {18u, "SUPER_WDT_RST",       "SUPER_WDT_RESET" },
+        {19u, "GLITCH_RTC_RST",      "GLITCH_RTC_RESET" },
+        {20u, "EFUSE_RST",           "EFUSE_RESET" },
+        {21u, "USB_UART_CHIP_RESET", NULL },
+        {22u, "USB_JTAG_CHIP_RESET", NULL },
+        {23u, "POWER_GLITCH_RESET",  NULL }
+    };
+    const size_t n = sizeof(t) / sizeof(t[0]);
+    vdog_boot_evidence_t ev;
+    char line[96];
+    size_t i;
+
+    TEST_ASSERT_EQUAL_UINT(19u, (unsigned)n); /* all named table rows   */
+
+    for (i = 0; i < n; ++i) {
+        /* (a) ROM label pair -> KNOWN, canonical stored. */
+        sprintf(line, "rst:0x%x (%s),boot:0x8 (SPI_FAST_FLASH_BOOT)",
+                t[i].v, t[i].label);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(VDOG_OK, vdog_recovery_classify_boot(
+            line, &ev), line);
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(VDOG_BOOT_MODE_NORMAL,
+                                        (uint8_t)ev.boot_mode, line);
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(VDOG_BOOT_CAUSE_KNOWN,
+                                        (uint8_t)ev.cause_state, line);
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)t[i].v, ev.rst_value, line);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(t[i].label, ev.cause_name, line);
+
+        /* (b) enum alias pair -> KNOWN, LABEL stored, enum bytes absent. */
+        if (t[i].e != NULL) {
+            sprintf(line, "rst:0x%x (%s),boot:0x8 (SPI_FAST_FLASH_BOOT)",
+                    t[i].v, t[i].e);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(VDOG_OK, vdog_recovery_classify_boot(
+                line, &ev), line);
+            TEST_ASSERT_EQUAL_UINT8_MESSAGE(VDOG_BOOT_CAUSE_KNOWN,
+                                            (uint8_t)ev.cause_state, line);
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(t[i].label, ev.cause_name, line);
+            TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, t[i].e),
+                                     "input alias bytes must not be stored");
+        }
+
+        /* (c) wrong-name pair (another row's label) -> UNRECOGNISED,
+         * whole buffer zero, banner verdict intact. */
+        sprintf(line, "rst:0x%x (%s),boot:0x8 (SPI_FAST_FLASH_BOOT)",
+                t[i].v, t[(i + 1u) % n].label);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(VDOG_OK, vdog_recovery_classify_boot(
+            line, &ev), line);
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(VDOG_BOOT_MODE_NORMAL,
+                                        (uint8_t)ev.boot_mode, line);
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                                        (uint8_t)ev.cause_state, line);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("", ev.cause_name, line);
+        TEST_ASSERT_EACH_EQUAL_CHAR_MESSAGE('\0', ev.cause_name,
+                                            sizeof(ev.cause_name), line);
+    }
+}
+
+/* Review round 5: MAC-shaped cause refusal on NEWLY admitted values —
+ * boot verdict stands, cause UNRECOGNISED, name empty, token bytes
+ * nowhere in the evidence (privacy unchanged by the coverage growth). */
+static void test_boot_evidence_cause_privacy_new_values(void)
+{
+    vdog_boot_evidence_t ev;
+
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x13 (001122334455),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(19u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("", ev.cause_name);
+    TEST_ASSERT_EACH_EQUAL_CHAR('\0', ev.cause_name, sizeof(ev.cause_name));
+    TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "001122334455"),
+                             "MAC-shaped cause must not appear in evidence");
+
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0xb (AABB_CC_DD_EE_FF),boot:0x8 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(11u, ev.rst_value);
+    TEST_ASSERT_NULL(ev_find_bytes(&ev, "AABB"));
+    TEST_ASSERT_EACH_EQUAL_CHAR('\0', ev.cause_name, sizeof(ev.cause_name));
 }
 
 /* Review R3-B(b): stale stack bytes. A cause line then a boot-only line
@@ -535,11 +682,12 @@ static void test_boot_evidence_no_stale_bytes(void)
 {
     vdog_boot_evidence_t ev;
 
-    /* 1. A KNOWN cause line populates the canonical name... */
+    /* 1. A KNOWN cause line populates the canonical name (0x9 input is
+     * the rtc.h enum alias; the stored canonical is the ROM label). */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
         "rst:0x9 (RTCWDT_SYS_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
-    TEST_ASSERT_EQUAL_STRING("RTCWDT_SYS_RESET", ev.cause_name);
+    TEST_ASSERT_EQUAL_STRING("RTCWDT_SYS_RST", ev.cause_name);
 
     /* 2. ...then a boot-only line over the SAME struct: the old bug left
      * nonzero bytes behind the NUL. Entire buffer must be zero. */
@@ -1023,6 +1171,8 @@ void app_main(void)
     RUN_TEST(test_boot_evidence_cause_states);
     RUN_TEST(test_boot_evidence_rom_printed_aliases);
     RUN_TEST(test_boot_evidence_watchdog_rom_aliases);
+    RUN_TEST(test_boot_evidence_rom_table_generated);
+    RUN_TEST(test_boot_evidence_cause_privacy_new_values);
     RUN_TEST(test_boot_evidence_pair_mismatch);
     RUN_TEST(test_boot_evidence_cause_privacy_mac_token);
     RUN_TEST(test_boot_evidence_no_stale_bytes);
@@ -1056,6 +1206,8 @@ int main(void)
     RUN_TEST(test_boot_evidence_cause_states);
     RUN_TEST(test_boot_evidence_rom_printed_aliases);
     RUN_TEST(test_boot_evidence_watchdog_rom_aliases);
+    RUN_TEST(test_boot_evidence_rom_table_generated);
+    RUN_TEST(test_boot_evidence_cause_privacy_new_values);
     RUN_TEST(test_boot_evidence_pair_mismatch);
     RUN_TEST(test_boot_evidence_cause_privacy_mac_token);
     RUN_TEST(test_boot_evidence_no_stale_bytes);

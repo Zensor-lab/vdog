@@ -152,99 +152,80 @@ static int banner_in_set(const char *banner, size_t len,
     return 0;
 }
 
-/* Reset-cause PAIR TABLE (review R3-A): KNOWN requires the parsed rst
- * VALUE and the printed NAME to agree on one entry. Per value we accept
- * the UNION of the two documented spellings — (a) the ROM RESET_REASON
- * enum name (installed framework's esp32s3 ROM reset-reason header, the
- * same enum the esptool boot-log reference points at for the
- * rst:0xNN (REASON) mapping), and (b) the ROM-printed alias the ROM
- * actually emits where published sources show it differs. Published S3
- * ROM prints (per-entry citations):
- *   0x1 POWERON       — installed framework examples/system/ota/
- *                       partitions_ota/README.md ("rst:0x1 (POWERON),
- *                       boot:0x8 (SPI_FAST_FLASH_BOOT)") and Espressif's
- *                       ESP32-S3 startup-log doc (ESP-Techpedia, "Chip
- *                       Power-On Startup Log"); alias POWERON_RESET —
- *                       esptool ESP32-S3 Boot Mode Selection example and
- *                       the ESP-IDF S3 get-started monitor capture
- *                       (same value). rtc.h: POWERON_RESET = 1.
- *   0xc RTC_SW_CPU_RST — partitions_ota README ("rst:0xc
- *                       (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)");
- *                       alias RTC_SW_CPU_RESET — rtc.h (RTC_SW_CPU_RESET
- *                       = 12).
- *   0x10 RTCWDT_RTC_RESET — installed framework's rtc_wdt.h docs comment
- *                       ("rst:0x10 (RTCWDT_RTC_RESET),boot:
- *                       0x13 (SPI_FAST_FLASH_BOOT)") and the ESP-Techpedia
- *                       watchdog doc ("Common LOG"); alias RTCWDT_RTC_RST —
- *                       community issue #6980 (ESP32-S3-DevKitC-1
- *                       monitor capture "rst:0x10 (RTCWDT_RTC_RST),boot:
- *                       0x8 (SPI_FAST_FLASH_BOOT)"); rtc.h value 16.
- *   0x5 DEEPSLEEP_RESET — ESP-IDF S3 get-started monitor captures; rtc.h
- *                       value 5.
- *   0x3 RTC_SW_SYS_RST — community issue #10588 (Seeed XIAO ESP32-S3,
- *                       the vdog board: "rst:0x3 (RTC_SW_SYS_RST),boot:
- *                       0x8 (SPI_FAST_FLASH_BOOT)"); alias RTC_SW_SYS_RESET
- *                       — rtc.h enum (RTC_SW_SYS_RESET = 3).
- *   0x7 TG0WDT_SYS_RST — Espressif ESP-Techpedia watchdog doc
- *                       (docs.espressif.com, "TimerGroup Watchdog / Common
- *                       LOG": "rst:0x7 (TG0WDT_SYS_RST),boot:0xc
- *                       (SPI_FAST_FLASH_BOOT)"); also the ESP-IDF S3 flash/
- *                       PSRAM config doc and S3 FAQ captures. Alias
- *                       TG0WDT_SYS_RESET — rtc.h enum (= 7), same docs'
- *                       _RESET form.
- *   0x8 TG1WDT_SYS_RST — same ESP-Techpedia watchdog doc "Common LOG"
- *                       ("rst:0x8 (TG1WDT_SYS_RST),boot:0xc
- *                       (SPI_FAST_FLASH_BOOT)"); alias TG1WDT_SYS_RESET —
- *                       rtc.h enum (= 8).
- *   0x12 SUPER_WDT_RST — capture per espressif/esp-idf issue #14243
- *                       (board ESP32-S3-WROOM-1, IDF version v5.1.2,
- *                       "ESP-ROM:esp32s3-20210327"): "rst:0x12
- *                       (SUPER_WDT_RST),boot:0x2a (SPI_FAST_FLASH_BOOT)";
- *                       alias SUPER_WDT_RESET — rtc.h enum (= 18).
- * WHERE THE ROM PRINT IS PUBLISHED, primary = that ROM print (consistent
- * with the 0x1/0xc precedent) and the rtc.h enum name stays the accepted
- * alias; every other row carries the rtc.h enum name/value alone.
- * AUDIT BOUNDARY (review round 4, "do not invent"): the _RST-shortening
- * pattern is NOT known to be uniform across the ROM table, so only the
- * shortenings with a citable published S3 capture/doc are admitted —
- * above. The analogous RTCWDT_SYS_RST (0x9) and RTCWDT_BROWN_OUT_RST
- * (0xf) had no published S3 capture in the sources consulted (TRM table
- * 7.1-1 prints no names; the ROM header has no OTHERS_RESET entry at
- * all), so those rows keep the enum spelling alone; a future round may
- * add them the moment a citable capture exists. Mismatched
- * pairs (name-known-but-wrong-value or value-known-but-wrong-name) are
- * UNRECOGNISED — never "closest match"; the boot verdict always comes
- * from the BANNER alone. The structured cause_name stores ONLY the
- * entry's canonical primary spelling (review R3-B): unrecognised tokens,
- * including MAC-shaped ones, are never copied into the evidence (they
- * live only in the caller's verbatim transcript, which Part B keeps
- * outside this API). */
+/* Reset-cause PAIR TABLE (ground truth per review round 5): KNOWN
+ * requires the parsed rst VALUE and the printed NAME to agree on one
+ * entry. The authoritative vocabulary is the ESP32-S3 ROM's OWN
+ * reset-reason label table: 24 entries (index = the rst:0xNN code) at
+ * vaddr 0x3ff18e10 in the vendor ROM ELF esp32s3_rev0_rom.elf, Espressif
+ * esp-rom-elfs release 20241011. Extracted from the INSTALLED copy
+ * (~/.platformio/packages/tool-esp-rom-elfs/esp32s3_rev0_rom.elf,
+ * sha256
+ * c0ce0f338d1de1bdc6efbef1591779a2a42c1ab7d759d3c6ae8ae63a7dd34cfd,
+ * verified byte-identical to the release asset): PT_LOAD vaddr 0x3ff18c00
+ * -> file offset 0x5be10, 24 little-endian 32-bit pointers read via
+ * python3/struct, strings dereferenced. ROM label table (index: print,
+ * extracted 2026-11-28): 1 POWERON, 3 RTC_SW_SYS_RST, 5 DSLEEP,
+ * 7 TG0WDT_SYS_RST, 8 TG1WDT_SYS_RST, 9 RTCWDT_SYS_RST, 10 INTRUSION_RST,
+ * 11 TG0WDT_CPU_RST, 12 RTC_SW_CPU_RST, 13 RTCWDT_CPU_RST, 15 BROWNOUT_RST,
+ * 16 RTCWDT_RTC_RST, 17 TG1WDT_CPU_RST, 18 SUPER_WDT_RST, 19 GLITCH_RTC_RST,
+ * 20 EFUSE_RST, 21 USB_UART_CHIP_RESET, 22 USB_JTAG_CHIP_RESET,
+ * 23 POWER_GLITCH_RESET; indices 0, 2, 4, 6 and 14 all point at one
+ * shared "N/A" string: the ROM prints NO label for those codes, so they
+ * get no row (any token at those values is UNRECOGNISED; no ROM code
+ * there ever pairs). Per row the primary = the extracted ROM label
+ * (canonical, stored on a KNOWN match) and the alias = the ROM
+ * RESET_REASON enum spelling (installed framework's esp32s3 ROM
+ * reset-reason header, the enum the esptool boot-log reference points
+ * at) when it differs — the UNION rule, case-insensitive. Published
+ * captures corroborate the labels (POWERON/RTC_SW_CPU_RST: the
+ * installed partitions_ota README; RTC_SW_SYS_RST: Seeed XIAO
+ * ESP32-S3 capture, community issue #10588; TG0WDT_SYS_RST/
+ * TG1WDT_SYS_RST: the Espressif ESP-Techpedia watchdog doc "Common
+ * LOG"; SUPER_WDT_RST: community issue #14243, ESP32-S3-WROOM-1, IDF
+ * v5.1.2; RTCWDT_RTC_RST: community issue #6980, S3-DevKitC-1).
+ * Round-5 RECONCILIATION: publication-hunt primaries that differ from
+ * the extracted label (rounds 3/4 accepted DEEPSLEEP_RESET at 5,
+ * RTCWDT_SYS_RESET at 9, INTRUSION_RESET at 10, TG0WDT_CPU_RESET at
+ * 11, RTCWDT_CPU_RESET at 13, RTCWDT_BROWN_OUT_RESET at 15,
+ * RTCWDT_RTC_RESET at 16, TG1WDT_CPU_RESET at 17, GLITCH_RTC_RESET at
+ * 19, EFUSE_RESET at 20 — all documented rtc.h spellings with
+ * published captures) now store the LABEL and keep those enum
+ * spellings as aliases: both remain accepted, only the label is ever
+ * stored. Earlier rounds' note that DSLEEP@5/EFUSE-family prints were
+ * "C-series only" was WRONG for the S3 ROM — superseded by this
+ * extraction. Mismatched pairs (name-known-but-wrong-value or
+ * value-known-but-wrong-name) are UNRECOGNISED — never "closest
+ * match"; the boot verdict always comes from the BANNER alone. The
+ * structured cause_name stores ONLY the entry's canonical primary
+ * (review R3-B): unrecognised tokens, including MAC-shaped ones, are
+ * never copied into the evidence (they live only in the caller's
+ * verbatim transcript, which Part B keeps outside this API). */
 typedef struct {
-    uint8_t value;       /* the ROM's rst:0xNN hex value (rtc.h)          */
+    uint8_t value;       /* the ROM's rst:0xNN code (ROM label table idx) */
     const char *primary; /* canonical name stored on a KNOWN match        */
     const char *alias;   /* accepted alternate spelling, or NULL          */
 } vdog_cause_entry_t;
 
 static const vdog_cause_entry_t g_vdog_causes[] = {
-    {1u, "POWERON", "POWERON_RESET"},            /* ROM print stored       */
-    {3u, "RTC_SW_SYS_RST", "RTC_SW_SYS_RESET"},   /* ROM print stored (#10588) */
-    {5u, "DEEPSLEEP_RESET", NULL},
-    {7u, "TG0WDT_SYS_RST", "TG0WDT_SYS_RESET"},   /* ROM print stored (techpedia) */
-    {8u, "TG1WDT_SYS_RST", "TG1WDT_SYS_RESET"},   /* ROM print stored (techpedia) */
-    {9u, "RTCWDT_SYS_RESET", NULL}, /* _RST form unverified: excluded    */
-    {10u, "INTRUSION_RESET", NULL},
-    {11u, "TG0WDT_CPU_RESET", NULL},
-    {12u, "RTC_SW_CPU_RST", "RTC_SW_CPU_RESET"},  /* ROM print stored       */
-    {13u, "RTCWDT_CPU_RESET", NULL},
-    {15u, "RTCWDT_BROWN_OUT_RESET", NULL}, /* _RST form unverified: excluded */
-    {16u, "RTCWDT_RTC_RESET", "RTCWDT_RTC_RST"},  /* ROM print stored (#6980 alias) */
-    {17u, "TG1WDT_CPU_RESET", NULL},
-    {18u, "SUPER_WDT_RST", "SUPER_WDT_RESET"},    /* ROM print stored (#14243) */
-    {19u, "GLITCH_RTC_RESET", NULL},
-    {20u, "EFUSE_RESET", NULL},
-    {21u, "USB_UART_CHIP_RESET", NULL},
+    {1u,  "POWERON",             "POWERON_RESET"},           /* ROM label / enum  */
+    {3u,  "RTC_SW_SYS_RST",      "RTC_SW_SYS_RESET"},
+    {5u,  "DSLEEP",              "DEEPSLEEP_RESET"},
+    {7u,  "TG0WDT_SYS_RST",      "TG0WDT_SYS_RESET"},
+    {8u,  "TG1WDT_SYS_RST",      "TG1WDT_SYS_RESET"},
+    {9u,  "RTCWDT_SYS_RST",      "RTCWDT_SYS_RESET"},
+    {10u, "INTRUSION_RST",       "INTRUSION_RESET"},
+    {11u, "TG0WDT_CPU_RST",      "TG0WDT_CPU_RESET"},
+    {12u, "RTC_SW_CPU_RST",      "RTC_SW_CPU_RESET"},
+    {13u, "RTCWDT_CPU_RST",      "RTCWDT_CPU_RESET"},
+    {15u, "BROWNOUT_RST",        "RTCWDT_BROWN_OUT_RESET"},
+    {16u, "RTCWDT_RTC_RST",      "RTCWDT_RTC_RESET"},
+    {17u, "TG1WDT_CPU_RST",      "TG1WDT_CPU_RESET"},
+    {18u, "SUPER_WDT_RST",       "SUPER_WDT_RESET"},
+    {19u, "GLITCH_RTC_RST",      "GLITCH_RTC_RESET"},
+    {20u, "EFUSE_RST",           "EFUSE_RESET"},
+    {21u, "USB_UART_CHIP_RESET", NULL},                       /* label == enum     */
     {22u, "USB_JTAG_CHIP_RESET", NULL},
-    {23u, "POWER_GLITCH_RESET", NULL}
+    {23u, "POWER_GLITCH_RESET",  NULL}
 };
 
 /* Plain case-insensitive whole-string equality (no hyphen folding: reset

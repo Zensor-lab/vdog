@@ -82,7 +82,7 @@ int vdog_recovery_cpp_smoke(void)
         }
         if (ev.boot_mode != VDOG_BOOT_MODE_NORMAL ||
             ev.cause_state != VDOG_BOOT_CAUSE_KNOWN || ev.rst_value != 9u ||
-            !same(ev.cause_name, "RTCWDT_SYS_RESET")) {
+            !same(ev.cause_name, "RTCWDT_SYS_RST")) {
             return 20;
         }
         if (vdog_recovery_classify_boot("boot:0x3 (SPI_FAST_FLASH_BOOT)",
