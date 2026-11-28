@@ -23,6 +23,7 @@
 #ifndef VDOG_RECOVERY_H
 #define VDOG_RECOVERY_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -159,6 +160,24 @@ int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag);
  * when the exact NUL-terminated line (including final NUL) does not fit;
  * buffer contents unspecified on error. */
 int vdog_identity_format(const vdog_identity_t *id, char *buf, size_t cap);
+
+/* ---- OTA self-test confirmation gate (Item #17, P1-4) --------------------
+ * The SDK rollback check-in ("mark app valid, cancel rollback", called by
+ * the boot path) declares THIS image healthy. It must never be a reflex: an
+ * image whose board identity or memory baseline is broken has not proven
+ * itself, and cancelling rollback there would strand the device on a
+ * known-bad image. The boot path collects the two validator verdicts and
+ * this pure rule decides (host-tested; the target-side call stays in
+ * main.c). */
+typedef struct {
+    bool board_ok;  /* vdog_board_validate()/vdog_board_report() == VDOG_OK */
+    bool memory_ok; /* vdog_mem_check_baseline()/format_detected() == VDOG_OK */
+} vdog_ota_confirm_gate_t;
+
+/* true ONLY when BOTH health verdicts passed — a healthy board never
+ * vouches for a failing memory baseline and vice versa (no majority rule,
+ * no partial credit). NULL → false (fail closed, never assume healthy). */
+bool vdog_ota_should_confirm(const vdog_ota_confirm_gate_t *gate);
 
 #ifdef __cplusplus
 }

@@ -165,22 +165,169 @@ def validate_media_fixture(
 
     ``root`` is the fixtures directory, ``entry`` is its ``fixtures.json`` record and
     ``schemas`` holds the parsed ``contracts/media-v1`` documents.
+
+    media-format.md §6 decides which record and which two file names a directory is
+    judged against. A directory with ``active.json`` and no completion manifest is an
+    interrupted segment: the cutover of section 5 step 4 renames payload and index
+    independently, so each of the two files may sit under its final *or* its ``.part``
+    name — but never under both, because then the clip is quarantined as ambiguous
+    rather than guessed at. A ``manifest.json`` beside ``active.json`` is not refused on
+    sight either: :func:`_validate_manifest_precedence` tests whether it is the valid
+    completion record it claims, a valid one takes precedence over the stale active
+    metadata, and an invalid one refuses the mixed directory.
+    """
+    entry_id = str(entry["id"])
+    fixture_dir = root / entry_id
+    if not fixture_dir.is_dir():
+        return [Violation(E.FIXTURE_FILE_MISSING, entry_id, "fixture directory absent")]
+    committed = [str(name) for name in entry.get("files", [])]
+    missing = [
+        Violation(E.FIXTURE_FILE_MISSING, f"{entry_id}/{name}")
+        for name in committed
+        if not (fixture_dir / name).is_file()
+    ]
+    if missing:
+        return missing
+
+    active_state = entry["kind"] == "active"
+    if active_state and MANIFEST_NAME in committed:
+        return _validate_manifest_precedence(fixture_dir, entry, committed, schemas)
+    if active_state:
+        payload_name, index_name, quarantine = _resolve_part_names(entry_id, committed)
+        if quarantine:
+            # Ambiguity is terminal: section 6 quarantines rather than selects, so
+            # nothing below may pick one name and keep judging the bytes.
+            return quarantine
+        record_name = ACTIVE_NAME
+    else:
+        payload_name, index_name = CLIP_FILE_NAMES
+        record_name = MANIFEST_NAME
+    return _validate_segment(
+        fixture_dir,
+        entry,
+        committed,
+        schemas,
+        payload_name=payload_name,
+        index_name=index_name,
+        record_name=record_name,
+        active_state=active_state,
+    )
+
+
+def _resolve_part_names(
+    entry_id: str, committed: Sequence[str]
+) -> tuple[str, str, list[Violation]]:
+    """The name each segment file is judged under in an interrupted directory (§6).
+
+    Either name of one artifact is a legal in-progress state — the cutover renames the
+    payload and the index as two separate operations, so power can fail between them —
+    but one artifact under both names at once tells the recovery no truth about which
+    file its bytes are, and one artifact under neither name is no file at all. Both are
+    terminal findings, returned as the third element so the caller quarantines the
+    clip instead of selecting a name and judging whichever pair it guessed at.
+    """
+    resolved: list[str] = []
+    quarantine: list[Violation] = []
+    for base in CLIP_FILE_NAMES:
+        part = base + PART_SUFFIX
+        if base in committed and part in committed:
+            quarantine.append(
+                Violation(
+                    E.CLIP_FILE_UNEXPECTED,
+                    f"{entry_id}/{part}",
+                    f"{base} is present under its final name and its {part} name alike; "
+                    f"section 6 quarantines the clip as ambiguous rather than selecting one",
+                )
+            )
+            resolved.append(part)
+        elif part in committed:
+            resolved.append(part)
+        elif base in committed:
+            resolved.append(base)
+        else:
+            quarantine.append(
+                Violation(
+                    E.FIXTURE_FILE_MISSING,
+                    f"{entry_id}/{part}",
+                    f"neither {base} nor {part} is part of the committed file set",
+                )
+            )
+            resolved.append(part)
+    return resolved[0], resolved[1], quarantine
+
+
+def _validate_manifest_precedence(
+    fixture_dir: Path,
+    entry: Mapping[str, Any],
+    committed: Sequence[str],
+    schemas: Mapping[str, Mapping[str, Any]],
+) -> list[Violation]:
+    """media-format.md §6: a *valid* completed manifest outranks stale active metadata.
+
+    Refusing ``manifest.json`` the moment it appears beside ``active.json`` rejects the
+    exact directory section 5 step 4 leaves behind when the removal of the active
+    record never ran: final file names, a published manifest, and the stale active
+    record beside them. So the probe judges the directory as the finalized clip the
+    manifest states — its final file names, its hashes, the whole index walk — and on
+    success the stale ``active.json`` and any stale ``.part`` copies travel unjudged,
+    because verification is exactly what licenses their removal. On any defect the
+    manifest is not the close it claims, and the mixed directory is refused with
+    ``ACTIVE_WITH_MANIFEST`` beside every finding that kept it from verifying.
+    """
+    entry_id = str(entry["id"])
+    absent = [name for name in CLIP_FILE_NAMES if name not in committed]
+    if absent:
+        return [
+            Violation(
+                E.ACTIVE_WITH_MANIFEST,
+                f"{entry_id}/{MANIFEST_NAME}",
+                f"names {', '.join(absent)} under its final name, which the directory does "
+                "not hold; an interrupted segment publishes active.json and no completion "
+                "manifest that cannot be verified",
+            )
+        ]
+    verdict = _validate_segment(
+        fixture_dir,
+        entry,
+        committed,
+        schemas,
+        payload_name=CLIP_FILE_NAMES[0],
+        index_name=CLIP_FILE_NAMES[1],
+        record_name=MANIFEST_NAME,
+        active_state=False,
+    )
+    if not verdict:
+        return []
+    return [
+        Violation(
+            E.ACTIVE_WITH_MANIFEST,
+            f"{entry_id}/{MANIFEST_NAME}",
+            "does not verify against this directory, so it cannot take precedence over the "
+            "stale active metadata beside it",
+        )
+    ] + verdict
+
+
+def _validate_segment(
+    fixture_dir: Path,
+    entry: Mapping[str, Any],
+    committed: list[str],
+    schemas: Mapping[str, Mapping[str, Any]],
+    *,
+    payload_name: str,
+    index_name: str,
+    record_name: str,
+    active_state: bool,
+) -> list[Violation]:
+    """Judge the one record and the two file names this directory resolved to.
+
+    The body is the maximal-validated-prefix walk of section 6 plus the record rules of
+    sections 2, 4 and 5. Which findings an ``ACTIVE_*`` code names and which a
+    ``MANIFEST_*`` code names is decided by ``active_state`` alone, which the caller
+    derived from the directory's shape — the two names resolved and the records present
+    — rather than from the index's ``kind`` on its own.
     """
     violations: list[Violation] = []
-    fixture_dir = root / str(entry["id"])
-    committed = [str(name) for name in entry.get("files", [])]
-    active_state = entry["kind"] == "active"
-    payload_name = CLIP_FILE_NAMES[0] + (PART_SUFFIX if active_state else "")
-    index_name = CLIP_FILE_NAMES[1] + (PART_SUFFIX if active_state else "")
-    record_name = ACTIVE_NAME if active_state else MANIFEST_NAME
-
-    if not fixture_dir.is_dir():
-        return [Violation(E.FIXTURE_FILE_MISSING, str(entry["id"]), "fixture directory absent")]
-    for name in committed:
-        if not (fixture_dir / name).is_file():
-            violations.append(Violation(E.FIXTURE_FILE_MISSING, f"{entry['id']}/{name}"))
-    if violations:
-        return violations
     for path in sorted(fixture_dir.iterdir()):
         if path.is_file() and path.name not in committed:
             violations.append(
@@ -198,14 +345,6 @@ def validate_media_fixture(
                 E.ACTIVE_JSON_INVALID if active_state else E.MANIFEST_MISSING,
                 f"{entry['id']}/{record_name}",
                 "the required record is not part of the committed file set",
-            )
-        ]
-    if active_state and MANIFEST_NAME in committed:
-        return [
-            Violation(
-                E.ACTIVE_WITH_MANIFEST,
-                f"{entry['id']}/{MANIFEST_NAME}",
-                "an interrupted segment publishes active.json and no completion manifest",
             )
         ]
 

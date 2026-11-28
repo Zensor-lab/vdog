@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "unity.h"
+#include "vdog_board.h"
 #include "vdog_core.h"
 #include "vdog_mem.h"
 #include "vdog_recovery.h"
@@ -514,6 +515,69 @@ static void test_cpp_smoke_linkage(void)
     TEST_ASSERT_EQUAL_INT(0, vdog_recovery_cpp_smoke());
 }
 
+/* ---- OTA self-test confirmation gate (Item #17, P1-4) --------------------
+ * The rollback check-in is allowed ONLY when BOTH collected health verdicts
+ * passed; every other combination — and a NULL gate — fails closed. */
+static vdog_ota_confirm_gate_t ota_gate(bool board_ok, bool memory_ok)
+{
+    vdog_ota_confirm_gate_t gate;
+    gate.board_ok = board_ok;
+    gate.memory_ok = memory_ok;
+    return gate;
+}
+
+static void test_ota_gate_requires_both_healthy(void)
+{
+    vdog_ota_confirm_gate_t ok = ota_gate(true, true);
+    TEST_ASSERT_TRUE_MESSAGE(vdog_ota_should_confirm(&ok),
+                             "board+memory healthy must allow check-in");
+}
+
+static void test_ota_gate_rejects_any_unhealthy_input(void)
+{
+    vdog_ota_confirm_gate_t board_bad = ota_gate(false, true);
+    vdog_ota_confirm_gate_t mem_bad = ota_gate(true, false);
+    vdog_ota_confirm_gate_t both_bad = ota_gate(false, false);
+    TEST_ASSERT_FALSE_MESSAGE(vdog_ota_should_confirm(&board_bad),
+                              "healthy board cannot vouch for bad memory");
+    TEST_ASSERT_FALSE_MESSAGE(vdog_ota_should_confirm(&mem_bad),
+                              "healthy memory cannot vouch for bad board");
+    TEST_ASSERT_FALSE_MESSAGE(vdog_ota_should_confirm(&both_bad),
+                              "both broken must never confirm");
+    TEST_ASSERT_FALSE_MESSAGE(vdog_ota_should_confirm(NULL),
+                              "NULL gate fails closed");
+}
+
+static void test_ota_gate_wires_real_validator_verdicts(void)
+{
+    vdog_board_profile_t board = vdog_board_expected_profile_proto();
+    vdog_mem_detected_t mem;
+    vdog_ota_confirm_gate_t gate;
+
+    fill_baseline_mem(&mem);
+    gate.board_ok = (vdog_board_validate(&board) == VDOG_OK);
+    gate.memory_ok = (vdog_mem_check_baseline(&mem) == VDOG_OK);
+    TEST_ASSERT_TRUE_MESSAGE(vdog_ota_should_confirm(&gate),
+                             "baseline profile+memory must allow check-in");
+
+    /* A field that was never configured: board verdict turns unhealthy and
+     * the gate closes even though memory is still healthy. */
+    vdog_board_profile_t bad_board = vdog_board_expected_profile_proto();
+    bad_board.field_set &= ~(uint32_t)VDOG_BOARD_FIELD_PSRAM_SIZE;
+    gate.board_ok = (vdog_board_validate(&bad_board) == VDOG_OK);
+    TEST_ASSERT_FALSE_MESSAGE(vdog_ota_should_confirm(&gate),
+                              "board rejection must block the check-in");
+
+    /* A flash capacity below baseline: memory verdict turns unhealthy while
+     * the board stays healthy — same closure in the other direction. */
+    gate.board_ok = (vdog_board_validate(&board) == VDOG_OK);
+    fill_baseline_mem(&mem);
+    mem.flash_size_bytes = 4u * 1024u * 1024u;
+    gate.memory_ok = (vdog_mem_check_baseline(&mem) == VDOG_OK);
+    TEST_ASSERT_FALSE_MESSAGE(vdog_ota_should_confirm(&gate),
+                              "memory rejection must block the check-in");
+}
+
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 /* Embedded build-only contract (compile/link qualification, NEVER run in
  * package 1.2). */
@@ -538,6 +602,9 @@ void app_main(void)
     RUN_TEST(test_identity_rejects_unchecked_mem);
     RUN_TEST(test_identity_buffers);
     RUN_TEST(test_cpp_smoke_linkage);
+    RUN_TEST(test_ota_gate_requires_both_healthy);
+    RUN_TEST(test_ota_gate_rejects_any_unhealthy_input);
+    RUN_TEST(test_ota_gate_wires_real_validator_verdicts);
     UNITY_END();
 }
 #else
@@ -562,6 +629,9 @@ int main(void)
     RUN_TEST(test_identity_rejects_unchecked_mem);
     RUN_TEST(test_identity_buffers);
     RUN_TEST(test_cpp_smoke_linkage);
+    RUN_TEST(test_ota_gate_requires_both_healthy);
+    RUN_TEST(test_ota_gate_rejects_any_unhealthy_input);
+    RUN_TEST(test_ota_gate_wires_real_validator_verdicts);
     return UNITY_END();
 }
 #endif

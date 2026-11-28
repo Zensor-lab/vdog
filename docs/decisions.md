@@ -1,6 +1,6 @@
 # Decision and open-question register
 
-Status as of 2026-11-20. **Confirmed** means visible user direction; **baseline**
+Status as of 2026-11-28. **Confirmed** means visible user direction; **baseline**
 means a proposed engineering choice; **gated** requires evidence before dependent
 implementation. Record new evidence and rationale here without copying chat logs.
 
@@ -29,8 +29,9 @@ implementation. Record new evidence and rationale here without copying chat logs
 | D-21 | Confirmed target, gated fit | Owner's dog below 8kg, chest harness mount | Exact weight/chest/harness measurements before fit signoff; larger dogs require separate geometry/angle checks |
 | D-22 | Confirmed scope | Dry-weather prototype; weather protection later | Basic electronics/pack protective housing still required before wear; no waterproof/IP claim |
 | D-23 | Proposed engineering budget | Scale local protected clips to ≤2,000,000,000 bytes for 32GB | Inside 85% pool, never additional free storage; smaller safe limit allowed and reported; backend quota independent |
-| D-24 | Confirmed delivery requirement; implementation pending | Every PR builds firmware with its latest head hash in the name; successful main builds create a Git tag and complete installation Release | Owner direction 2026-11-20; [Stage 0.9](plans/0.9-firmware-ci-release.md), PR-20/PR-21 |
+| D-24 | Confirmed delivery requirement; closed — live on `main` (hosted CI verified 2026-11-28) | Every PR builds firmware with its latest head hash in the name; successful main builds create a Git tag and complete installation Release | Owner direction 2026-11-20; implemented and hosted-verified via [Stage 0.9](plans/0.9-firmware-ci-release.md) §8b — closure PR #8 `5d314c8`, installer & release hardening PR #9 `0fd2433`; PR-20/PR-21 |
 | D-25 | Baseline naming convention | PR build ID `pr-<number>-<sha12>`; immutable main tag `firmware-main-<sha12>` | Full source SHA retained in manifest; current bootstrap Releases are prototype/pre-release; no automatic SemVer bump or tag rewrite |
+| D-26 | Accepted | Defer 0.9.15 / CI-T15 live hardware-install verification to the owner-gated device session | Recorded 2026-11-28: the hosted CI-T01–T14 gate closed on `main` without any device; CI-T15 stays `UNVERIFIED (deferred)` until an identified authorized unit/port and separately authorized hardware exist — see [Stage 0.9](plans/0.9-firmware-ci-release.md) §8b and [validation](validation.md) §5 |
 
 The [current hardware review](hardware-decision-review.md) and
 [PlatformIO check](platformio-support.md) record the 2026-11-16 update. Earlier

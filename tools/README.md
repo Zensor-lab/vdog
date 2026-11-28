@@ -69,11 +69,17 @@ VDOG_SKIP_REAL_BUILD=1 uv run --python 3.12 \
 ```
 
 Local tool availability, recorded honestly: `pio`, `uv`, `pytest`, `unzip`,
-`shasum` and `git` are installed. `actionlint`/`yamllint` are not, so workflow
-coverage is the structural parse and invariant assertions in
+`shasum` and `git` are installed, and an authenticated `gh` is available for
+read-only verification of the hosted runs. `actionlint`/`yamllint` are not,
+so workflow coverage is the structural parse and invariant assertions in
 `tests/test_workflows.py`; `pwsh` is not, so `install.ps1` has structural
-coverage only and was never executed; no GitHub credential or device is
-available, so no workflow, tag or Release has been run from this checkout.
+coverage only and was never executed, and a clean-host Linux `install.sh`
+run was never performed — both stay UNVERIFIED. The workflows themselves ran
+on GitHub Actions — merged `main` pushes and PRs #3–#7 triggered them — and
+their runs, peeled tags, artifacts and published pre-releases were verified
+live against real GitHub data on 2026-11-28 (`docs/validation.md` §5,
+`docs/plans/0.9-firmware-ci-release.md` §8b); no device is available, so the
+CI-T15 device install stays UNVERIFIED (deferred by decision D-26).
 
 ## End-user flow (what the ZIP provides)
 
@@ -171,8 +177,10 @@ plan without touching GitHub.
 has a `publish` job and it is the only job with `contents: write`. Both are
 deliberately unfiltered by path, build the immutable event SHA, pin every
 third-party action to a full commit SHA, and never persist checkout
-credentials. `tests/test_workflows.py` asserts these invariants; the hosted run
-is still the authoritative evidence.
+credentials. `tests/test_workflows.py` asserts these invariants; the hosted
+runs remain the authoritative evidence and were executed and verified live
+against real GitHub data on 2026-11-28 (`docs/validation.md` §5,
+`docs/plans/0.9-firmware-ci-release.md` §8b).
 
 `.github/workflows/contracts-pr.yml` and `contracts-main.yml` (Stage 0.6) carry
 the stable check name `contracts-validation` and are the only place the contract
@@ -185,14 +193,17 @@ check a commit can leave permanently "Expected" blocks the merge it exists to
 certify — the same documented CI-01 reasoning the firmware workflows give for
 being unfiltered, and cheap to honour here because the suite is offline, needs no
 device, and finishes in seconds. `contracts/tests/test_contracts_workflows.py`
-asserts these invariants; the hosted run has not been performed from this
-checkout.
+asserts these invariants. Nothing executes from this checkout: the hosted runs
+happen on GitHub Actions, and as of 2026-11-28 `contracts-validation` is one
+of the four checks required by the active `main` branch protection; the Stage
+0.9 firmware workflows' hosted runs were verified live against real GitHub
+data (`docs/validation.md` §5).
 
 ## Contract validation (Stage 0.6)
 
 `tools/contracts/` is the host-side validator for the published wire contract in
 [`contracts/`](../contracts/README.md): the two OpenAPI 3.1 documents, the three
-media JSON Schemas, and the 441 committed golden fixtures. It shares no code with
+media JSON Schemas, and the 447 committed golden fixtures. It shares no code with
 the release tooling above and needs no firmware toolchain.
 
 | Path | Role |

@@ -381,7 +381,7 @@ def test_a_ref_sibling_bound_fails_the_corpus_run(tmp_path: Path) -> None:
     The review's mutation — ``maxLength: 1`` beside the ``setup_secret`` ``$ref``
     in ``PairRequest`` — is enforced by a standard Draft 2020-12 validator. The
     published-schema path must agree: on a temporary copy the committed 43-char
-    secrets stop passing, the untouched copy stays 441 fixtures and PASS, and
+    secrets stop passing, the untouched copy stays 447 fixtures and PASS, and
     the refusal is named where a maintainer reads it.
     """
     import shutil
@@ -391,7 +391,7 @@ def test_a_ref_sibling_bound_fails_the_corpus_run(tmp_path: Path) -> None:
     clean = tmp_path / "clean"
     shutil.copytree(REPO_ROOT / "contracts", clean / "contracts")
     baseline = validate_contracts(clean)
-    assert baseline.passed and baseline.fixture_total == 441, (
+    assert baseline.passed and baseline.fixture_total == 447, (
         baseline.fixture_total,
         [violation.render() for violation in baseline.violations],
     )
@@ -466,7 +466,7 @@ def test_the_index_reader_keeps_incomplete_records_out_of_the_validation_loop(
     keeps the record out of ``entries``; the shapes the loop's own branches
     already survive (present-but-unknown ``kind``, present-but-bogus
     ``expected``, absent ``files``) stay record-and-keep, and the intact
-    committed index still queues all 441.
+    committed index still queues all 447.
     """
     from tools.contracts.validate import _load_index
 
@@ -518,4 +518,4 @@ def test_the_index_reader_keeps_incomplete_records_out_of_the_validation_loop(
     entries, incomplete_records, found = _load_index(FIXTURES)
     assert not found, [violation.render() for violation in found]
     assert not incomplete_records
-    assert len(entries) == 441
+    assert len(entries) == 447

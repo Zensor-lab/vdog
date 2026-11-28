@@ -9,19 +9,30 @@ The local `.agent/PROJECT.md` points here. Operating rules remain in
 - vdog: affordable open-source dog camera, local recording, owner-controlled
   footage, optional self-hosted processing; for owners, builders and self-hosters.
 - Current state: minimal pinned firmware and portable host tests exist with
-  package 0.2 BUILD/HOST evidence. Camera/SD/network runtime, app/backend and
-  hardware qualification remain pending.
-- Stage 0.9 is implemented on `opencode/0.9-ci-release`: PR/main firmware
+  package 0.2 BUILD/HOST evidence; the 0.6 contracts are merged (`7839610`,
+  PR #3), the 1.1 firmware bootstrap is merged (`957b415`, PR #5) and 1.2
+  Part A (memory/recovery/straps core + board adapters, BUILD/HOST) is
+  merged (`afd6c53`, PR #6 from `opencode/1.2-board-bringup-mine`).
+  Camera/SD/network runtime, app/backend and hardware qualification remain
+  pending: live DEVICE verification is outstanding, Jada's E07 GPIO21
+  sign-off is pending and the microphone stays uninitialized (no audio in
+  scope).
+- Stage 0.9 is **closed on `main`** (closure `5d314c8`, PR #8; installer &
+  release hardening `0fd2433`, PR #9, current `main` HEAD): PR/main firmware
   workflows with the stable checks `firmware-build`, `firmware-host-tests` and
-  `firmware-package-tests`, an isolated `publish` job that creates the
-  immutable `firmware-main-<sha12>` tag and a prototype pre-release, the
+  `firmware-package-tests`, an isolated `publish` job that created the
+  immutable `firmware-main-<sha12>` tags and prototype pre-releases, the
   `tools/firmware/publish.py` state machine, the isolated-environment
   `install.sh`/`install.ps1` setup wrappers and the prebuilt
-  [installation guide](release-installation.md). See the
-  [release plan](plans/0.9-firmware-ci-release.md) and
-  [validation section 5](validation.md) for per-check evidence. No hosted
-  Actions run, tag or Release has executed yet, and device installation
-  (CI-T15) stays deferred and unverified.
+  [installation guide](release-installation.md). The hosted Actions runs,
+  peeled tags and published pre-release assets were verified live against
+  real GitHub data on 2026-11-28; see the
+  [release plan](plans/0.9-firmware-ci-release.md) §8b and
+  [validation section 5](validation.md) for per-check evidence. Honest
+  remaining limits: Windows `install.ps1` execution (no `pwsh` host) and a
+  clean-host Linux `install.sh` run stay UNVERIFIED, and the CI-T15
+  hardware-install matrix (device installation) stays deferred and
+  unverified (D-26).
 - User priorities (2026-11-16): Seeed Studio XIAO ESP32S3 Sense and 32GB FAT32
   first. The acquired camera/revision is identified before configuration; current
   shipments may be fixed-focus OV5640 or OV3660, with OV2640 historical.

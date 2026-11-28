@@ -1357,13 +1357,19 @@ class EsptoolSessionBackend:
                     "flash_crypt_cnt); refusing to treat unknown protection state "
                     "as unprotected"
                 )
-            try:
-                flags = int(security["flags"])
-                crypt_cnt = int(security["flash_crypt_cnt"])
-            except (TypeError, ValueError) as exc:
-                raise EsptoolFailure(
-                    f"security report malformed ({exc}); refusing to continue"
-                ) from exc
+            # Strict integer fields (PR B P2): bool is an int subclass and
+            # int(0.5) silently truncates — a float or bool in the security
+            # report is a malformed report, not a value to coerce.
+            for field in ("flags", "flash_crypt_cnt"):
+                value = security[field]
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise EsptoolFailure(
+                        "security report malformed (%s must be an integer, "
+                        "got %s %r); refusing to continue"
+                        % (field, type(value).__name__, value)
+                    )
+            flags = security["flags"]
+            crypt_cnt = security["flash_crypt_cnt"]
             if not 0 <= flags <= 0xFFFFFFFF or not 0 <= crypt_cnt <= 0xFF:
                 raise EsptoolFailure("security report out of range; refusing to continue")
         except Exception as exc:  # noqa: BLE001 - translated, never leaked

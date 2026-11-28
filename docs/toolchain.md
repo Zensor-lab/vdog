@@ -622,20 +622,30 @@ tools/firmware harness; a module-level SCons import would raise outside a
 build). Rationale comments sit at the import sites in both scripts; the
 CLI exit-code contract above re-verified unchanged (0/1/2).
 
-### F7(b) (1.1 carry-over) — RE-DEFERRED at implementation time
+### F7(b) (1.1 carry-over) — LANDED on `main` (2026-11-28, Item #17 PR B)
 
-The plan's own guard applies: the four `opencode/0.9-*` branches own
-`tools/firmware/**` and three of them carry unmerged commits touching
-`tools/firmware/tests` (0.9-ci-release 5, 0.9-release-tools 2,
-0.9-review-fixes 7, checked 2026-11-28 via `git log main..<branch> --
-tools/firmware/tests`). Re-homing the two out-of-tree scenario drivers
-(SCons-mode/poisoned-file fixtures, compile-guard probe) there would collide
-with that pending work, so F7(b) is consciously re-deferred to the 0.9
-merge window; the drivers remain in the lead's tmp evidence kit for the 0.9
-owner. No file under `tools/firmware/**` was created or edited by this
-package; the existing suite passes unchanged (422 passed, `uv run --python
-3.12 --with-requirements tools/firmware/requirements-dev.lock pytest
-tools/firmware/tests`).
+The two out-of-tree scenario drivers are re-homed as
+`tools/firmware/tests/test_firmware_gates.py` (123 cases): 31 for
+`check_board_config.py` — acceptance of the real repo baseline via the
+CI invocation, one poisoned variant per layer of the four-layer agreement
+(source declarations, resolved config, component definitions, effective
+partition table), the documented over-rejection controls, unreadable/
+missing/malformed inputs, the `0 = agree / 1 = gate failure / 2 = usage`
+exit contract, and the SCons-mode path (environment guard, `__test`/
+`nobuild`/`clean` skip targets, post-action registration, `*_test`
+build-dir tolerance) against a stub SCons `env`; 92 for
+`check_core_purity.py` — every banned token class injected into a clean
+fixture core with its file:line reason, the documented look-alike
+controls (basename-anchored FatFs headers, `esp32s3` literal, generic
+typedefs), the PR-R15 `splitlines()` U+2028 detection superset, prune/
+extension/required-source scan modes and the usage exit. The CI
+`firmware-package-tests` job (uv-locked) now guards both gate scripts, so
+a future edit can never silently widen them. The earlier deferral reason
+— unmerged `opencode/0.9-*` branches owning `tools/firmware/tests` — was
+mooted by the Stage 0.9 closure (PR #8 `5d314c8`); the harness lives on
+`main` — `uv run --python 3.12 --with-requirements
+tools/firmware/requirements-dev.lock pytest tools/firmware/tests` now runs
+the full tool suite including these gate-script cases.
 
 ### Macro-rename residual (A7 probe, recorded)
 

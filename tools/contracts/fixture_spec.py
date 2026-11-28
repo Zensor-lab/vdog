@@ -61,6 +61,7 @@ from .errors import (
     CHUNK_HASH_MISMATCH,
     CHUNK_SIZE_INVALID,
     CLIP_BOOT_PREFIX_MISMATCH,
+    CLIP_FILE_UNEXPECTED,
     CLOCK_NULLITY_MISMATCH,
     CLOCK_SOURCE_UNKNOWN_VALUE,
     CLOCK_TIMESTAMP_INVALID,
@@ -560,6 +561,47 @@ def _valid_media() -> tuple[MediaFixture, ...]:
             invariant=(
                 "AC-02 active vector: active.json published before the first payload append with "
                 "the manifest field rules, payload and index carrying .part names and no manifest"
+            ),
+        ),
+        MediaFixture(
+            id="media/valid/active-payload-final-index-part",
+            kind="active",
+            category="active-record",
+            plan=_plan("active-payload-final-index-part", TWO_FRAME_TIMES, capture_order=56),
+            checksums=False,
+            corruption="active_payload_renamed_final",
+            invariant=(
+                "AC-02/§6 interrupted finalization, first rename order: the cutover renames payload "
+                "and index independently, so video.mjpg already carries its final name while "
+                "frames.jsonl is still .part — both names legal, neither doubled, active.json still "
+                "naming the segment"
+            ),
+        ),
+        MediaFixture(
+            id="media/valid/active-index-final-payload-part",
+            kind="active",
+            category="active-record",
+            plan=_plan("active-index-final-payload-part", TWO_FRAME_TIMES, capture_order=57),
+            checksums=False,
+            corruption="active_index_renamed_final",
+            invariant=(
+                "AC-02/§6 interrupted finalization, second rename order: frames.jsonl already "
+                "carries its final name while video.mjpg is still .part — the other half of the "
+                "independent-rename window section 5 step 4 leaves open"
+            ),
+        ),
+        MediaFixture(
+            id="media/valid/active-manifest-precedence",
+            kind="active",
+            category="recovery",
+            plan=_plan("active-manifest-precedence", TWO_FRAME_TIMES, capture_order=58),
+            checksums=False,
+            corruption="active_manifest_precedence",
+            invariant=(
+                "AC-02/§6 manifest precedence: both files under their final names and a completed "
+                "manifest that verifies against them, with the never-removed active.json and the "
+                "stale .part copies still beside them — the directory section 5 step 4 leaves when "
+                "the removal crashed, which recovery certifies and then cleans, never refuses"
             ),
         ),
     )
@@ -1189,9 +1231,51 @@ _NEGATIVE_MEDIA: Final[tuple[_Negative, ...]] = (
         corruption="active_with_manifest",
         codes=(ACTIVE_WITH_MANIFEST,),
         invariant=(
-            "AC-02 active record: an interrupted segment publishes active.json only, because a "
-            "completion manifest here would claim a close that never happened"
+            "AC-03 §6 manifest precedence refused: a completion manifest sits beside active.json "
+            "while both segment files are still .part, so the manifest names final file names the "
+            "directory does not hold — the close it claims cannot verify, and an interrupted "
+            "segment may not publish one"
         ),
+    ),
+    _Negative(
+        id="media/invalid/active-with-invalid-manifest",
+        kind="active",
+        category="active-record",
+        corruption="active_with_invalid_manifest",
+        codes=(ACTIVE_WITH_MANIFEST, MANIFEST_HASH_MISMATCH),
+        invariant=(
+            "AC-03 §6 manifest precedence refused: the final names and manifest.json are all "
+            "published, but the manifest's declared index digest is not the hash of those bytes, "
+            "so it is not the valid completed record that would outrank the stale active "
+            "metadata — the mixed directory is refused, not quietly finalized"
+        ),
+        times=TWO_FRAME_TIMES,
+    ),
+    _Negative(
+        id="media/invalid/active-ambiguous-payload",
+        kind="active",
+        category="active-record",
+        corruption="active_ambiguous_payload",
+        codes=(CLIP_FILE_UNEXPECTED,),
+        invariant=(
+            "AC-03 §6 double-name ambiguity: video.mjpg and video.mjpg.part are present at once "
+            "with no valid manifest to arbitrate, so recovery cannot tell which bytes are the "
+            "payload — the clip is quarantined as ambiguous rather than one name being selected"
+        ),
+        times=TWO_FRAME_TIMES,
+    ),
+    _Negative(
+        id="media/invalid/active-ambiguous-index",
+        kind="active",
+        category="active-record",
+        corruption="active_ambiguous_index",
+        codes=(CLIP_FILE_UNEXPECTED,),
+        invariant=(
+            "AC-03 §6 double-name ambiguity on the other artifact: frames.jsonl and "
+            "frames.jsonl.part are present at once beside active.json, proving the quarantine "
+            "judges each file independently, payload renamed or not"
+        ),
+        times=TWO_FRAME_TIMES,
     ),
     _Negative(
         id="media/invalid/clock-uncertainty-above-uint53",
