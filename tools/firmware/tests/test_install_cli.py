@@ -884,6 +884,30 @@ def test_backend_requires_complete_security_report() -> None:
         backend.connect("/dev/ttyX", expect={})
 
 
+@pytest.mark.parametrize(
+    "security",
+    [
+        {"flags": 0.5, "flash_crypt_cnt": 0},      # int(0.5) == 0: coercion
+        {"flags": 0, "flash_crypt_cnt": 0.5},      #  would silently read 0
+        {"flags": True, "flash_crypt_cnt": 0},     # bool is an int subclass
+        {"flags": 0, "flash_crypt_cnt": False},    # True/False are not reports
+        {"flags": "0", "flash_crypt_cnt": 0},      # digits are not integers
+    ],
+    ids=["flags-float", "counter-float", "flags-bool", "counter-bool",
+         "flags-string"],
+)
+def test_backend_rejects_non_integer_security_fields(security) -> None:
+    """PR B P2: strict field types — a float/bool/string security report is
+    malformed and refused, never coerced (0.5 must not read as 0, True must
+    not read as 1, "0" must not read as unprotected)."""
+    esp = support.FakeEspConnection(security=security)
+    backend = inst.EsptoolSessionBackend(
+        esptool_module=support.FakeEsptoolModule(esp=esp))
+    with pytest.raises(inst.EsptoolFailure, match="security report malformed"):
+        backend.connect("/dev/ttyX", expect={})
+    assert esp.closed >= 1
+
+
 def test_install_refuses_incomplete_security_with_zero_writes(installed_package) -> None:
     """Through the public CLI: unknown protection state is never treated as
     unprotected — zero writes, zero resets."""
