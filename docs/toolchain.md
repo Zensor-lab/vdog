@@ -570,3 +570,76 @@ Supersedes nothing above; records the round-9 line-boundary class fix
 | Purity scanner decision | Keeps `str.splitlines()` deliberately: finest split = detection superset (tokens/`#include`s contain no separator chars, so finer splitting cannot fragment matches; catches `;\u2028#include <ff.h>` the gcc \n-only model misses); separator-inside-token tampering defeats both scan models but fails loudly at compile/link (native build + `#error` guards). |
 | Parser-truth note (r3) | `CONFIG_X=y\u2028junk` is ONE line the parser accepts via the first-character bool rule (core.py:1467-1479) — user-selected `y`; the gate's exact raw-line match still rejects (documented stricter deviation). |
 | Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1, n2 (corrected), p1, p3, p4, q1–q3, r1, r1b ×4, r2, r3, r4, r4b, r4c — 45/45 expected exits; all six fail-open faces reproduced at exit 0 on 6c24739 before the fix. |
+
+## Package 1.2 addendum (append-only, 2026-11-28)
+
+Part A (desk) only — BUILD/HOST evidence. No device was connected, flashed,
+monitored or erased; `docs/bench-assignment.md` records zero Part B rows and
+`docs/hardware-identity.md` carries PENDING device rows. The 1.1 addendum's
+`vdog-core@1.1.0` row is superseded below (append-only style: history kept).
+
+### Host inventory re-confirmation (2026-11-28, this Mac)
+
+| Item | Value | How observed |
+| --- | --- | --- |
+| OS/runner | macOS 26.6.2 (build 25G83), arm64 | `sw_vers`, `uname -m` |
+| PlatformIO Core | 6.2.0 (`~/.local/bin/pio`, uv-managed tool env) | `pio --version` |
+| PlatformIO bundled Python | 3.12.12 (`~/.local/share/uv/tools/platformio`) | `pio` shebang + that interpreter's `--version` |
+| Host Python 3 | 3.14.6 (gate-script CLI runs only) | `python3 --version` |
+
+### What package 1.2 added (Part A)
+
+| Path | Role |
+| --- | --- |
+| `firmware/core/vdog_mem.{h,c}` | tagged memory baseline: per-field `field_set` + MEASURED/CONFIGURED source tags (finding 2); `vdog_mem_check_baseline()` rejects the Plus/N16R8-shaped, 4 MiB-flash, no-PSRAM and quad-only-PSRAM classes with code + offending field (bands -20…-23); `vdog_mem_format_detected()` renders `flash_size=8MB[measured] … psram_mode=opi[configured]` and can never print a CONFIGURED value as detected |
+| `firmware/core/vdog_recovery.{h,c}` | ROM-banner boot-mode classifier (`NULL`/junk → UNKNOWN, never guessed; JTAG wins over DOWNLOAD) + structurally sanitized identity line: the struct holds only the 16-bit MAC tail (no full-MAC or eFuse-raw member exists) |
+| `firmware/core/vdog_straps.{h,c}` | 26-row strap/reserved/candidate claim gate: straps GPIO0/3/45/46 + USB DP/DM GPIO19/20 REJECT naming pin + role; camera/SD candidates return PROVISIONAL only; GPIO21 UNCLAIMED (claim → PROVISIONAL naming the unresolved SD-CS/user-LED sharing, 0.3/E07 pending); mic GPIO41/42 DISABLED → REJECT; gpio > 48 REJECT `invalid-gpio` |
+| `firmware/core/library.json` | `vdog-core@1.2.0`, five exported headers (`vdog_core/vdog_board/vdog_mem/vdog_recovery/vdog_straps`) |
+| `firmware/components/vdog_board/vdog_board_hw.{h,c}` | read-only target adapter: CONFIGURED fields from `CONFIG_*` `#ifdef`s (unset key = field not set), MEASURED fields only from `esp_flash_default_chip`/`esp_flash_get_size`, `esp_psram_get_size`, `esp_chip_info` (`CHIP_ESP32S3` spelling in IDF v6.1) and `esp_read_mac` (tail kept, full MAC discarded). No pin driving, no strap claims, no microphone init |
+| `firmware/components/vdog_board/CMakeLists.txt` | SRCS += the three new core sources + `vdog_board_hw.c`; REQUIRES += `esp_hw_support esp_psram spi_flash` |
+| `firmware/src/main.c` | one `mem:` + one `identity:` boot line after the 1.1 board line; rejected sets log `memory check rejected: … (field …)` — the decision stays in the portable modules |
+| `firmware/test/test_vdog_mem/`, `test_vdog_recovery/`, `test_vdog_straps/` | 14 + 13 + 10 host cases + three `cpp_smoke_*.cpp` consumer TUs (dual `app_main`/`main` entries: embedded runs are compile/link qualification only) |
+
+### Part A command record (repository root, this host)
+
+| Command | Exit | Recorded result |
+| --- | --- | --- |
+| `pio run -d firmware -e vdog_xiao_sense_proto` | 0 | SUCCESS; **0** `warning:` lines; both gate registrations fired (purity: "11 portable-core files scanned, no camera/SD/RTOS/SDK tokens"; board-config line printed by BOTH post actions) |
+| `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | text 153201 / data 63012 / bss 376829 (dec 593042) |
+| `pio test -d firmware -e native` | 0 | **59/59** (22 inherited + 14 mem + 13 recovery + 10 straps), 0 failed |
+| `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | all 5 suites `[SKIPPED]` — compile/link only, never executed |
+| `python3 firmware/scripts/check_core_purity.py` (standalone) | 0 | 11 core files scanned |
+| `python3 firmware/scripts/check_board_config.py --sdkconfig …/config/sdkconfig.json --board seeed_xiao_esp32s3` | 0 | 11 keys present-and-equal, board agreed by all three sources |
+| same, with `ESPTOOLPY_FLASHMODE_QIO` poisoned to `"y"` | 1 | "build configuration rejected (1 problem(s))" — type-strict compare holds |
+| same, bad usage (`--bogus-flag` / missing required args) | 2 | argparse usage error, documented contract |
+
+### F6 (1.1 carry-over) resolution
+
+`Import("env")` stays INSIDE `_scons_main()` in both gate scripts —
+documented INTENTIONAL variant of `gen_build_meta.py`'s module-level import
+(the gate scripts are dual-mode: SCons extra script + CLI imported by the
+tools/firmware harness; a module-level SCons import would raise outside a
+build). Rationale comments sit at the import sites in both scripts; the
+CLI exit-code contract above re-verified unchanged (0/1/2).
+
+### F7(b) (1.1 carry-over) — RE-DEFERRED at implementation time
+
+The plan's own guard applies: the four `opencode/0.9-*` branches own
+`tools/firmware/**` and three of them carry unmerged commits touching
+`tools/firmware/tests` (0.9-ci-release 5, 0.9-release-tools 2,
+0.9-review-fixes 7, checked 2026-11-28 via `git log main..<branch> --
+tools/firmware/tests`). Re-homing the two out-of-tree scenario drivers
+(SCons-mode/poisoned-file fixtures, compile-guard probe) there would collide
+with that pending work, so F7(b) is consciously re-deferred to the 0.9
+merge window; the drivers remain in the lead's tmp evidence kit for the 0.9
+owner. No file under `tools/firmware/**` was created or edited by this
+package; the existing suite passes unchanged (422 passed, `uv run --python
+3.12 --with-requirements tools/firmware/requirements-dev.lock pytest
+tools/firmware/tests`).
+
+### Macro-rename residual (A7 probe, recorded)
+
+Host `cc -fsyntax-only` on `vdog_board_idf.c` (stub `sdkconfig.h`, core
+includes): neither `VDOG_BOARD_ID_STR` nor `VDOG_BOARD_PSRAM_SIZE_BYTES`
+defined → 2 `#error`s; only one defined → exactly 1; both defined → clean.
+Renaming either macro is compile-loud; no further guard needed in Part A.

@@ -320,13 +320,22 @@ stage the dependencies listed in each package override simple numeric order.
 
 ### 1.2 Bring up board, memory and recovery interface
 
-- Status: **ASSIGNED — desk part (BUILD/HOST) on `opencode/1.2-board-bringup`
-  ([package 1.2 assignment](1.2-assignment.md), plan v2)**; device part
-  gated on owner board-marking photos (E01), operation-time port
-  re-identification and Part A merge. **Recorded deviation (2026-11-28,
+- Status: **PART A IMPLEMENTED (BUILD/HOST) — desk part on
+  `opencode/1.2-board-bringup` ([package 1.2 assignment](1.2-assignment.md),
+  plan v3)**: portable `core/vdog_mem`/`vdog_recovery`/`vdog_straps`, IDF
+  adapters `components/vdog_board/vdog_board_hw.{h,c}`, sanitized `mem:` +
+  `identity:` boot lines, 59/59 host cases (22 inherited + 37 new), BUILD
+  green with both gates and `-t size` recorded; PR pending. **Device half
+  PENDING** — gated on owner board-marking photos (E01), operation-time port
+  re-identification and Part A merge; no DEVICE evidence exists (all rows in
+  `docs/hardware-identity.md` / `docs/bench-assignment.md` start PENDING;
+  rails/current stay UNVERIFIED, GPIO21 unclaimed, mic never initialized).
+  **Recorded deviation (2026-11-28,
   accepted in plan check):** "correct sensor identity" is deferred to
   package 1.3 — probing requires camera initialization owned by 1.3; the
-  1.3 plan must carry it as acceptance.
+  1.3 plan must carry it as acceptance. Storage/SDSPI interface defers to
+  1.4 and clock mapping to 1.9 (A7 carry-over ledger; each receiving plan
+  owns its interface).
 - Depends: 1.1 plus authorized identified hardware.
 - Steps: verify rails/current, module marking, flash capacity, PSRAM size/mode,
   native USB/BOOT recovery and exact XIAO/Sense GPIO setup; log sanitized identity.
