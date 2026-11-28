@@ -9,6 +9,7 @@
  * the microphone stays untouched. Device evidence (upload/boot/PSRAM
  * detection) is deferred to packages 1.2-1.4.
  */
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "esp_err.h"
@@ -104,12 +105,14 @@ void app_main(void)
      * instead of being silently defaulted. Console evidence only — no device
      * was connected for this package, and this still initializes NO
      * peripheral, pin, card, camera or microphone. */
+    bool board_ok = false;
     {
         vdog_board_profile_t board = vdog_board_profile_from_sdkconfig();
         char board_report[128];
         const int board_rc = vdog_board_report(&board, board_report,
                                                sizeof(board_report));
 
+        board_ok = (board_rc == VDOG_OK);
         if (board_rc == VDOG_OK) {
             ESP_LOGI(TAG, "board: %s", board_report);
         } else {
@@ -126,12 +129,14 @@ void app_main(void)
      * with its evidence tag (core/vdog_mem.h, finding 2). The identity line
      * is structurally sanitized (MAC tail only, no eFuse raw values) and
      * still initializes NO peripheral, pin, card, camera or microphone. */
+    bool memory_ok = false;
     {
         vdog_mem_detected_t mem = vdog_mem_detected_from_sdkconfig();
         char mem_line[256];
         const int read_rc = vdog_mem_read_detected(&mem);
         const int check_rc = vdog_mem_check_baseline(&mem);
 
+        memory_ok = (check_rc == VDOG_OK);
         if (read_rc != VDOG_OK) {
             /* Honest wording for the two different failures (round-2
              * review): a cross-check DISAGREEMENT is not a query failure.
@@ -185,13 +190,34 @@ void app_main(void)
              (vdog_camera_deinit_ref != NULL) ? "yes" : "no");
 
 #if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
-    /* SDK rollback support is compiled in (sdkconfig.defaults); a proto
-     * build with no health check marks itself valid so a reboot cannot
-     * strand the prototype in a rollback loop. */
-    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "esp_ota_mark_app_valid_cancel_rollback: %s",
-                 esp_err_to_name(err));
+    /* Item #17 P1-4: the rollback check-in is a CLAIM of health, so it is
+     * gated on the combined board-identity + memory-baseline verdicts
+     * collected above (pure rule: core/vdog_recovery.c, host-tested). An
+     * unhealthy image leaves rollback armed and the bootloader reverts it
+     * on the next reset instead of being stranded on a known-bad image.
+     * Still initializes no peripheral, pin, card, camera or microphone. */
+    {
+        vdog_ota_confirm_gate_t ota_gate;
+        ota_gate.board_ok = board_ok;
+        ota_gate.memory_ok = memory_ok;
+
+        if (vdog_ota_should_confirm(&ota_gate)) {
+            esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "ota=confirmed (board+memory health gate passed)");
+            } else {
+                ESP_LOGE(TAG, "OTA confirmation failed: %s",
+                         esp_err_to_name(err));
+            }
+        } else {
+            ESP_LOGE(TAG,
+                     "ota=not-confirmed (board_ok=%s memory_ok=%s) — "
+                     "rollback NOT cancelled",
+                     board_ok ? "yes" : "no", memory_ok ? "yes" : "no");
+        }
     }
+#else
+    (void)board_ok;
+    (void)memory_ok;
 #endif
 }

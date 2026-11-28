@@ -46,8 +46,47 @@ identity: chip=esp32s3 rev=<major>.<minor> mem=8MB-flash/8MB-psram[opi-configure
 (0x5e6f → `5e:6f`), OUI masked; the board tag is omitted until
 section 1 records a unit label.)
 
+### 2.1 OTA self-test check-in (Item #17 P1-4; firmware behaviour record)
+
+With `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` (on in the proto environment)
+every boot ends with exactly ONE OTA line from `firmware/src/main.c`:
+
+```text
+ota=confirmed (board+memory health gate passed)
+ota=not-confirmed (board_ok=<yes|no> memory_ok=<yes|no>) — rollback NOT cancelled
+```
+
+The decision is the pure host-tested rule `vdog_ota_should_confirm()`
+(`firmware/core/vdog_recovery.c`, pinned by `test_vdog_recovery`): the
+rollback check-in happens ONLY when BOTH the board-identity verdict
+(`vdog_board_validate`) and the memory-baseline verdict
+(`vdog_mem_check_baseline`) passed. An unhealthy image leaves rollback armed,
+and the bootloader marks the pending-verify entry `ABORTED` on the next
+reset and reverts to the last valid slot (pinned ESP-IDF 6.1.0
+`bootloader_utility.c`, source-verified — host evidence; the live transcript
+below is PENDING).
+
+Two OTA-metadata facts are recorded here so the Part B session reads its
+console correctly (both verified against the pinned toolchain sources, not
+yet observed on the device):
+
+1. **First boot initializes OTA metadata.** The table is factory-less
+   (app0/app1 = `ota_0`/`ota_1`). With otadata in its erased (all-0xFF)
+   state the IDF 6.1.0 bootloader logs "No factory image, trying OTA 0" and
+   `set_actual_ota_seq()` writes `ota_seq=1`, `IMG_VALID` + CRC into the
+   otadata[0] sector (`bootloader_utility.c`, source-verified). The release
+   installer already writes that otadata itself at flash time, so this
+   self-initialization is what the plain esptool path relies on.
+2. **Flashing erases the sectors it touches.** esptool 5.4.0 erases exactly
+   the region each written image covers (rounded to flash erase blocks)
+   before programming — "Flash will be erased from … to …" — and a full
+   chip erase happens only with the opt-in `--erase-all`; otadata content
+   survives unless an image explicitly includes it (`loader.py` /
+   `cmds.py`, source-verified).
+
 | Row | Value | Tag | Status |
 | --- | --- | --- | --- |
+| `ota=` line (verbatim) | `PENDING` | health-gated check-in; `yes/no` verdicts verbatim | PENDING |
 | `mem:` line (verbatim) | `PENDING` | MEASURED + CONFIGURED per field | PENDING |
 | `identity:` line (verbatim) | `PENDING` | chip info read-only; MAC tail only | PENDING |
 | Boot-mode drill transcript | `PENDING` | per-line `boot:0x..` word + `vdog_recovery_classify` result; each line recorded verbatim | PENDING |

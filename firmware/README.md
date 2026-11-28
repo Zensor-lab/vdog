@@ -7,10 +7,13 @@ command/exit-code matrix live in
 [docs/specs/firmware.md](../docs/specs/firmware.md). This README covers the
 project layout, how to build/test it and what the build gates enforce.
 
-Status: package 1.1 (firmware bootstrap + portable core). Everything here is
-**BUILD** (cross-compile) or **HOST** (native test) evidence. No device was
-connected, flashed, monitored or erased — that starts at package 1.2 with the
-identified unit and explicit authorization.
+Status: package 1.2 **Part A** (BUILD/HOST evidence: memory baseline,
+sanitized identity, strap gate) plus the Item #17 P1-4 health-gated OTA
+check-in. Everything here is **BUILD** (cross-compile) or **HOST** (native
+test) evidence. No device was connected, flashed, monitored or erased — the
+1.2 Part B device session (boot-mode drill, strap evidence, owner
+measurements) stays owner-gated and is parked; it needs the identified unit
+and explicit authorization.
 
 ## Environments
 
@@ -43,10 +46,10 @@ authorized in this package; see the plan's non-goals.
 
 | Path | Owns |
 | --- | --- |
-| `core/` | portable pure-C11 modules, no SDK/OS headers, C++-consumer-safe: `vdog_core.{h,c}` (semantic version), `vdog_board.{h,c}` (board profile + identity gate), and since 1.2 `vdog_mem.{h,c}` (memory baseline with per-field MEASURED/CONFIGURED evidence tags), `vdog_recovery.{h,c}` (boot-mode classifier + structurally sanitized identity line — MAC tail only), `vdog_straps.{h,c}` (strap/reserved/candidate claim gate; GPIO21 stays unclaimed, microphone disabled). Built by `native` via `lib_deps` **and** by the target through the component wrappers |
+| `core/` | portable pure-C11 modules, no SDK/OS headers, C++-consumer-safe: `vdog_core.{h,c}` (semantic version), `vdog_board.{h,c}` (board profile + identity gate), and since 1.2 `vdog_mem.{h,c}` (memory baseline with per-field MEASURED/CONFIGURED evidence tags), `vdog_recovery.{h,c}` (boot-mode classifier + structurally sanitized identity line — MAC tail only + the pure OTA-confirm health gate), `vdog_straps.{h,c}` (strap/reserved/candidate claim gate; GPIO21 stays unclaimed, microphone disabled). Built by `native` via `lib_deps` **and** by the target through the component wrappers |
 | `components/vdog_core/`, `components/vdog_board/` | thin IDF-component wrappers (`idf_component_register`) that expose `core/` under a namespaced component name; `components/vdog_board/vdog_board_idf.c` is the target-side adapter that turns `CONFIG_*` macros into a profile; `vdog_board_hw.{h,c}` (1.2) is the read-only memory/identity adapter (chip queries only, no pin driving, no strap claims, no microphone init) |
 | `src/` | IDF `main` component (`main.c`, `idf_component.yml` with the pinned camera dependency) |
-| `test/test_vdog_core/`, `test/test_vdog_board/`, `test/test_vdog_mem/`, `test/test_vdog_recovery/`, `test/test_vdog_straps/` | Unity host tests + C++ consumer smoke TUs (68 host cases since 1.2, PR-review rounds 1–4 included); `pio test -e native` is the only host harness — the embedded `--without-uploading --without-testing` run is compile/link qualification only (`[SKIPPED]`, never execution) |
+| `test/test_vdog_core/`, `test/test_vdog_board/`, `test/test_vdog_mem/`, `test/test_vdog_recovery/`, `test/test_vdog_straps/` | Unity host tests + C++ consumer smoke TUs (71 host cases since 1.2 + Item #17 P1-4, PR-review rounds 1–4 included); `pio test -e native` is the only host harness — the embedded `--without-uploading --without-testing` run is compile/link qualification only (`[SKIPPED]`, never execution) |
 | `scripts/` | build-time generators and gates (below) |
 | `partitions/vdog_8mb_two_ota.csv` | custom 8MB two-slot OTA table (matches `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME`) |
 | `sdkconfig.defaults` | explicit ESP-IDF configuration; keys may be added, never relaxed |
@@ -73,10 +76,13 @@ its own defensive guard from package 0.9, not a gate:
 | `scripts/test_build_isolation.py` | pre | — (redirects `pio test`/`__test` builds to `.pio/build/vdog_xiao_sense_proto_test` so a test runner can never relink the release images) |
 | `scripts/gen_build_meta.py` | post (parse time + build post actions) | `VDOG_SOURCE_SHA`/`VDOG_BUILD_ID` are malformed, or the resolved platform/packages drift from the pinned matrix; emits the gitignored metadata JSON + `build_gen/vdog_build_id.h` |
 | `scripts/check_core_purity.py` | post (parse time, every target) | any file in `core/` contains an SDK/RTOS/camera/SD/SPI-SD/NVS token or an SDK-style `#include` — mechanical proof the portable core stays host-buildable |
-| `scripts/check_board_config.py` | post (build post actions, after a successful build) | any required key in the generated `config/sdkconfig.json` is **absent** or **not equal** to the expected value, or `$BOARD` is not `seeed_xiao_esp32s3` |
+| `scripts/check_board_config.py` | post (build post actions, after a successful build) | any of the **four agreement layers** disagrees: (1) a required key is not character-for-character declared in `sdkconfig.defaults`, (2) the generated `config/sdkconfig.json` lacks it or holds a different value (type-strict), (3) `components/vdog_board/CMakeLists.txt` definitions drift from the expected board id / PSRAM size, or (4) the effective partition table (PlatformIO `board_build.partitions` + resolved `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME` + the expected CSV) is not the same file; or `$BOARD` is not `seeed_xiao_esp32s3` |
 
 The board gate is the loud half of "no silently inherited PSRAM/flash
-defaults". It checks these keys present-and-equal: `IDF_TARGET`,
+defaults". A resolved value alone can be an inherited SDK default or a stale
+compiled-in definition, so FOUR independent layers must all agree (source
+declaration, resolved config, component definitions, effective partition
+table — see the script header). It checks these keys present-and-equal: `IDF_TARGET`,
 `ESPTOOLPY_FLASHSIZE_8MB`, `ESPTOOLPY_FLASHMODE_QIO`, `ESPTOOLPY_FLASHFREQ_80M`,
 `SPIRAM`, `SPIRAM_MODE_OCT`, `SPIRAM_SPEED_80M`, `PARTITION_TABLE_CUSTOM`,
 `PARTITION_TABLE_CUSTOM_FILENAME`, `ESP_CONSOLE_USB_CDC`,
@@ -131,6 +137,27 @@ vdog 0.2.0-proto board=seeed_xiao_esp32s3 target=esp32s3 flash=8MB-qio-80m psram
 flash/PSRAM numbers are **build configuration** from `sdkconfig.defaults` and
 the component definition, not detected hardware — actual capacity and octal
 PSRAM detection are DEVICE evidence for packages 1.2–1.4.
+
+## OTA self-test check-in (health-gated, Item #17 P1-4)
+
+With rollback enabled (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`) every boot
+ends with exactly ONE OTA line:
+
+```text
+ota=confirmed (board+memory health gate passed)
+ota=not-confirmed (board_ok=<yes|no> memory_ok=<yes|no>) — rollback NOT cancelled
+```
+
+The SDK "mark app valid, cancel rollback" call runs ONLY when the portable
+rule `vdog_ota_should_confirm()` (`core/vdog_recovery.c`) says so: BOTH the
+board-identity verdict (`vdog_board_validate`) and the memory-baseline
+verdict (`vdog_mem_check_baseline`) must be healthy — no partial credit,
+NULL fails closed. An unhealthy image leaves rollback armed so the
+bootloader reverts it on the next reset instead of the device staying on a
+known-bad image. The rule is host-pinned by three `test_vdog_recovery`
+cases; the target-side call site stays in `src/main.c` (the rest of the OTA
+evidence record, incl. first-boot otadata initialization and flash-erase
+behaviour, is in [docs/hardware-identity.md §2.1](../docs/hardware-identity.md)).
 
 ## No pins, no peripherals, no camera/SD code
 

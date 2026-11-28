@@ -434,3 +434,15 @@ int vdog_identity_format(const vdog_identity_t *id, char *buf, size_t cap)
     }
     return VDOG_OK;
 }
+
+/* ---- OTA self-test confirmation gate (Item #17, P1-4) --------------------
+ * Pure rule, host-tested: BOTH collected validator verdicts must be
+ * healthy; anything else (including a NULL gate) fails closed and leaves
+ * the rollback check-in to the bootloader's rollback path. */
+bool vdog_ota_should_confirm(const vdog_ota_confirm_gate_t *gate)
+{
+    if (gate == NULL) {
+        return false;
+    }
+    return gate->board_ok && gate->memory_ok;
+}
