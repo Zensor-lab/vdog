@@ -1,10 +1,11 @@
 {
   "name": "vdog-core",
-  "version": "1.1.0",
-  "description": "vdog portable pure-C core modules (version + board identity gate), host-tested and shared verbatim with the ESP-IDF component builds",
-  "keywords": "vdog,core,version,board",
+  "version": "1.2.0",
+  "description": "vdog portable pure-C core modules (version, board identity gate, memory baseline with evidence tags, recovery/identity sanitizer, strap table), host-tested and shared verbatim with the ESP-IDF component builds",
+  "keywords": "vdog,core,version,board,mem,recovery,straps",
   "license": "MIT",
   "frameworks": "*",
   "platforms": "*",
-  "headers": ["vdog_core.h", "vdog_board.h"]
+  "headers": ["vdog_core.h", "vdog_board.h", "vdog_mem.h", "vdog_recovery.h",
+              "vdog_straps.h"]
 }

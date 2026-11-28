@@ -1,26 +1,14 @@
 # vdog implementation plan
 
 Status: **IN PROGRESS — 0.2 qualified; 0.9 implemented on
-`opencode/0.9-ci-release`, hosted run pending; 1.1 reviewed and verified on
-`opencode/1.1-fw-bootstrap` (BUILD/HOST evidence only; PR #5 open — PR-review
-round 2 findings PR-R1..R4 fixed at `9becabf`, round-3 notes PR-N1/PR-N2 at
-`e0de4ec`, round-4 findings PR-R5/R6/R7 (strict Kconfig/CMake full-token
-parsing) at `599d1c8`, round-5 findings PR-R8/R9/R10 — raw-line Kconfig
-syntax, #error compile-flag backstop, widened header prefix class — at
-`7ff0244`, round-6 findings PR-R11 (`# default:` provenance marker)
-and PR-R12 (CMake-scope wording) fixed at `c34b287`,
-round-7 finding PR-R13 (marker logic unfaithful to the pinned
-esp_kconfiglib parser in both directions) fixed at `1819ef6` by
-mirroring its `value_is_default` machine, round-7 approved with LOW docs
-nit F-1 (comment wording at `a6faac8`), round-8 finding PR-R14
-(deprecated-options section must be skipped like kconfgen's default-mode
-loader) fixed at `4b87a19`, round-8 approved with non-blocking
-notes INFO-1/INFO-2 folded in at `6c24739`, round-9 finding PR-R15
-(line boundaries: gate `splitlines()` vs loader universal newlines —
-U+2028-hidden assignments fail-open) fixed at `6abd27e` by mirroring
-the loader/CMake/configparser line models via `_split_universal`,
-re-review pending, merge
-pending)**, revised 2026-11-27. This is the
+`opencode/0.9-ci-release`, hosted run pending; 1.1 MERGED (PR #5 merged
+2026-11-27 as `957b415`, BUILD/HOST evidence only; esp32-reviewer approved,
+test-engineer VERIFIED, and the Pull request review bot approved at `23697ca`
+after nine rounds closing PR-R1..R15 + PR-N1/N2 — full round log in
+[package 1.1 assignment](1.1-assignment.md) §10–§11); 1.2 assigned — desk
+part (BUILD/HOST) on `opencode/1.2-board-bringup`, DEVICE part gated on E01
+board-marking photos + operation-time port re-identification
+([package 1.2 assignment](1.2-assignment.md))**, revised 2026-11-28. This is the
 master backlog, not authorization to execute every stage in one assignment. The
 minimal firmware and portable host tests exist with BUILD/HOST evidence.
 Recording, device operation and every hosted CI/tag/Release result are not
@@ -274,8 +262,8 @@ stage the dependencies listed in each package override simple numeric order.
 
 ### 1.1 Bootstrap the firmware and portable core
 
-- Status: **REVIEWED & VERIFIED — `opencode/1.1-fw-bootstrap`, PR #5 open
-  (2026-11-27, BUILD/HOST evidence only)**: portable board-profile
+- Status: **MERGED — PR #5 merged 2026-11-27 as `957b415` from
+  `opencode/1.1-fw-bootstrap` (BUILD/HOST evidence only)**: portable board-profile
   core with host-tested identity gate, build-time board-config + core-purity
   gates on the proto environment, `components/vdog_board` adapter and the board
   report in `main.c`. esp32-reviewer approved (round 2, round-1 notes closed),
@@ -314,8 +302,10 @@ stage the dependencies listed in each package override simple numeric order.
   `# Deprecated options …` banners counted as declared although
   kconfgen's default-mode loader skips the section) — mirrored
   `in_deprecated_block` skip at `4b87a19` (q1 bypass -> 1, pre-fix 0;
-  q2/q3 controls; 35/35 harness), PR re-review pending; merge pending
-  hosted CI + PR review.
+  q2/q3 controls; 35/35 harness), round-9 finding PR-R15 (line
+  boundaries: gate `splitlines()` vs loader universal newlines) fixed at
+  `6abd27e`; re-review approved at `23697ca`, hosted CI green, **merged
+  2026-11-27 as `957b415`**.
   **No DEVICE evidence** (device/board checks
   stay in 1.2–1.4) and 0.3/0.7 wiring
   and bench approval remain outstanding, so every pin reference is
@@ -330,6 +320,25 @@ stage the dependencies listed in each package override simple numeric order.
 
 ### 1.2 Bring up board, memory and recovery interface
 
+- Status: **PART A IMPLEMENTED (BUILD/HOST) — desk part on
+  `opencode/1.2-board-bringup-mine` / PR #6 ([package 1.2 assignment](1.2-assignment.md),
+  plan v3)**: portable `core/vdog_mem`/`vdog_recovery`/`vdog_straps`, IDF
+  adapters `components/vdog_board/vdog_board_hw.{h,c}`, sanitized `mem:` +
+  `identity:` boot lines, 68/68 host cases (22 inherited + 46 new), BUILD
+  green with both gates and `-t size` recorded; PR in review. **Device half
+  PENDING** — gated on owner board-marking photos (E01), operation-time port
+  re-identification and Part A merge; no DEVICE evidence exists (all rows in
+  `docs/hardware-identity.md` / `docs/bench-assignment.md` start PENDING;
+  rails/current is now the **gated owner-performed device step** (multimeter
+  + inline USB-C power meter confirmed by the lead 2026-11-28; readings
+  recorded by the owner, claimed by no one until then), GPIO21 unclaimed,
+  mic never initialized).
+  **Recorded deviation (2026-11-28,
+  accepted in plan check):** "correct sensor identity" is deferred to
+  package 1.3 — probing requires camera initialization owned by 1.3; the
+  1.3 plan must carry it as acceptance. Storage/SDSPI interface defers to
+  1.4 and clock mapping to 1.9 (A7 carry-over ledger; each receiving plan
+  owns its interface).
 - Depends: 1.1 plus authorized identified hardware.
 - Steps: verify rails/current, module marking, flash capacity, PSRAM size/mode,
   native USB/BOOT recovery and exact XIAO/Sense GPIO setup; log sanitized identity.

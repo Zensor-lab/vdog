@@ -797,6 +797,14 @@ def _gate_action(source, target, env):  # SCons calls post actions with these
 def _scons_main():
     global _SCONS_ENV, FIRMWARE_DIR
 
+    # F6 (1.1 carry-over, plan 1.2 A7) — INTENTIONAL variant of
+    # gen_build_meta.py, which imports SCons symbols at module level: this
+    # script is DUAL-mode (SCons extra script AND the documented CLI below,
+    # which the tools/firmware harness imports as a module). A module-level
+    # `from SCons.Script import ...`/`Import("env")` would raise outside a
+    # build and break CLI mode, so both stay deferred into the SCons-only
+    # entry point. Same effect (env resolved before first use), different
+    # placement by design; do not "fix" this to match gen_build_meta.py.
     from SCons.Script import COMMAND_LINE_TARGETS
 
     Import("env")  # injected into module globals by SCons

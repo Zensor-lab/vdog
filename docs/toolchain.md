@@ -570,3 +570,105 @@ Supersedes nothing above; records the round-9 line-boundary class fix
 | Purity scanner decision | Keeps `str.splitlines()` deliberately: finest split = detection superset (tokens/`#include`s contain no separator chars, so finer splitting cannot fragment matches; catches `;\u2028#include <ff.h>` the gcc \n-only model misses); separator-inside-token tampering defeats both scan models but fails loudly at compile/link (native build + `#error` guards). |
 | Parser-truth note (r3) | `CONFIG_X=y\u2028junk` is ONE line the parser accepts via the first-character bool rule (core.py:1467-1479) — user-selected `y`; the gate's exact raw-line match still rejects (documented stricter deviation). |
 | Regression surface | Harness now covers a–e, f1–f5, g1–g2, h/h2/h3, i1/i2, j1–j3, k1/k2, k3a/k3b, l1/l2, m1, n1, n2 (corrected), p1, p3, p4, q1–q3, r1, r1b ×4, r2, r3, r4, r4b, r4c — 45/45 expected exits; all six fail-open faces reproduced at exit 0 on 6c24739 before the fix. |
+
+## Package 1.2 addendum (append-only, 2026-11-28)
+
+Part A (desk) only — BUILD/HOST evidence. No device was connected, flashed,
+monitored or erased; `docs/bench-assignment.md` records zero Part B rows and
+`docs/hardware-identity.md` carries PENDING device rows. The 1.1 addendum's
+`vdog-core@1.1.0` row is superseded below (append-only style: history kept).
+
+### Host inventory re-confirmation (2026-11-28, this Mac)
+
+| Item | Value | How observed |
+| --- | --- | --- |
+| OS/runner | macOS 26.6.2 (build 25G83), arm64 | `sw_vers`, `uname -m` |
+| PlatformIO Core | 6.2.0 (`~/.local/bin/pio`, uv-managed tool env) | `pio --version` |
+| PlatformIO bundled Python | 3.12.12 (`~/.local/share/uv/tools/platformio`) | `pio` shebang + that interpreter's `--version` |
+| Host Python 3 | 3.14.6 (gate-script CLI runs only) | `python3 --version` |
+
+### What package 1.2 added (Part A)
+
+| Path | Role |
+| --- | --- |
+| `firmware/core/vdog_mem.{h,c}` | tagged memory baseline: per-field `field_set` + MEASURED/CONFIGURED source tags (finding 2); `vdog_mem_check_baseline()` rejects the Plus/N16R8-shaped, 4 MiB-flash, no-PSRAM and quad-only-PSRAM classes with code + offending field (bands -20…-23); `vdog_mem_record_flash_size()` records the PHYSICAL capacity as MEASURED and STICKILY fails the set on any header-vs-physical disagreement (`flash_cross_fail`: even a baseline-equal physical value stays rejected — a cross-check failure can never produce success-form memory logs, round-2 review); `vdog_mem_record_flash_size()` REFRESH-CLEARS (every call resets value/source/bit/cross-fail first, so a failed call leaves an honest UNSET, never a stale MEASURED field — round-3 review); `vdog_mem_format_detected()` renders `flash_size=8MB[measured] … psram_mode=opi[configured]` and can never print a CONFIGURED value as detected |
+| `firmware/core/vdog_recovery.{h,c}` | ROM-form boot-mode classifier pinned to the DOCUMENTED esptool ESP32-S3 boot-log forms only: `boot:0xNN (DESCRIPTION)` at a WORD boundary (so `reboot:` never matches) with REQUIRED hex strap value and the COMPLETE description validated BY MODE — `(SPI_FAST_FLASH_BOOT)` simple form only, `(DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2))`/`(DOWNLOAD(USB/UART0))` inner group with exact documented payload, nothing after the closed group (rounds 2–4 review; round-1 invented tokens retired), or the exact-shape `ESP-ROM:esp32s3-usb-jtag-<digits>` banner + structurally sanitized identity line: text enters ONLY via validated setters (closed-set chip enum, board tag restricted to the project grammar `VDOG-<core 1..6 alnum>-<serial 1..4 digits>` with a reserved terminator slot — 16-char tag overflow fixed in round 2, MAC/hex/`0x…`/free-text labels all rejected by the round-4 grammar, bounded render), SDK revision decodes as `major*100+minor` (102 → 1.2), and the struct holds only the 16-bit MAC tail (no full-MAC or eFuse-raw member exists) |
+| `firmware/core/vdog_straps.{h,c}` | 42-row strap/reserved/candidate claim gate: straps GPIO0/3/45/46 + native-USB GPIO19 (D-) / GPIO20 (D+, datasheet-corrected) REJECT naming pin + role; GPIO22–25 (absent on ESP32-S3), GPIO26–32 (SPI flash bus) and GPIO33–37 (octal-PSRAM bus) are REJECT reserved rows — a pin that is not a usable GPIO never returns OK (PR-review round 1 High); camera/SD candidates return PROVISIONAL only; GPIO21 UNCLAIMED (claim → PROVISIONAL naming the unresolved SD-CS/user-LED sharing, 0.3/E07 pending); mic GPIO41/42 DISABLED → REJECT; gpio > 48 REJECT `invalid-gpio` |
+| `firmware/core/library.json` | `vdog-core@1.2.0`, five exported headers (`vdog_core/vdog_board/vdog_mem/vdog_recovery/vdog_straps`) |
+| `firmware/components/vdog_board/vdog_board_hw.{h,c}` | read-only target adapter: CONFIGURED fields from `CONFIG_*` `#ifdef`s (unset key = field not set), MEASURED flash capacity ONLY from `esp_flash_get_physical_size` (`esp_flash_get_size` is the image-header capacity — cross-check input to `vdog_mem_record_flash_size()`, never the recorded value; PR-review round 1 High); PSRAM from `esp_psram_get_size`; identity via validated setters — closed-set chip name from `esp_chip_info` (`CHIP_ESP32S3` spelling in IDF v6.1), `/100`+`%100` revision decode, `esp_read_mac` (tail kept, full MAC discarded). No pin driving, no strap claims, no microphone init |
+| `firmware/components/vdog_board/CMakeLists.txt` | SRCS += the three new core sources + `vdog_board_hw.c`; REQUIRES += `esp_hw_support esp_psram spi_flash` |
+| `firmware/src/main.c` | one `mem:` + one `identity:` boot line after the 1.1 board line; rejected sets log `memory check rejected: … (field …)`; the read-phase warning distinguishes a header-vs-physical cross-check DISAGREEMENT from a query FAILURE (round-2 review — a cross-check failure is never worded as a query failure, and the sticky `flash_cross_fail` state rules out success-form lines) — the decision stays in the portable modules |
+| `firmware/test/test_vdog_mem/`, `test_vdog_recovery/`, `test_vdog_straps/` | 18 + 18 + 10 host cases + three `cpp_smoke_*.cpp` consumer TUs (dual `app_main`/`main` entries: embedded runs are compile/link qualification only). Round-1 regressions pinned: header-8MB-vs-physical-16MB flash mismatch rejected naming `flash_size_bytes`; prose containing "download"/"basic" classifies UNKNOWN; SDK revision 102 renders 1.2; unlisted chip text and malformed tags rejected at the setter. Round-2 regressions pinned: documented ROM lines classify (`SPI_FAST_FLASH_BOOT`, `DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2)`, `DOWNLOAD(USB/UART0)`), malformed lookalikes stay UNKNOWN (`reboot: download failed`, `boot:0x3 DOWNLOAD_BOOT`, `boot: download`, `boot:0x()`); documented unsupported modes → UNKNOWN; maximum-accepted-length 16-char tag stores terminator in bounds; compact-MAC `1a2b3c4d5e6f`-style labels rejected; flash cross-check failure in BOTH directions keeps `check_baseline` rejecting even when the physical value alone equals the baseline (sticky `flash_cross_fail`), and an agreeing re-record clears it. Round-3 regressions pinned: truncated/partial descriptions (`boot:0x3 (DOWNLOAD`, `(DOWNLOAD_BOOT(UART0)`, unterminated inner group) and prose after the leading token (`(SPI_FAST_FLASH_BOOT failed)`, `(DOWNLOAD more text)`) or after the closed group stay UNKNOWN; the usb-jtag banner requires the full documented shape `esp32s3-usb-jtag-<digits>` with nothing after it; a flash `record` with a 0 input clears any earlier MEASURED flash field (no stale-evidence retention) and the baseline then reports MISSING. Round-4 regressions pinned: descriptions validated BY MODE — `(SPI_FAST_FLASH_BOOT(failed))` and `(SPI_FAST_FLASH_BOOT(USB/UART0))` never NORMAL, `(DOWNLOAD)`, `(DOWNLOAD())`, `(DOWNLOAD(garbage))`, `(DOWNLOAD_BOOT)`, shortened `(DOWNLOAD_BOOT(UART0))` and cross-mode payload swaps never DOWNLOAD, while the verbatim documented forms stay NORMAL/DOWNLOAD; board tags accept ONLY the project grammar `VDOG-<core 1..6 alnum>-<serial 1..4 digits>` (case-insensitive) — `0x020000000001`, `0200.0000.0001`, `1a-2b-3c-4d-5e-6f`, `1a2b3c4d5e6f`, free text (`dev.01`, `dev01`) and malformed `vdog-*` shapes all rejected, `vdog-pa-01`/`VDOG-PA-1`/grammar-max `vdog-abc123-4321` accepted with the terminator in bounds |
+
+### Part A command record (repository root, this host)
+
+| Command | Exit | Recorded result |
+| --- | --- | --- |
+| `pio run -d firmware -e vdog_xiao_sense_proto` | 0 | SUCCESS; **0** `warning:` lines; both gate registrations fired (purity: "11 portable-core files scanned, no camera/SD/RTOS/SDK tokens"; board-config line printed by BOTH post actions) |
+| `pio run -d firmware -e vdog_xiao_sense_proto -t size` | 0 | text 153573 / data 63156 / bss 376829 (dec 593558) — round-4 snapshot: **equal section sizes** to the round-3 revision. (Not a code-balance coincidence: the Part A boot path never calls the classifier or the board-tag setter, so those functions are absent from the linked app in BOTH revisions — verified by `nm` on `firmware.elf` — and gc-sections drops them; binary hashes differ between local builds, as expected. They qualify via the native suite and the embedded compile/link run until the Part B drill wires the boot path to call them); slot margin vs the 3 MB OTA slot still ≫4× |
+| `pio test -d firmware -e native` | 0 | **68/68** (22 inherited + 18 mem + 18 recovery + 10 straps), 0 failed |
+| `pio test -d firmware -e vdog_xiao_sense_proto --without-uploading --without-testing` | 0 | all 5 suites `[SKIPPED]` — compile/link only, never executed |
+| `python3 firmware/scripts/check_core_purity.py` (standalone) | 0 | 11 core files scanned |
+| `python3 firmware/scripts/check_board_config.py --sdkconfig …/config/sdkconfig.json --board seeed_xiao_esp32s3` | 0 | 11 keys present-and-equal, board agreed by all three sources |
+| same, with `ESPTOOLPY_FLASHMODE_QIO` poisoned to `"y"` | 1 | "build configuration rejected (1 problem(s))" — type-strict compare holds |
+| same, bad usage (`--bogus-flag` / missing required args) | 2 | argparse usage error, documented contract |
+
+### F6 (1.1 carry-over) resolution
+
+`Import("env")` stays INSIDE `_scons_main()` in both gate scripts —
+documented INTENTIONAL variant of `gen_build_meta.py`'s module-level import
+(the gate scripts are dual-mode: SCons extra script + CLI imported by the
+tools/firmware harness; a module-level SCons import would raise outside a
+build). Rationale comments sit at the import sites in both scripts; the
+CLI exit-code contract above re-verified unchanged (0/1/2).
+
+### F7(b) (1.1 carry-over) — RE-DEFERRED at implementation time
+
+The plan's own guard applies: the four `opencode/0.9-*` branches own
+`tools/firmware/**` and three of them carry unmerged commits touching
+`tools/firmware/tests` (0.9-ci-release 5, 0.9-release-tools 2,
+0.9-review-fixes 7, checked 2026-11-28 via `git log main..<branch> --
+tools/firmware/tests`). Re-homing the two out-of-tree scenario drivers
+(SCons-mode/poisoned-file fixtures, compile-guard probe) there would collide
+with that pending work, so F7(b) is consciously re-deferred to the 0.9
+merge window; the drivers remain in the lead's tmp evidence kit for the 0.9
+owner. No file under `tools/firmware/**` was created or edited by this
+package; the existing suite passes unchanged (422 passed, `uv run --python
+3.12 --with-requirements tools/firmware/requirements-dev.lock pytest
+tools/firmware/tests`).
+
+### Macro-rename residual (A7 probe, recorded)
+
+Host `cc -fsyntax-only` on `vdog_board_idf.c` (stub `sdkconfig.h`, core
+includes): neither `VDOG_BOARD_ID_STR` nor `VDOG_BOARD_PSRAM_SIZE_BYTES`
+defined → 2 `#error`s; only one defined → exactly 1; both defined → clean.
+Renaming either macro is compile-loud; no further guard needed in Part A.
+
+### Part B scope update (2026-11-28, lead equipment confirmation)
+
+The owner confirmed a **multimeter** and an **inline USB-C power meter**, so
+rails/current moved from UNVERIFIED to a **gated owner-performed DEVICE
+step** (plan §6 step 6): USB supply current at boot/idle via the inline
+meter and 3V3 via the multimeter, with the owner handling all probes and
+recording readings into `docs/hardware-identity.md` §3 (all rows PENDING).
+Power stays USB from the Mac with the battery physically disconnected; no
+other electrical measurement, no erase/eFuse/format/NVS-overwrite/filesystem
+upload, and no monitor beyond the recorded session remain in force. No
+measurement has been performed as of this commit — Part B is still gated on
+board marking photos, operation-time port re-identification and the lead's
+release of the reviewed Part A commit.
+
+### Driver arbitration (2026-11-28, recorded per append-only policy)
+
+A second member session drove the same Part A in `.worktrees/1.2-impl`
+(branch `opencode/1.2-board-bringup`, now `9f27f96`, clean, never pushed, no
+PR), beginning by overwriting in-progress files here at 01:10–01:14 UTC.
+The lead could not answer the arbitration question (turn ended), so the
+package owner ruled: **single driver = this branch; PR #6 at `23f53d4` is
+the only reviewable Part A change** (pushed, 4/4 CI, reviewer tasked). The
+other tree is frozen for handoff only; its F7(b) re-home of the gate scenario
+drivers stays on `opencode/1.2-board-bringup` as the 0.9 merge-window
+follow-up (the plan's 0.9-pending guard excludes it from this PR). Both
+collision states remain preserved at `tmp/opencode/1.2-collision-20261128/`
+for byte comparison. Ruling communicated in-thread (msg_416a06b416e2) and to
+the other session with a freeze request (msg_903c3a320897).
