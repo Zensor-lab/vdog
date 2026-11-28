@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
+import types
 from pathlib import Path
 from typing import Any
 
@@ -908,6 +909,96 @@ class FakeTransport:
         self.calls.append(["close"])
         self.session_port = None
         self.session_verified = False
+
+
+# ---------------------------------------------------------------------------
+# Offline stand-ins for the esptool 5.4.0 API surface (PR-R2 review): these
+# emulate the REAL library semantics that bit the first backend revision —
+# read_mac only answers mac_type "BASE_MAC" (else None), _get_flash_info
+# returns a display string like "8MB", and flash encryption is
+# flash_crypt_cnt bit parity, not a flag bit.
+# ---------------------------------------------------------------------------
+
+
+class FakeEspConnection:
+    """A mocked I/O ESPLoader: one live connection object for identity,
+    reads, writes and the single reset."""
+
+    def __init__(self, *, chip_name: str = "ESP32-S3",
+                 mac: tuple[int, ...] | None = (0x00, 0x11, 0x22, 0x33, 0x44, 0x55),
+                 security: dict[str, int] | None = None,
+                 flash_map: dict[int, bytes] | None = None) -> None:
+        self.CHIP_NAME = chip_name
+        self._mac = mac
+        self._security = security or {"flags": 0, "flash_crypt_cnt": 0}
+        self.flash_map = dict(flash_map or {})
+        self.writes: list[tuple[int, bytes]] = []
+        self.reads: list[tuple[int, int]] = []
+        self.resets = 0
+        self.closed = 0
+        # the backend monkey-patches _port.open to deny reconnects
+        self._port = self
+
+    def open(self) -> None:  # replaced by the backend after connect
+        pass
+
+    def close(self) -> None:
+        self.closed += 1
+
+    def flash_id(self, cache: bool = True) -> int:
+        return 0x16  # 8MB-class JEDEC device id
+
+    def read_mac(self, mac_type: str = "BASE_MAC"):
+        if mac_type != "BASE_MAC":
+            return None  # exactly what esptool 5.4.0 S3 does for other types
+        return None if self._mac is None else tuple(self._mac)
+
+    def get_security_info(self, cache: bool = True) -> dict[str, int]:
+        return dict(self._security)
+
+    def read_flash(self, offset: int, length: int, progress_fn=None) -> bytes:
+        self.reads.append((offset, length))
+        out = bytearray(b"\xFF" * length)
+        for base, region in self.flash_map.items():
+            end = base + len(region)
+            if offset < end and base < offset + length:
+                lo, hi = max(offset, base), min(offset + length, end)
+                out[lo - offset:hi - offset] = region[lo - base:hi - base]
+        return bytes(out)
+
+    def hard_reset(self, uses_usb: bool = False) -> None:
+        self.resets += 1
+
+
+class FakeEsptoolModule:
+    """Stub of the qualified esptool module surface consumed by
+    EsptoolSessionBackend._library()/connect(): esptool.__version__,
+    detect_chip, _get_flash_info and cmds.write_flash."""
+
+    def __init__(self, *, esp: FakeEspConnection | None = None,
+                 version: str | None = "5.4.0",
+                 flash_size: str = "8MB") -> None:
+        self.esptool = types.SimpleNamespace(__version__=version)
+        self.esp = esp or FakeEspConnection()
+        self._flash_size = flash_size
+        self.detect_calls: list[dict[str, Any]] = []
+
+    def detect_chip(self, port: str, *, connect_mode: str | None = None,
+                    connect_attempts: int | None = None) -> FakeEspConnection:
+        self.detect_calls.append({"port": port, "connect_mode": connect_mode,
+                                  "connect_attempts": connect_attempts})
+        return self.esp
+
+    def _get_flash_info(self, esp: FakeEspConnection) -> tuple[int, int, str | None]:
+        return (0xBF, 0x00, self._flash_size)
+
+    def write_flash(self, esp: FakeEspConnection, addr_data, *,
+                    flash_mode: str | None = None, flash_size: str | None = None,
+                    flash_freq: str | None = None) -> None:
+        for offset, source in addr_data:
+            data = Path(source).read_bytes() if not isinstance(source, bytes) else source
+            esp.writes.append((offset, data))
+            esp.flash_map[offset] = data
 
 
 def blank_device_table(build_dir_payload: dict[str, bytes], *,

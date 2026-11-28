@@ -756,6 +756,79 @@ def test_transport_read_mac_argv(monkeypatch) -> None:
     assert _pair(argv, "--before", "no-reset")  # inside the established session
 
 
+# ---------------------------------------------------------------------------
+# PR-R2b: production esptool session backend, offline against the REAL
+# library semantics (read_mac BASE_MAC-only, display-string flash size,
+# flash_crypt_cnt parity) — the round-2 review reproduced these offline and
+# these tests must keep passing against that behavior.
+# ---------------------------------------------------------------------------
+
+
+def _backend(**module_kw) -> tuple[inst.EsptoolSessionBackend, support.FakeEsptoolModule]:
+    module = support.FakeEsptoolModule(**module_kw)
+    return inst.EsptoolSessionBackend(esptool_module=module), module
+
+
+def test_backend_connect_reads_identity_with_library_semantics() -> None:
+    backend, module = _backend()
+    record = backend.connect("/dev/ttyX", expect={})
+    assert record == {"chip": "esp32s3", "flash_bytes": 8_388_608,
+                      "mac": "00:11:22:33:44:55",
+                      "secure_boot": False, "flash_encryption": False}
+    assert module.detect_calls[0]["connect_mode"] == "default-reset"
+
+
+def test_backend_flash_encryption_is_crypt_cnt_parity_not_a_flag_bit() -> None:
+    # Regression (PR-R2): bit 1 of flags is SECURE_BOOT_AGGRESSIVE_REVOKE
+    # and must NOT read as flash encryption; encryption is odd bit parity
+    # of flash_crypt_cnt, exactly as esptool's own checks compute it.
+    revoked = support.FakeEspConnection(security={"flags": 0x2, "flash_crypt_cnt": 0})
+    backend = inst.EsptoolSessionBackend(
+        esptool_module=support.FakeEsptoolModule(esp=revoked))
+    record = backend.connect("/dev/ttyX", expect={})
+    assert record["flash_encryption"] is False and record["secure_boot"] is False
+    encrypted = support.FakeEspConnection(
+        security={"flags": 0x1, "flash_crypt_cnt": 0b0000_0101})
+    backend = inst.EsptoolSessionBackend(
+        esptool_module=support.FakeEsptoolModule(esp=encrypted))
+    record = backend.connect("/dev/ttyX", expect={})
+    assert record["flash_encryption"] is True and record["secure_boot"] is True
+
+
+def test_backend_refuses_when_mac_unavailable() -> None:
+    no_mac = support.FakeEspConnection(mac=None)
+    backend = inst.EsptoolSessionBackend(
+        esptool_module=support.FakeEsptoolModule(esp=no_mac))
+    with pytest.raises(inst.EsptoolFailure, match="no BASE_MAC"):
+        backend.connect("/dev/ttyX", expect={})
+
+
+def test_backend_blocks_esptool_reconnect_reopen() -> None:
+    """esptool's error-recovery closes and REOPENS the port; the backend
+    denies any reopen after connect so a retry can never address a
+    different board on the same path."""
+    backend, module = _backend()
+    backend.connect("/dev/ttyX", expect={})
+    with pytest.raises(inst.EsptoolFailure, match="never reconnects"):
+        module.esp.open()  # what esptool's reconnect would call
+
+
+def test_backend_pins_the_api_interpreter_version() -> None:
+    """The --esptool_python override pins only the CLI subprocess; the API
+    backend must independently refuse any interpreter whose esptool build
+    is not the qualified 5.4.0."""
+    for bad in ("4.9.9", None):
+        backend, _module = _backend(version=bad)
+        with pytest.raises(inst.EsptoolFailure, match="not the qualified"):
+            backend.connect("/dev/ttyX", expect={})
+
+
+def test_backend_rejects_unusable_flash_size() -> None:
+    backend, _module = _backend(flash_size="Unknown")
+    with pytest.raises(inst.EsptoolFailure, match="cannot detect flash size"):
+        backend.connect("/dev/ttyX", expect={})
+
+
 def test_refuses_unpinned_esptool_without_port_touch(installed_package) -> None:
     root, _payload, _manifest = installed_package
     transport = support.FakeTransport(version="4.8.1")

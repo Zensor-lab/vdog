@@ -54,6 +54,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import types
 from pathlib import Path
 from typing import Any, Callable
 
@@ -1229,10 +1230,46 @@ class EsptoolSessionBackend:
     this path remains UNVERIFIED until a qualified on-device run.
     """
 
-    def __init__(self, *, ports_provider: Callable[[], list[tuple[str, str]]] | None = None) -> None:
+    def __init__(self, *, ports_provider: Callable[[], list[tuple[str, str]]] | None = None,
+                 esptool_module: Any = None) -> None:
         self.ports_provider = ports_provider
         self._esp: Any = None
         self._write_fn: Any = None
+        # Offline-test seam: inject a stub exposing detect_chip,
+        # _get_flash_info and __version__ (same surface the real
+        # esptool/esptool.cmds modules provide). None = the real library.
+        self._module = esptool_module
+
+    def _library(self) -> Any:
+        """Resolve the esptool API surface — and PIN it. The interpreter
+        running install.py must carry exactly the qualified esptool build,
+        never just the CLI subprocess (PR-R2 review finding)."""
+        if self._module is not None:
+            module = self._module
+        else:
+            try:
+                import esptool
+                from esptool import detect_chip
+                from esptool.cmds import _get_flash_info
+            except ImportError as exc:
+                raise EsptoolFailure(
+                    f"the qualified esptool 5.4.0 API is not importable here: {exc}"
+                ) from exc
+            module = types.SimpleNamespace(
+                esptool=esptool, detect_chip=detect_chip,
+                _get_flash_info=_get_flash_info,
+            )
+            from esptool.cmds import write_flash as _wf
+            module.write_flash = _wf
+        version = getattr(getattr(module, "esptool", None), "__version__", None)
+        if version != ESPTOOL_VERSION:
+            raise EsptoolFailure(
+                f"esptool API backend version {version!r} is not the qualified "
+                f"{ESPTOOL_VERSION!r}; run install.py through the packaged setup "
+                "wrapper so the CLI and the API backend share one pinned "
+                "interpreter (never a silently ambient esptool)"
+            )
+        return module
 
     def connect(self, port: str, *, expect: dict[str, Any]) -> dict[str, Any]:
         if self.ports_provider is not None:
@@ -1245,38 +1282,68 @@ class EsptoolSessionBackend:
                     f"port {port} is not currently enumerated; refusing to open a "
                     "write connection on a vanished path"
                 )
-        try:
-            from esptool import detect_chip  # lazy: only the live path needs it
-            from esptool.cmds import write_flash as esp_write_flash
-        except ImportError as exc:
-            raise EsptoolFailure(
-                f"the qualified esptool 5.4.0 API is not importable here: {exc}"
-            ) from exc
-        self._write_fn = esp_write_flash
-        self._esp = detect_chip(port, connect_mode="default-reset",
-                                connect_attempts=3)
+        lib = self._library()
+        self._write_fn = lib.write_flash
+        self._esp = lib.detect_chip(port, connect_mode="default-reset",
+                                    connect_attempts=3)
         if not re.search(r"esp[- ]?32[- ]?s3", str(self._esp.CHIP_NAME), re.I):
             self.close()
             raise EsptoolFailure(f"device is not an ESP32-S3: {self._esp.CHIP_NAME!r}")
-        from esptool.cmds import _get_flash_info  # documented at cmds.py:696-706
-        flash_bytes = _get_flash_info(self._esp)[2]
-        if flash_bytes is None:
-            self.close()
-            raise EsptoolFailure("cannot detect flash size on the live connection")
+        # The single-connection rule: esptool's high-level helpers can
+        # close/reopen/reconnect the port on serial errors and retry. On a
+        # vdog install that path is forbidden — reopen attempts fail
+        # immediately so any I/O error surfaces as an abort (zero further
+        # writes, no reset) instead of a silent reconnect to whatever
+        # answers the path now.
+        def _deny_reopen(*_args: Any, **_kwargs: Any) -> None:
+            raise EsptoolFailure(
+                "esptool attempted to reopen the serial port mid-session; a vdog "
+                "install runs on one verified connection and never reconnects — "
+                "the install aborted, the board was not reset"
+            )
         try:
-            mac_bytes = self._esp.read_mac("mac")
-        except Exception as exc:  # noqa: BLE001 - surfaced as a transport failure
+            self._esp._port.open = _deny_reopen
+        except Exception as exc:  # noqa: BLE001 - no guard, no install
+            self.close()
+            raise EsptoolFailure(
+                f"cannot enforce the single-connection rule on this backend: {exc}"
+            ) from exc
+        # Flash size exactly as esptool derives it (_get_flash_info returns
+        # a display string like "8MB"; convert here, PR-R2 review finding).
+        _vendor, _device, size_str = lib._get_flash_info(self._esp)
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([KM]i?B)", str(size_str), re.I)
+        if not match:
+            self.close()
+            raise EsptoolFailure(f"cannot detect flash size from {size_str!r}")
+        mult = {"KB": 1024, "MB": 1024 ** 2, "MIB": 1024 ** 2}[match.group(2).upper()]
+        flash_bytes = int(float(match.group(1)) * mult)
+        # S3 read_mac takes mac_type "BASE_MAC" (anything else returns
+        # None — PR-R2 review finding) and yields the six MAC bytes.
+        try:
+            raw_mac = self._esp.read_mac()
+        except Exception as exc:  # noqa: BLE001 - surfaced as transport failure
             self.close()
             raise EsptoolFailure(f"cannot read MAC on the live connection: {exc}") from exc
-        mac = ":".join(f"{b:02x}" for b in bytes(mac_bytes))
+        if raw_mac is None:
+            self.close()
+            raise EsptoolFailure(
+                "esptool returned no BASE_MAC on the live connection; identity "
+                "cannot be verified, refusing to write"
+            )
+        mac = ":".join(f"{b:02x}" for b in bytes(raw_mac))
         security = self._esp.get_security_info()
+        # Flash encryption is flash_crypt_cnt ODD BIT PARITY (esptool's own
+        # convention at cmds.py:1487), not a flag bit; SECURE_BOOT_EN is
+        # bit 0 of flags (PR-R2 review finding: bit 1 is
+        # SECURE_BOOT_AGGRESSIVE_REVOKE and says nothing about encryption).
         flags = int(security.get("flags", 0))
+        crypt_cnt = int(security.get("flash_crypt_cnt", 0))
         return {
             "chip": "esp32s3",
-            "flash_bytes": int(flash_bytes),
+            "flash_bytes": flash_bytes,
             "mac": mac,
             "secure_boot": bool(flags & 0x1),
-            "flash_encryption": bool(flags & 0x2),
+            "flash_encryption": bin(crypt_cnt).count("1") % 2 == 1,
         }
 
     def read_flash(self, port: str, offset: int, size: int) -> bytes:
