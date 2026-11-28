@@ -86,8 +86,13 @@ int vdog_mem_read_detected(vdog_mem_detected_t *det)
         return VDOG_ERR_INVALID_ARG;
     }
 
-    /* NULL chip == the default flash chip (esp_flash_default_chip), per the
-     * installed SDK header's documented @param semantics. */
+    /* NULL selects the default flash-chip instance. esp_flash.h's @param
+     * wording covers chips "initialised via esp_flash_init()", which the
+     * ROM bootloader / SDK bring-up have already done for the default chip
+     * before app_main runs — so we pass NULL (the same default-chip object
+     * the SDK's own tests query), never an uninitialised handle. Review
+     * F-3: this is the ROM/bring-up inout contract, not a documented
+     * NULL-substitution in the get_size @param text. */
     if (esp_flash_get_size(NULL, &size) == ESP_OK) {
         det->flash_size_bytes = size;
         det->flash_size_src = VDOG_MEM_SOURCE_MEASURED;
@@ -134,8 +139,11 @@ void vdog_identity_read_esp(vdog_identity_t *id)
     } else {
         strcpy(id->chip_model, "unknown");
     }
-    id->chip_major = (uint8_t)(info.revision >> 8);
-    id->chip_minor = (uint8_t)(info.revision & 0xFF);
+    /* Wafer revision is DECIMAL MXX (major*100 + minor) per the installed
+     * esp_hw_support/include/esp_chip_info.h:53 — the portable helper does
+     * the /100 %100 split (review F-2: a byte split would render S3 v1.1,
+     * raw 101, as 0.101 in the record Part B transcribes). */
+    vdog_identity_set_revision_mxx(id, info.revision);
 
     /* Public helper API only (no eFuse raw reads): the factory-burned base
      * MAC eFuse read through esp_read_mac, of which ONLY the last two bytes

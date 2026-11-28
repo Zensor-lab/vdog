@@ -619,3 +619,18 @@ scenario drivers re-homed as NEW files under `tools/firmware/tests/`
 (0.9-branch ownership of existing `tools/firmware/**` respected — zero
 edits to pre-existing files there); the macro-rename residual is covered by
 `tools/firmware/tests/test_12_board_definition_error_guards.py`.
+
+### Package 1.2 Part A — review round 1 (append-only, 2026-11-28)
+
+Fixes for the reviewer's CHANGES REQUESTED at `9f27f96` (F-1..F-4). Where
+this block restates a count it supersedes the Part A table above.
+
+| Item | Round-1 state |
+| --- | --- |
+| F-1 strap table | Re-derived row-by-row from `hardware/prototype-a/pin-map.csv` (each row comments its CSV `function,net,soc_gpio`): camera candidates {10..18,38,39,40,47,48} PROVISIONAL (13=PCLK, 38=VSYNC, 47=HREF, 48=D7 were previously missing), SD candidates {7,8,9} PROVISIONAL with the SD SPI role (7 = SPI_SCK, previously mislabelled camera SCCB_SCL), microphone {MIC_DATA 41, MIC_CLK 42} owner=disabled -> REJECT (39 is NOT mic: it is camera SCCB_SCL, now PROVISIONAL), reserved {0,3,19,20,45,46} unchanged, GPIO21 unclaimed-UNRESOLVED row. The CSV camera and SD sets are DISJOINT — the earlier "dual candidate" rows were fabricated and are gone. Table = 26 rows; `test_vdog_straps.c` adds a membership cross-check pinning the CSV classes + the reviewer flip-cases. |
+| F-2 chip revision | Wafer revision is DECIMAL MXX (`major*100 + minor`, installed `esp_hw_support/include/esp_chip_info.h:53`); new portable helper `vdog_identity_set_revision_mxx()` performs the /100 %100 split; adapter calls it; host suite table-tests 0/2/100/101/201 -> 0.0/0.2/1.0/1.1/2.1 (a byte split rendered S3 v1.1 as 0.101). |
+| F-3 flash query comment | Re-worded: NULL selects the default flash-chip instance under the ROM/SDK bring-up contract (initialised before `app_main`), not a documented `esp_flash_get_size` @param NULL-substitution. |
+| F-4 mem doc | Removed the unreachable `psram=none[measured:init-fail]` render form: `vdog_mem_format_detected()` runs the baseline check first, so a non-initialised PSRAM is rejected as `VDOG_ERR_MEM_PSRAM` (naming `psram_present`) and never renders. |
+| HOST re-run | `pio test -d firmware -e native` exit 0: **64 cases: 64 succeeded** = 42 new (mem 16, recovery 13, straps 13 incl. the CSV cross-check) + inherited 22/22. Reviewer flip-cases re-probed out-of-tree (13/38/47/48 -> PROVISIONAL, 39 -> PROVISIONAL camera SCCB, 42 -> REJECT disabled, 7 -> SD SPI_SCK role): all MATCH. |
+| BUILD re-run | `-t clean` + run exit 0: 1109 compiles, 0 warnings, purity line + board-gate at both registrations; `-t size` text 153229 / data 63012 / bss 376829 (bin 216352 B); embedded `--without-uploading --without-testing` all five groups `[SKIPPED]`, 0 warnings; `pytest tools/firmware/tests` 471 passed; standalone gates exit 0. |
+| libdeps trap | `firmware/core/library.json` 1.2.0 -> 1.2.1: PlatformIO caches local `lib_deps` copies per VERSION, so content-only core/ edits do not refresh `.pio/libdeps/native/vdog-core` (caught this round when a stale copy compiled the old strap table). Version bumps are the invalidation lever; a clean `-t clean`/fresh-core run is unaffected. |

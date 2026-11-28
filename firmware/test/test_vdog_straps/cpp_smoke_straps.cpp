@@ -38,7 +38,7 @@ int vdog_straps_cpp_smoke(void)
     }
 
     /* Microphone baseline stays dead; unclaimed pins pass. */
-    if (vdog_straps_check_claim(39u, VDOG_STRAPS_CLAIM_GENERAL, nullptr) !=
+    if (vdog_straps_check_claim(41u, VDOG_STRAPS_CLAIM_GENERAL, nullptr) !=
         VDOG_STRAPS_REJECT) {
         return 5;
     }

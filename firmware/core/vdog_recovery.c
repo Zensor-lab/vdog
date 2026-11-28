@@ -85,6 +85,17 @@ void vdog_identity_init(vdog_identity_t *id)
      * board tag "". Absent parts are never rendered. */
 }
 
+void vdog_identity_set_revision_mxx(vdog_identity_t *id, uint16_t mxx)
+{
+    if (id == NULL) {
+        return;
+    }
+    /* DECIMAL MXX (see header): wafer major = mxx/100, minor = mxx%100.
+     * A byte split would render S3 v1.1 (raw 101) as 0.101. */
+    id->chip_major = (uint8_t)(mxx / 100u);
+    id->chip_minor = (uint8_t)(mxx % 100u);
+}
+
 int vdog_identity_format(const vdog_identity_t *id, char *buf, size_t cap)
 {
     char mem_part[64];

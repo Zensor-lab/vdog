@@ -80,6 +80,15 @@ typedef struct {
 /* Zero-init with empty strings: absent parts are never rendered. */
 void vdog_identity_init(vdog_identity_t *id);
 
+/* Decode the SDK chip-info wafer revision number and store it for display.
+ * The SDK's chip-info header documents the raw field as "format MXX; where
+ * M - wafer major version, XX - wafer minor version" — a DECIMAL encoding,
+ * so the display pair is (mxx / 100, mxx % 100), NOT a byte split:
+ * 0 -> 0.0, 2 -> 0.2, 100 -> 1.0, 101 -> 1.1 (v1.1), 201 -> 2.1. The
+ * target adapter reads the raw value and calls this; the host suite
+ * table-tests the decode (plan 1.2 review F-2). NULL id is a no-op. */
+void vdog_identity_set_revision_mxx(vdog_identity_t *id, uint16_t mxx);
+
 /* Compose ONE sanitized log line, e.g.
  *   "chip=esp32s3 rev=0.2 mem=8MB-flash/8MB-psram[opi-configured] mac=**:**:**:**:ab:cd board=vdog-pa-01"
  * Rules (host-pinned, plan 1.2 acceptance 5):

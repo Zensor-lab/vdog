@@ -136,7 +136,10 @@ const char *vdog_mem_error_field(void);
 
 /* Render one baseline line WITH per-field source tags, e.g.
  *   "flash_size=8MB[measured] flash_mode=qio[configured] flash_freq=80m[configured] psram=8MB[measured:init-ok] psram_mode=opi[configured] psram_speed=80m[configured]"
- * or "psram=none[measured:init-fail]" when PSRAM did not initialize.
+ * A PSRAM that did not initialize NEVER renders: this function runs
+ * vdog_mem_check_baseline() first, which rejects psram_present != 1 as
+ * VDOG_ERR_MEM_PSRAM (naming psram_present) without touching the buffer —
+ * there is deliberately no "not-initialized" spelling of the psram field.
  * A CONFIGURED tag always renders as [configured]: mode/speed have no
  * measured spelling here, so the string can never print a mode as
  * "detected" (host-pinned, plan 1.2 acceptance 3).

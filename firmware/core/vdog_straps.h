@@ -55,7 +55,6 @@ typedef enum {
 #define VDOG_STRAPS_ROLE_CAM_SYNC "camera PCLK/VSYNC/HREF (candidate)"
 #define VDOG_STRAPS_ROLE_CAM_SCCB "camera SCCB/I2C (candidate)"
 #define VDOG_STRAPS_ROLE_SD_SPI "SD card SPI SCK/MISO/MOSI (candidate)"
-#define VDOG_STRAPS_ROLE_SD_CS "SD CS21 vs user-LED sharing UNRESOLVED"
 #define VDOG_STRAPS_ROLE_MIC "onboard microphone (DISABLED by product baseline)"
 #define VDOG_STRAPS_ROLE_UNCLAIMED "GPIO21 SD-CS/user-LED sharing UNRESOLVED (no claim)"
 
@@ -80,13 +79,13 @@ const vdog_straps_row_t *vdog_straps_lookup(uint8_t gpio);
 /* The claim gate. Returns REJECT on strap/USB-reserved pins and PROVISIONAL
  * on camera/SD candidates (naming the role via out_role, when non-NULL);
  * OK otherwise. A claim on GPIO21 returns PROVISIONAL naming the
- * unresolved SD-CS/user-LED sharing — this table NEVER claims or approves
- * it. The pure microphone rows (39/41) are DISABLED: a claim is REJECTED
- * with the disabled role (the product baseline keeps audio dead); GPIO40/42
- * are camera candidates whose mic sharing is named in the role. Out-param
- * may be NULL. Invalid gpio (> VDOG_STRAPS_GPIO_MAX) is REJECT naming
- * "invalid-gpio"; an out-of-range claimant is REJECT naming
- * "invalid-claimant". */
+ * unresolved SD-CS/user-LED sharing (the CSV lists sd,SPI_CS,21 AND
+ * indicator,USER_LED,21) — this table NEVER claims or approves it. The
+ * microphone rows (microphone,MIC_DATA,41 and microphone,MIC_CLK,42, CSV
+ * owner=disabled) are DISABLED: a claim is REJECTED with the disabled role
+ * (the product baseline keeps audio dead). Out-param may be NULL. Invalid
+ * gpio (> VDOG_STRAPS_GPIO_MAX) is REJECT naming "invalid-gpio"; an
+ * out-of-range claimant is REJECT naming "invalid-claimant". */
 vdog_straps_claim_t vdog_straps_check_claim(uint8_t gpio,
                                             vdog_straps_claimant_t claim,
                                             const char **out_role);

@@ -54,7 +54,7 @@ store a full MAC or eFuse raw data.
 | ROM `boot:0x..` strapping value (download mode) | capture (Part B, BOOT drill) | verbatim ROM line text; compare vs expected download value | PENDING |
 | Reset reason | capture (Part B) | verbatim; mismatch = stop, record verbatim, escalate | PENDING |
 | Strap-conflict observation (clean boot, no brownout/reset loop) | capture (Part B) | observed; desk-side half already pinned by `core/vdog_straps` host tests | PENDING |
-| No-microphone-initialization check | capture + code review (Part B) | no mic init in boot log; GPIO39/41 stay unclaimed, 40/42 camera-candidate only | PENDING |
+| No-microphone-initialization check | capture + code review (Part B) | no mic init in boot log; CSV microphone rows GPIO41 (MIC_DATA) / GPIO42 (MIC_CLK), owner=disabled, stay REJECTED by `core/vdog_straps`; camera SCCB candidates 39/40 stay unclaimed by Part A | PENDING |
 
 Rules (plan §6/§7):
 

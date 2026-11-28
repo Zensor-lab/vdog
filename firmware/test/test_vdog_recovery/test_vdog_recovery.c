@@ -175,6 +175,55 @@ static void test_identity_mac_storage_cannot_hold_a_full_mac(void)
                            (unsigned)sizeof(id.board_tag));
 }
 
+/* Review F-2: the SDK chip-info revision is DECIMAL MXX (major*100 + minor,
+ * esp_chip_info.h:53 wording). Table-pinned decode (helper lives in the
+ * portable core so the host suite reaches it): a byte split would render
+ * S3 v1.1 (raw 101) as the nonsense 0.101. */
+static void test_identity_revision_mxx_decode(void)
+{
+    static const struct {
+        uint16_t mxx;
+        uint8_t major;
+        uint8_t minor;
+    } cases[] = {
+        {0u, 0u, 0u},   /* v0.0   */
+        {2u, 0u, 2u},   /* v0.2   */
+        {100u, 1u, 0u}, /* v1.0   */
+        {101u, 1u, 1u}, /* v1.1   */
+        {201u, 2u, 1u}, /* v2.1   */
+    };
+    size_t i;
+
+    TEST_ASSERT_EQUAL_UINT(5u, (unsigned)(sizeof(cases) / sizeof(cases[0])));
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        vdog_identity_t id;
+
+        vdog_identity_init(&id);
+        vdog_identity_set_revision_mxx(&id, cases[i].mxx);
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(cases[i].major, id.chip_major,
+                                        "MXX major");
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(cases[i].minor, id.chip_minor,
+                                        "MXX minor");
+    }
+
+    /* End-to-end: the rendered line carries the decoded pair (this is the
+     * chip=...rev=... field Part B transcribes into the identity record). */
+    {
+        vdog_identity_t id;
+        char buf[64];
+
+        vdog_identity_init(&id);
+        strcpy(id.chip_model, "esp32s3");
+        vdog_identity_set_revision_mxx(&id, 101u);
+        TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                              vdog_identity_format(&id, buf, sizeof(buf)));
+        TEST_ASSERT_EQUAL_STRING("chip=esp32s3 rev=1.1", buf);
+    }
+
+    /* NULL is a no-op (documented). */
+    vdog_identity_set_revision_mxx(NULL, 101u);
+}
+
 /* Unset pieces stay out of the line (never invented). */
 static void test_identity_absent_parts(void)
 {
@@ -269,6 +318,7 @@ void app_main(void)
     RUN_TEST(test_boot_mode_names);
     RUN_TEST(test_identity_init_marks_nothing);
     RUN_TEST(test_identity_exact_line);
+    RUN_TEST(test_identity_revision_mxx_decode);
     RUN_TEST(test_identity_mac_storage_cannot_hold_a_full_mac);
     RUN_TEST(test_identity_absent_parts);
     RUN_TEST(test_identity_refuses_rejected_mem_set);
@@ -287,6 +337,7 @@ int main(void)
     RUN_TEST(test_boot_mode_names);
     RUN_TEST(test_identity_init_marks_nothing);
     RUN_TEST(test_identity_exact_line);
+    RUN_TEST(test_identity_revision_mxx_decode);
     RUN_TEST(test_identity_mac_storage_cannot_hold_a_full_mac);
     RUN_TEST(test_identity_absent_parts);
     RUN_TEST(test_identity_refuses_rejected_mem_set);
