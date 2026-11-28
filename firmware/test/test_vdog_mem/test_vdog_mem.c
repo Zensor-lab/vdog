@@ -100,6 +100,57 @@ static void test_rejects_null_detector(void)
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG, vdog_mem_check_baseline(NULL));
 }
 
+/* PR-review round 1 High finding: esp_flash_get_size() reports the capacity
+ * from the BINARY IMAGE HEADER, so an 8 MiB image on a physical 16 MiB chip
+ * must NOT be recorded as 8MB[measured]. The PHYSICAL capacity is the
+ * honest MEASURED value; a header/physical mismatch is reported, naming
+ * flash_size_bytes — never averaged or silently preferred. */
+static void test_record_flash_size_mismatch(void)
+{
+    /* start from a fully-baseline set so the flash VALUE is the only
+     * thing the baseline check can reject (missing fields outrank
+     * values, by documented order) */
+    vdog_mem_detected_t det = baseline_ok();
+    /* header says 8MB (the image), the chip is physically 16MB */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_MEM_FLASH,
+                          vdog_mem_record_flash_size(
+                              &det, 8u * 1024u * 1024u, 16u * 1024u * 1024u));
+    TEST_ASSERT_EQUAL_STRING("flash_size_bytes", vdog_mem_error_field());
+    /* the MEASURED field holds the PHYSICAL value, not the header's */
+    TEST_ASSERT_EQUAL_UINT32(16u * 1024u * 1024u, det.flash_size_bytes);
+    TEST_ASSERT_EQUAL_INT(VDOG_MEM_SOURCE_MEASURED, (int)det.flash_size_src);
+    TEST_ASSERT(det.field_set & VDOG_MEM_FIELD_FLASH_SIZE);
+    /* and the baseline check then rejects it for the right reason */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_MEM_FLASH, vdog_mem_check_baseline(&det));
+    TEST_ASSERT_EQUAL_STRING("flash_size_bytes", vdog_mem_error_field());
+}
+
+static void test_record_flash_size_agree_and_failures(void)
+{
+    vdog_mem_detected_t det;
+
+    /* agreeing header/physical records OK */
+    memset(&det, 0xA5, sizeof(det));
+    vdog_mem_detected_init(&det);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_mem_record_flash_size(
+                              &det, 8u * 1024u * 1024u, 8u * 1024u * 1024u));
+    TEST_ASSERT_EQUAL_UINT32(8u * 1024u * 1024u, det.flash_size_bytes);
+    TEST_ASSERT_EQUAL_INT(VDOG_MEM_SOURCE_MEASURED, (int)det.flash_size_src);
+
+    /* a failed query (0 from either getter) leaves the field UNSET */
+    memset(&det, 0xA5, sizeof(det));
+    vdog_mem_detected_init(&det);
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_mem_record_flash_size(&det, 0u, 8u * 1024u * 1024u));
+    TEST_ASSERT_EQUAL_UINT8(0u, det.field_set);
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_mem_record_flash_size(&det, 8u * 1024u * 1024u, 0u));
+    TEST_ASSERT_EQUAL_UINT8(0u, det.field_set);
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_mem_record_flash_size(NULL, 8u, 8u));
+}
+
 static void test_rejects_source_violations(void)
 {
     vdog_mem_detected_t d;
@@ -303,6 +354,8 @@ void app_main(void)
     RUN_TEST(test_detected_init_marks_nothing);
     RUN_TEST(test_rejects_each_missing_field);
     RUN_TEST(test_rejects_null_detector);
+    RUN_TEST(test_record_flash_size_mismatch);
+    RUN_TEST(test_record_flash_size_agree_and_failures);
     RUN_TEST(test_rejects_source_violations);
     RUN_TEST(test_missing_outranks_source_and_value);
     RUN_TEST(test_rejects_flash_classes);
@@ -323,6 +376,8 @@ int main(void)
     RUN_TEST(test_detected_init_marks_nothing);
     RUN_TEST(test_rejects_each_missing_field);
     RUN_TEST(test_rejects_null_detector);
+    RUN_TEST(test_record_flash_size_mismatch);
+    RUN_TEST(test_record_flash_size_agree_and_failures);
     RUN_TEST(test_rejects_source_violations);
     RUN_TEST(test_missing_outranks_source_and_value);
     RUN_TEST(test_rejects_flash_classes);

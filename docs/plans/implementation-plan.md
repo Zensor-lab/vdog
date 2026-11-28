@@ -321,11 +321,11 @@ stage the dependencies listed in each package override simple numeric order.
 ### 1.2 Bring up board, memory and recovery interface
 
 - Status: **PART A IMPLEMENTED (BUILD/HOST) — desk part on
-  `opencode/1.2-board-bringup` ([package 1.2 assignment](1.2-assignment.md),
+  `opencode/1.2-board-bringup-mine` / PR #6 ([package 1.2 assignment](1.2-assignment.md),
   plan v3)**: portable `core/vdog_mem`/`vdog_recovery`/`vdog_straps`, IDF
   adapters `components/vdog_board/vdog_board_hw.{h,c}`, sanitized `mem:` +
-  `identity:` boot lines, 59/59 host cases (22 inherited + 37 new), BUILD
-  green with both gates and `-t size` recorded; PR pending. **Device half
+  `identity:` boot lines, 64/64 host cases (22 inherited + 42 new), BUILD
+  green with both gates and `-t size` recorded; PR in review. **Device half
   PENDING** — gated on owner board-marking photos (E01), operation-time port
   re-identification and Part A merge; no DEVICE evidence exists (all rows in
   `docs/hardware-identity.md` / `docs/bench-assignment.md` start PENDING;

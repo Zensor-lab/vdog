@@ -7,11 +7,18 @@
  * 1) BOOT/USB recovery evidence: classify the ROM boot banner the 1.2
  *    drill prints (normal boot vs download mode vs the USB-Serial-JTAG
  *    boot path) so the Part B transcript is machine-checked instead of
- *    eyeballed. Unknown input is UNKNOWN — never guessed.
- * 2) Sanitized identity line: the struct stores ONLY what may be logged.
- *    There is deliberately no full-MAC member and no eFuse-raw member: the
- *    sanitizer is structural (host-pinned), not an after-the-fact mask —
- *    a full MAC can never be formatted because it can never be stored.
+ *    eyeballed. Classification is STRUCTURAL, not substring: a line is
+ *    evidence only if it is a recognized ROM form ("boot:0x..(<mode>)"
+ *    or the "ESP-ROM:esp32s3-usb-jtag-..." banner) whose mode token is a
+ *    member of a closed set. Ordinary console prose that merely contains
+ *    "download" or "basic" is UNKNOWN — never guessed (PR-review round 1).
+ * 2) Sanitized identity line: the struct stores ONLY what may be logged,
+ *    and text enters ONLY through validated setters (PR-review round 1):
+ *    the chip model is a closed-set enum (rendered from internal constant
+ *    names, never caller bytes), the board tag must pass a strict charset
+ *    before it is stored (rendered with an explicit length bound), and
+ *    there is deliberately no full-MAC member and no eFuse-raw member.
+ *    The sanitizer is structural, not an after-the-fact mask.
  */
 #ifndef VDOG_RECOVERY_H
 #define VDOG_RECOVERY_H
@@ -43,29 +50,40 @@ typedef enum {
     VDOG_BOOT_MODE_USBJTAG      /* USB-Serial-JTAG ROM boot banner         */
 } vdog_boot_mode_t;
 
-/* Case-insensitive substring classification of ONE ROM/console line (the
- * Part B drill records each line and its raw "boot:0x.." word verbatim;
- * this only names the state the line proves):
- *   - "usb_jtag" or "usb-jtag"          -> VDOG_BOOT_MODE_USBJTAG
- *   - "download" (any ROM download name) -> VDOG_BOOT_MODE_DOWNLOAD
- *   - "spi_fast" / "spi_boot" / "basic"  -> VDOG_BOOT_MODE_NORMAL
- *   - NULL, empty, anything else         -> VDOG_BOOT_MODE_UNKNOWN
- * "usb_jtag"/"usb-jtag" is checked FIRST so a JTAG download banner is not
- * mislabelled plain DOWNLOAD; "spi_fast_download" contains "download" and
- * therefore classifies as DOWNLOAD (checked before the "spi_fast" token). */
+/* Classify ONE ROM/console line. Recognized ROM forms ONLY:
+ *   - a line containing "boot:" (case-insensitive) followed by an optional
+ *     "0x..." hex word and a mode token of [A-Za-z0-9_-] (parentheses or
+ *     other punctuation delimit, they are not part of the token); the token
+ *     must be an EXACT (case-insensitive) member of the closed sets:
+ *       USBJTAG:   usb_jtag | usb-jtag | usbjtag | usb_jtag_serial
+ *       DOWNLOAD:  download | spi_fast_download | basic_download | usb_download
+ *       NORMAL:    spi_fast | spi_boot | basic | normal | spi_fast_boot
+ *     (checked in that order so a combined JTAG word cannot be labelled
+ *     plain DOWNLOAD; sets are disjoint today — order is belt-and-braces).
+ *   - the USB-Serial-JTAG ROM banner: a line starting with "esp-rom:"
+ *     (case-insensitive) whose remainder contains the usb-jtag token.
+ * Anything else — including console prose like "download failed", "basic
+ * settings loaded", "Download Mode", or "usb_jtag download mode" without a
+ * ROM form — is VDOG_BOOT_MODE_UNKNOWN. NULL/empty → UNKNOWN. */
 vdog_boot_mode_t vdog_recovery_classify(const char *rom_line);
 
 /* Stable lowercase name for a boot mode (for logs/records). */
 const char *vdog_boot_mode_name(vdog_boot_mode_t mode);
 
 /* ---- sanitized identity (plan 1.2 A2, acceptance 5) --------------------- */
-#define VDOG_IDENTITY_CHIP_MODEL_MAX 16
 #define VDOG_IDENTITY_TAG_MAX 16 /* opaque caller board tag, optional     */
 
+/* Closed set of renderable chip models: the formatter prints only these
+ * internal names, never caller-supplied bytes (PR-review round 1). */
+typedef enum {
+    VDOG_IDENTITY_CHIP_UNKNOWN = 0, /* default; renders "unknown"         */
+    VDOG_IDENTITY_CHIP_ESP32S3      /* renders "esp32s3"                  */
+} vdog_identity_chip_t;
+
 typedef struct {
-    char chip_model[VDOG_IDENTITY_CHIP_MODEL_MAX]; /* e.g. "esp32s3"       */
-    uint8_t chip_major;                            /* chip revision major  */
-    uint8_t chip_minor;                            /* chip revision minor  */
+    vdog_identity_chip_t chip; /* closed set, setter-validated           */
+    uint8_t chip_major;        /* decoded via vdog_identity_set_revision */
+    uint8_t chip_minor;
     vdog_mem_detected_t mem; /* tagged baseline summary (rendered by the
                               * caller's mem line; the identity line keeps
                               * only the compact configured summary)       */
@@ -73,25 +91,44 @@ typedef struct {
     uint16_t mac_tail;       /* LAST TWO BYTES only (0xABCD -> 0xABCD);
                               * a full MAC cannot exist in this struct.    */
     uint8_t mac_valid;       /* 0 = MAC not read (never invented)          */
-    char board_tag[VDOG_IDENTITY_TAG_MAX]; /* opaque, caller-supplied;
-                                            * "" when absent               */
+    char tag[VDOG_IDENTITY_TAG_MAX]; /* valid only when tag_len > 0; bytes
+                                      * were charset-validated by the setter */
+    uint8_t tag_len;         /* 0 = absent (never rendered)                */
 } vdog_identity_t;
 
-/* Zero-init with empty strings: absent parts are never rendered. */
+/* Zero-init: chip UNKNOWN, rev 0.0, no mem, no mac, no tag. */
 void vdog_identity_init(vdog_identity_t *id);
+
+/* Chip model from the closed set, by name. Returns VDOG_OK and stores the
+ * enum on an exact (case-insensitive) whitelist hit ("esp32s3"); returns
+ * VDOG_ERR_INVALID_ARG and clears to UNKNOWN for NULL or anything outside
+ * the set — unlisted text can never be echoed by the formatter. */
+int vdog_identity_set_chip_model(vdog_identity_t *id, const char *model);
+
+/* SDK chip-info revision is decimal major*100+minor (PR-review round 1:
+ * byte-splitting rendered 102 as 0.102). Decode with /100 and %100:
+ * 0 -> 0.0, 2 -> 0.2, 102 -> 1.2, 202 -> 2.2. */
+void vdog_identity_set_revision(vdog_identity_t *id, uint16_t sdk_revision);
+
+/* Opaque board tag: stored ONLY if it matches [A-Za-z0-9._-]{1,16} exactly
+ * (VDOG_OK); an empty string clears it (VDOG_OK, tag_len 0); NULL or any
+ * other byte (including '%' or control chars) returns VDOG_ERR_INVALID_ARG
+ * and leaves the previous value untouched. */
+int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag);
 
 /* Compose ONE sanitized log line, e.g.
  *   "chip=esp32s3 rev=0.2 mem=8MB-flash/8MB-psram[opi-configured] mac=**:**:**:**:ab:cd board=vdog-pa-01"
  * Rules (host-pinned, plan 1.2 acceptance 5):
- *  - chip model + revision always rendered (read-only chip info);
- *  - "mem=" only when mem_valid (already baseline-checked summary — the
- *    compact configured form; the full tagged line is vdog_mem_format's
- *    job and is logged separately);
+ *  - chip model rendered from the closed-set enum + revision as decoded by
+ *    the setter;
+ *  - "mem=" only when mem_valid (and only if it still passes the same
+ *    baseline check the standalone line requires);
  *  - "mac=" renders the stored 16-bit tail as the last two octets with the
  *    OUI-independent mask prefix; absent when mac_valid == 0;
- *  - "board=" only when a non-empty opaque tag was supplied;
- *  - no full MAC, no eFuse raw values, no serial, no secret fields — the
- *    struct cannot even hold them.
+ *  - "board=" renders the setter-validated tag with an explicit length
+ *    bound; absent when tag_len == 0;
+ *  - no full MAC, no eFuse raw values, no serial, no caller-controlled
+ *    format strings anywhere.
  * Buffer/NUL semantics identical to vdog_format_version(): VDOG_OK;
  * VDOG_ERR_INVALID_ARG on NULL buf/cap==0 or NULL id; VDOG_ERR_BUFFER_TOO_SMALL
  * when the exact NUL-terminated line (including final NUL) does not fit;

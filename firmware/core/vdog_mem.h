@@ -128,6 +128,22 @@ void vdog_mem_detected_init(vdog_mem_detected_t *det);
  * Returns VDOG_OK (vdog_mem_error_field() cleared) or the code above. */
 int vdog_mem_check_baseline(const vdog_mem_detected_t *det);
 
+/* Record the flash chip capacity from the adapter's two IDF queries.
+ * flash_size_bytes takes the PHYSICAL size — the honest MEASURED value.
+ * The adapter's two IDF flash queries return DIFFERENT capacities: the
+ * header-capacity query reports the size from the BINARY IMAGE HEADER,
+ * so a 16 MiB chip flashed with an 8 MiB image would otherwise masquerade
+ * as "8MB[measured]" and pass the baseline (PR-review round 1 High
+ * finding; the ESP-IDF docs say the same). Rules: NULL →
+ * VDOG_ERR_INVALID_ARG; either input 0 → field left UNSET (missing beats
+ * invented) + VDOG_ERR_INVALID_ARG; the physical value is recorded
+ * MEASURED; VDOG_OK when header == physical, otherwise VDOG_ERR_MEM_FLASH
+ * with vdog_mem_error_field() naming flash_size_bytes — a mismatch is
+ * reported, never averaged or silently preferred. */
+int vdog_mem_record_flash_size(vdog_mem_detected_t *det,
+                               uint32_t header_size_bytes,
+                               uint32_t physical_size_bytes);
+
 /* Field name behind the last failed vdog_mem_check_baseline() call
  * (single-threaded boot/diagnostic use, same documented last-error
  * semantics as vdog_board_error_field()). NULL after success or before any

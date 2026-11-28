@@ -78,7 +78,8 @@ vdog_mem_detected_t vdog_mem_detected_from_sdkconfig(void)
 int vdog_mem_read_detected(vdog_mem_detected_t *det)
 {
     esp_flash_t *flash;
-    uint32_t size = 0u;
+    uint32_t header_size = 0u;
+    uint32_t physical_size = 0u;
     int failed = VDOG_OK;
 
     if (det == NULL) {
@@ -86,13 +87,19 @@ int vdog_mem_read_detected(vdog_mem_detected_t *det)
     }
 
     /* IDF v6.1 exposes the default chip pointer directly (esp_flash.h:
-     * extern esp_flash_t *esp_flash_default_chip); the getter used by older
-     * SDKs is not part of this pinned framework's public headers. */
+     * extern esp_flash_t *esp_flash_default_chip). BOTH sizes are read:
+     * esp_flash_get_size() returns the capacity from the BINARY IMAGE
+     * HEADER, esp_flash_get_physical_size() the real chip capacity — the
+     * physical value is what becomes MEASURED (PR-review round 1 High
+     * finding: an 8 MiB image on a 16 MiB chip must not print as
+     * 8MB[measured]). Any failed query leaves the field UNSET. */
     flash = esp_flash_default_chip;
-    if (flash != NULL && esp_flash_get_size(flash, &size) == ESP_OK) {
-        det->flash_size_bytes = size;
-        det->flash_size_src = VDOG_MEM_SOURCE_MEASURED;
-        det->field_set |= VDOG_MEM_FIELD_FLASH_SIZE;
+    if (flash != NULL && esp_flash_get_size(flash, &header_size) == ESP_OK &&
+        esp_flash_get_physical_size(flash, &physical_size) == ESP_OK) {
+        if (vdog_mem_record_flash_size(det, header_size, physical_size) !=
+            VDOG_OK) {
+            failed = VDOG_ERR_MEM_FLASH; /* header != physical: reported   */
+        }
     } else {
         /* Query failed honestly: leave UNSET (missing beats invented). */
         failed = VDOG_ERR_MEM_FLASH;
@@ -124,16 +131,19 @@ void vdog_identity_read_esp(vdog_identity_t *id)
         return;
     }
     esp_chip_info(&info); /* read-only chip identity */
-    /* Enum spelling in this pinned framework is esp_chip_model_t::
-     * CHIP_ESP32S3 (the ESP_CHIP_MODEL_* alias set is not present in
-     * esp_chip_info.h of IDF v6.1). */
+    /* Closed-set setter (PR-review round 1): only whitelisted model names
+     * can ever be rendered; unlisted text clears to "unknown". Enum
+     * spelling in this pinned framework is esp_chip_model_t::CHIP_ESP32S3
+     * (the ESP_CHIP_MODEL_* alias set is not present in esp_chip_info.h of
+     * IDF v6.1). */
     if (info.model == CHIP_ESP32S3) {
-        strcpy(id->chip_model, "esp32s3");
+        (void)vdog_identity_set_chip_model(id, "esp32s3");
     } else {
-        strcpy(id->chip_model, "unknown");
+        (void)vdog_identity_set_chip_model(id, NULL);
     }
-    id->chip_major = (uint8_t)(info.revision >> 8);
-    id->chip_minor = (uint8_t)(info.revision & 0xFF);
+    /* IDF reports revision as decimal major*100+minor — decode, do NOT
+     * byte-split (PR-review round 1: 102 must render 1.2, not 0.102). */
+    vdog_identity_set_revision(id, info.revision);
 
     /* Public helper API only (no eFuse raw reads); ONLY the last two bytes
      * are kept, so a full MAC never exists in memory we control. */

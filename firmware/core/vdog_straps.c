@@ -2,6 +2,12 @@
  * vdog portable strap/reserved-pin table — implementation (package 1.2,
  * plan A2b). Const data + pure lookups only: nothing here configures,
  * drives, enables or claims a pin. See vdog_straps.h for the contract.
+ *
+ * PR-review round 1 (2026-11-28): GPIO22-25 (absent on ESP32-S3), GPIO26-32
+ * (SPI flash bus) and GPIO33-37 (octal PSRAM bus on this baseline) are now
+ * reserved REJECT rows; native-USB D-/D+ role labels corrected (19 = D-,
+ * 20 = D+ per the datasheet). A pin that is not a usable general-purpose
+ * GPIO must never return OK from the claim gate.
  */
 #include <stddef.h>
 
@@ -18,8 +24,29 @@ const vdog_straps_row_t vdog_straps_table[] = {
     ROW_BOOT(3, VDOG_STRAPS_ROLE_JTAG),
     ROW_BOOT(45, VDOG_STRAPS_ROLE_VDD_SPI),
     ROW_BOOT(46, VDOG_STRAPS_ROLE_BOOT_MODE),
-    ROW_BOOT(19, VDOG_STRAPS_ROLE_USB),
-    ROW_BOOT(20, VDOG_STRAPS_ROLE_USB_DN),
+    ROW_BOOT(19, VDOG_STRAPS_ROLE_USB_DM),
+    ROW_BOOT(20, VDOG_STRAPS_ROLE_USB_DP),
+    /* Absent on the ESP32-S3: a claim here can only be a bug. */
+    ROW_BOOT(22, VDOG_STRAPS_ROLE_ABSENT),
+    ROW_BOOT(23, VDOG_STRAPS_ROLE_ABSENT),
+    ROW_BOOT(24, VDOG_STRAPS_ROLE_ABSENT),
+    ROW_BOOT(25, VDOG_STRAPS_ROLE_ABSENT),
+    /* SPI flash bus (embedded 8 MiB flash): claiming these corrupts the
+     * memory the firmware executes from. */
+    ROW_BOOT(26, VDOG_STRAPS_ROLE_FLASH_BUS),
+    ROW_BOOT(27, VDOG_STRAPS_ROLE_FLASH_BUS),
+    ROW_BOOT(28, VDOG_STRAPS_ROLE_FLASH_BUS),
+    ROW_BOOT(29, VDOG_STRAPS_ROLE_FLASH_BUS),
+    ROW_BOOT(30, VDOG_STRAPS_ROLE_FLASH_BUS),
+    ROW_BOOT(31, VDOG_STRAPS_ROLE_FLASH_BUS),
+    ROW_BOOT(32, VDOG_STRAPS_ROLE_FLASH_BUS),
+    /* Octal PSRAM bus: on the 8 MiB OPI baseline GPIO33-37 carry the
+     * second data/write/enable lines of the PSRAM interface. */
+    ROW_BOOT(33, VDOG_STRAPS_ROLE_PSRAM_BUS),
+    ROW_BOOT(34, VDOG_STRAPS_ROLE_PSRAM_BUS),
+    ROW_BOOT(35, VDOG_STRAPS_ROLE_PSRAM_BUS),
+    ROW_BOOT(36, VDOG_STRAPS_ROLE_PSRAM_BUS),
+    ROW_BOOT(37, VDOG_STRAPS_ROLE_PSRAM_BUS),
     /* Camera candidates (mirrors hardware/prototype-a/pin-map.csv rows;
      * candidate = provisional, never approval). */
     ROW_CAND(15, VDOG_STRAPS_ROLE_CAM_DATA),
@@ -65,12 +92,12 @@ const vdog_straps_row_t *vdog_straps_lookup(uint8_t gpio)
 }
 
 vdog_straps_claim_t vdog_straps_check_claim(uint8_t gpio,
-                                            vdog_straps_claimant_t claim,
+                                            vdog_straps_claimant_t claimant,
                                             const char **out_role)
 {
     const vdog_straps_row_t *row;
 
-    (void)claim; /* every claimant meets the same table for now */
+    (void)claimant; /* every claimant meets the same table for now */
 
     if (out_role != NULL) {
         *out_role = NULL;

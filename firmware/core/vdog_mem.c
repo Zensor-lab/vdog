@@ -81,6 +81,30 @@ void vdog_mem_detected_init(vdog_mem_detected_t *det)
      * are meaningless until the matching field is set by a caller. */
 }
 
+int vdog_mem_record_flash_size(vdog_mem_detected_t *det,
+                               uint32_t header_size_bytes,
+                               uint32_t physical_size_bytes)
+{
+    if (det == NULL) {
+        return VDOG_ERR_INVALID_ARG;
+    }
+    if (header_size_bytes == 0u || physical_size_bytes == 0u) {
+        /* A failed query leaves the field UNSET (never guessed): the
+         * baseline check then reports VDOG_ERR_MEM_MISSING_FIELD. */
+        return VDOG_ERR_INVALID_ARG;
+    }
+    /* The PHYSICAL capacity is the MEASURED truth; the header value only
+     * cross-checks it (PR-review round 1 High finding). */
+    det->flash_size_bytes = physical_size_bytes;
+    det->flash_size_src = VDOG_MEM_SOURCE_MEASURED;
+    det->field_set |= VDOG_MEM_FIELD_FLASH_SIZE;
+    if (header_size_bytes != physical_size_bytes) {
+        remember_field("flash_size_bytes");
+        return VDOG_ERR_MEM_FLASH;
+    }
+    return VDOG_OK;
+}
+
 /* One pass over the field table; returns the offending descriptor or NULL.
  * phase 0: any field whose bit is absent; phase 1: any field whose tag is
  * not the required one (including an out-of-range tag); caller stops at the

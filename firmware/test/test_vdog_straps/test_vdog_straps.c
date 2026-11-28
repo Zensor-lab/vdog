@@ -6,7 +6,10 @@
  * Pins the desk half of "no strap conflicts": every table row, every
  * reject naming pin + role, candidates PROVISIONAL-only, GPIO21 unclaimed
  * (claim -> PROVISIONAL naming the unresolved CS21/user-LED sharing), the
- * microphone DISABLED, and invalid pins failing closed.
+ * microphone DISABLED, absent + shared-bus pins REJECTED (PR-review round
+ * 1 High finding: GPIO22-25 do not exist on the ESP32-S3; GPIO26-32 are the
+ * SPI flash bus and GPIO33-37 the octal-PSRAM bus on this baseline), and
+ * invalid pins failing closed.
  */
 #include <string.h>
 
@@ -15,15 +18,31 @@
 
 extern int vdog_straps_cpp_smoke(void);
 
-/* 26 rows: 6 reserved + 14 camera candidates + 3 SD candidates + 1
- * UNRESOLVED CS21 + 2 DISABLED mic rows. */
-#define EXPECTED_TABLE_COUNT 26u
+/* 42 rows: 6 straps/USB + 4 absent + 7 flash-bus + 5 psram-bus + 14 camera
+ * candidates + 3 SD candidates + 1 UNRESOLVED CS21 + 2 DISABLED mic rows. */
+#define EXPECTED_TABLE_COUNT 42u
 
-static const uint8_t g_reserved[] = {0u, 3u, 45u, 46u, 19u, 20u};
-static const uint8_t g_camera[] = {15u, 17u, 18u, 16u, 14u, 12u, 11u, 48u,
-                                   10u, 13u, 38u, 47u, 40u, 39u};
-static const uint8_t g_sd[]     = {7u, 8u, 9u};
-static const uint8_t g_mic[]    = {41u, 42u};
+static const uint8_t g_straps[]   = {0u, 3u, 45u, 46u, 19u, 20u};
+static const uint8_t g_absent[]   = {22u, 23u, 24u, 25u};
+static const uint8_t g_flashbus[] = {26u, 27u, 28u, 29u, 30u, 31u, 32u};
+static const uint8_t g_psrambus[] = {33u, 34u, 35u, 36u, 37u};
+static const uint8_t g_camera[]   = {15u, 17u, 18u, 16u, 14u, 12u, 11u, 48u,
+                                     10u, 13u, 38u, 47u, 40u, 39u};
+static const uint8_t g_sd[]       = {7u, 8u, 9u};
+static const uint8_t g_mic[]      = {41u, 42u};
+
+static unsigned count_arr(const uint8_t *a, size_t n)
+{
+    unsigned i;
+    unsigned n_ok = 0u;
+    for (i = 0; i < (unsigned)n; ++i) {
+        const vdog_straps_row_t *r = vdog_straps_lookup(a[i]);
+        if (r != NULL && r->reserved != 0u) {
+            ++n_ok;
+        }
+    }
+    return n_ok;
+}
 
 static void test_table_shape(void)
 {
@@ -50,43 +69,82 @@ static void test_table_shape(void)
             ++sd_n;
         }
     }
-    TEST_ASSERT_EQUAL_UINT(6u, reserved_n);
+    TEST_ASSERT_EQUAL_UINT(22u, reserved_n); /* 6 + 4 + 7 + 5 */
     TEST_ASSERT_EQUAL_UINT(14u, camera_n);
     TEST_ASSERT_EQUAL_UINT(3u, sd_n);
     TEST_ASSERT_EQUAL_UINT(2u, mic_n);
     TEST_ASSERT_EQUAL_UINT(1u, unclaimed_n);
+    TEST_ASSERT_EQUAL_UINT(6u, count_arr(g_straps, sizeof(g_straps)));
+    TEST_ASSERT_EQUAL_UINT(4u, count_arr(g_absent, sizeof(g_absent)));
+    TEST_ASSERT_EQUAL_UINT(7u, count_arr(g_flashbus, sizeof(g_flashbus)));
+    TEST_ASSERT_EQUAL_UINT(5u, count_arr(g_psrambus, sizeof(g_psrambus)));
 }
 
 static void test_reserved_rows_exact(void)
 {
-    size_t i;
-    for (i = 0; i < sizeof(g_reserved) / sizeof(g_reserved[0]); ++i) {
-        const vdog_straps_row_t *r = vdog_straps_lookup(g_reserved[i]);
-        TEST_ASSERT_NOT_NULL_MESSAGE(r, "reserved row present");
-        TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u, r->reserved, "reserved flag");
-        TEST_ASSERT_EQUAL_UINT8(0u, r->candidate);
-    }
-    /* Roles pinned verbatim for the critical straps + USB pair. */
+    /* Roles pinned verbatim for the critical straps, USB pair (D-/D+ from
+     * the datasheet — PR-review round 1 Low finding), absent and bus rows. */
     TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_BOOT, vdog_straps_lookup(0)->role);
     TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_VDD_SPI,
                              vdog_straps_lookup(45)->role);
     TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_BOOT_MODE,
                              vdog_straps_lookup(46)->role);
-    TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_USB, vdog_straps_lookup(19)->role);
-    TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_USB_DN,
-                             vdog_straps_lookup(20)->role);
+    TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_USB_DM, vdog_straps_lookup(19)->role);
+    TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_USB_DP, vdog_straps_lookup(20)->role);
+    TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_ABSENT, vdog_straps_lookup(22)->role);
+    TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_ABSENT, vdog_straps_lookup(25)->role);
+    TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_FLASH_BUS,
+                             vdog_straps_lookup(26)->role);
+    TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_FLASH_BUS,
+                             vdog_straps_lookup(32)->role);
+    TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_PSRAM_BUS,
+                             vdog_straps_lookup(33)->role);
+    TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_PSRAM_BUS,
+                             vdog_straps_lookup(37)->role);
 }
 
 static void test_claims_on_reserved_reject_every_claimant(void)
 {
     size_t i, c;
-    for (i = 0; i < sizeof(g_reserved) / sizeof(g_reserved[0]); ++i) {
+    for (i = 0; i < sizeof(g_straps) / sizeof(g_straps[0]); ++i) {
         for (c = 0; c < 3u; ++c) {
             const char *role = NULL;
             vdog_straps_claim_t rc = vdog_straps_check_claim(
-                g_reserved[i], (vdog_straps_claimant_t)c, &role);
-            TEST_ASSERT_EQUAL_INT_MESSAGE(VDOG_STRAPS_REJECT, rc, "reserved reject");
+                g_straps[i], (vdog_straps_claimant_t)c, &role);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(VDOG_STRAPS_REJECT, rc, "strap reject");
             TEST_ASSERT_NOT_NULL_MESSAGE(role, "role named");
+        }
+    }
+    /* Absent + shared-bus pins reject every claimant (High finding): a pin
+     * that is not a usable GPIO must never return OK. */
+    for (i = 0; i < sizeof(g_absent) / sizeof(g_absent[0]); ++i) {
+        for (c = 0; c < 3u; ++c) {
+            const char *role = NULL;
+            TEST_ASSERT_EQUAL_INT(VDOG_STRAPS_REJECT,
+                                  vdog_straps_check_claim(
+                                      g_absent[i], (vdog_straps_claimant_t)c,
+                                      &role));
+            TEST_ASSERT_NOT_NULL(strstr(role, "absent GPIO"));
+        }
+    }
+    for (i = 0; i < sizeof(g_flashbus) / sizeof(g_flashbus[0]); ++i) {
+        for (c = 0; c < 3u; ++c) {
+            const char *role = NULL;
+            TEST_ASSERT_EQUAL_INT(VDOG_STRAPS_REJECT,
+                                  vdog_straps_check_claim(
+                                      g_flashbus[i], (vdog_straps_claimant_t)c,
+                                      &role));
+            TEST_ASSERT_NOT_NULL(strstr(role, "SPI flash bus"));
+        }
+    }
+    for (i = 0; i < sizeof(g_psrambus) / sizeof(g_psrambus[0]); ++i) {
+        for (c = 0; c < 3u; ++c) {
+            const char *role = NULL;
+            TEST_ASSERT_EQUAL_INT(VDOG_STRAPS_REJECT,
+                                  vdog_straps_check_claim(
+                                      g_psrambus[i], (vdog_straps_claimant_t)c,
+                                      &role));
+            TEST_ASSERT_NOT_NULL(strstr(role, "octal PSRAM"));
         }
     }
 }
@@ -159,10 +217,12 @@ static void test_mic_rows_disabled_reject(void)
 
 static void test_free_pins_ok(void)
 {
-    static const uint8_t free_pins[] = {1u,  2u,  4u,  5u,  6u,  22u, 23u,
-                                        24u, 25u, 26u, 27u, 28u, 29u, 30u,
-                                        31u, 32u, 33u, 34u, 35u, 36u, 37u,
-                                        43u, 44u};
+    /* The ONLY generally-usable free GPIOs left on this baseline after
+     * straps, USB, absent, flash/PSRAM bus, camera/SD candidates, the
+     * unclaimed 21 and the disabled mic pair (43/44 are the console UART,
+     * included as claimable-general deliberately: logging is their only
+     * current user and they stay outside the table). */
+    static const uint8_t free_pins[] = {1u, 2u, 4u, 5u, 6u, 43u, 44u};
     size_t i;
     for (i = 0; i < sizeof(free_pins) / sizeof(free_pins[0]); ++i) {
         TEST_ASSERT_NULL(vdog_straps_lookup(free_pins[i]));

@@ -11,7 +11,8 @@ This session may begin only when ALL wake conditions in §1 are recorded here
 | Condition | Source | Status |
 | --- | --- | --- |
 | Board marking photos delivered (0.3 check 1: base board, Sense side, camera/ribbon, flash + PSRAM markings) | owner | PENDING |
-| Port re-identified at operation time (see §4 procedure — a previously recorded path is never trusted) | operator (this bot) | PENDING |
+| **Part A merged to main** (PR #6 merge commit exists — §2 commit pair is not formable before it; the plan gates Part B on the merge, so the wake table requires it too) | Team Leading developer | PENDING |
+| Port re-identified at operation time (see §5 procedure — a previously recorded path is never trusted) | operator (this bot) | PENDING |
 | Lead released the reviewed Part A commit for device work | Team Leading developer | PENDING |
 | Electrical equipment staged (multimeter + inline USB-C power meter) for the owner-performed §3 step 4 | owner (availability confirmed by the lead 2026-11-28) | CONFIRMED available; staging at session PENDING |
 | `docs/hardware-identity.md` §1 rows transcribed from the photos | operator | PENDING |
@@ -27,15 +28,22 @@ This session may begin only when ALL wake conditions in §1 are recorded here
 
 ## 3. Authorized operations (exactly these, nothing else)
 
-1. Upload of the **build's flash_args image set** — bootloader, partition
-   table, otadata/boot_app0 and app, taken from
-   `firmware/.pio/build/vdog_xiao_sense_proto/flash_args` at session time
-   (true upload set, plan §6 B2; NOT "app-image only"). Before flashing,
-   perform the **partition overlap check** from that same set.
+1. Upload of the **verified PlatformIO image set** from
+   `firmware/.pio/build/vdog_xiao_sense_proto/` at session time:
+   `bootloader.bin` @0x0, `partitions.bin` @0x8000, `ota_data_initial.bin`
+   @0xf000, `firmware.bin` @0x20000 — these four files exist there after a
+   clean build. Do NOT trust the `flash_args` file in that directory: under
+   this PlatformIO builder it names IDF-tree paths (`bootloader/bootloader.bin`,
+   `partition_table/partition-table.bin`, `vdog_firmware.bin`) that are not
+   produced (PR-review round 1 Medium finding; verified against the actual
+   build directory 2026-11-28). Re-verify the four names, offsets and sizes
+   at session time before any upload (true upload set, plan §6 B2; NOT
+   "app-image only"). Before flashing, perform the **partition overlap
+   check** from the partition table in that same set.
 2. Serial monitor at **115200** for the recorded session only (boot lines,
    `mem:` / `identity:` / board lines, boot-mode drill transcript including
    each raw `boot:0x..` word and reset reason).
-3. Port re-identification (procedure §4) as required by 1 and 2.
+3. Port re-identification (procedure §5) as required by 1 and 2.
 4. **Owner-performed electrical checks** (plan §6 step 6; equipment confirmed
    by the lead 2026-11-28): USB supply current during normal boot and at
    idle via the **inline USB-C power meter**, and 3V3 rail voltage via the
@@ -74,7 +82,7 @@ transition:
 | Date / operator | PENDING |
 | Firmware commit pair (merge + tip) | PENDING |
 | Port path per transition (each BOOT/reset step) | PENDING |
-| flash_args image set + overlap-check result | PENDING |
+| Upload image set (§3 item 1: four PlatformIO files + offsets, re-verified) + overlap-check result | PENDING |
 | Boot transcript summary (`vdog_recovery_classify` per line, `boot:0x..`, reset reason) | PENDING |
 | `mem:` / `identity:` lines (verbatim) → transcribed to hardware-identity.md §2 | PENDING |
 | Recovery drill outcome (USB/BOOT → download mode reproducible?) | PENDING |

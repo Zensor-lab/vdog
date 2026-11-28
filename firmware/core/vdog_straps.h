@@ -8,7 +8,9 @@
  * information only — the candidate map is CANDIDATE_NOT_APPROVED and this
  * module approves nothing:
  *   - STRAP rows (GPIO0 BOOT, GPIO3, GPIO45, GPIO46) and the native-USB
- *     pair (GPIO19/GPIO20) reject any claim, naming pin + role.
+ *     pair (GPIO19 D-, GPIO20 D+) reject any claim, naming pin + role.
+ *   - GPIO22-25 do not exist on the ESP32-S3 and GPIO26-32 / GPIO33-37 are
+ *     the SPI flash / octal-PSRAM buses on this baseline: all REJECT.
  *   - camera / SD candidate rows return PROVISIONAL, never approval.
  *   - GPIO21 (SD-CS vs user-LED sharing) is DELIBERATELY UNCLAIMED here:
  *     no row claims it as LED, no row claims it as SD-CS; a claim returns
@@ -44,8 +46,15 @@ typedef enum {
 #define VDOG_STRAPS_ROLE_JTAG "JTAG-select strap pin"
 #define VDOG_STRAPS_ROLE_VDD_SPI "VDD_SPI strap pin"
 #define VDOG_STRAPS_ROLE_BOOT_MODE "boot-mode strap pin"
-#define VDOG_STRAPS_ROLE_USB "native USB DP (host re-enumeration)"
-#define VDOG_STRAPS_ROLE_USB_DN "native USB DM (host re-enumeration)"
+/* Native USB roles per the ESP32-S3 datasheet: GPIO19 = USB_D-,
+ * GPIO20 = USB_D+ (labels verified 2026-11-28, PR-review round 1). */
+#define VDOG_STRAPS_ROLE_USB_DM "native USB D- (host re-enumeration)"
+#define VDOG_STRAPS_ROLE_USB_DP "native USB D+ (host re-enumeration)"
+/* Silicon-absent and shared-bus rows (PR-review round 1 High finding):
+ * these reject just like straps — they are NEVER free GPIOs. */
+#define VDOG_STRAPS_ROLE_ABSENT "does not exist on ESP32-S3 (absent GPIO)"
+#define VDOG_STRAPS_ROLE_FLASH_BUS "SPI flash bus (shared with embedded flash — never claim)"
+#define VDOG_STRAPS_ROLE_PSRAM_BUS "octal PSRAM SPI bus (shared with 8MB OPI PSRAM — never claim)"
 #define VDOG_STRAPS_ROLE_CAM_DATA "camera DVP data (candidate)"
 #define VDOG_STRAPS_ROLE_CAM_XCLK "camera XCLK (candidate)"
 #define VDOG_STRAPS_ROLE_CAM_SYNC "camera PCLK/VSYNC/HREF (candidate)"
