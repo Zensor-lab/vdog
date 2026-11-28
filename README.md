@@ -135,7 +135,11 @@ peeled tags, digested pre-release assets and a packaged-installer check), so
 the live-gated CI-T criteria are recorded as live-verified — with the
 matrix's own limits kept explicit: CI-T07 (integrity) and CI-T10 (immutable
 tag) rest on host-level fixture/fake-adapter evidence corroborated by the
-live record, CI-T09 (clean-host setup) is PARTIAL (macOS wrapper end-to-end
+live record, CI-T12's same-SHA retry and interrupted-publish half is
+fake-adapter only (the live record shows per-PR cancellation and six
+nonoverlapping per-SHA first attempts), CI-T01's draft/fork PR cases are
+configuration-level (no live case yet), CI-T09 (clean-host setup) is PARTIAL
+(macOS wrapper end-to-end
 only; no Linux `install.sh` run, Windows `pwsh` never executed), and CI-T15
 (device install) is deferred UNVERIFIED; see
 [validation](docs/validation.md) section 5 for the per-criterion evidence.
