@@ -272,9 +272,9 @@ lines):
 ```text
 I (xxx) vdog: vdog firmware 0.2.0-proto (0.2 proto build)
 I (xxx) vdog: build identity: build_id=main-<sha12> source_sha=<sha12>
-I (xxx) vdog: board: vdog 0.2.0-proto board=seeed_xiao_esp32s3 target=esp32s3 flash=8MB-dio-80m psram=8MB-opi-80m
-I (xxx) vdog: mem: flash_size=8MB[measured] flash_mode=dio[configured] flash_freq=80M[configured] psram=8MB[measured:init-ok] psram_mode=opi[configured] psram_speed=80M[configured]
-I (xxx) vdog: identity: chip=ESP32-S3 rev=0.2 mem=8MB-flash/8MB-psram[opi-configured] mac=**:**:**:**:<xx>:<xx>
+I (xxx) vdog: board: vdog 0.2.0-proto board=seeed_xiao_esp32s3 target=esp32s3 flash=8MB-qio-80m psram=8MB-opi-80m
+I (xxx) vdog: mem: flash_size=8MB[measured] flash_mode=qio[configured] flash_freq=80m[configured] psram=8MB[measured:init-ok] psram_mode=opi[configured] psram_speed=80m[configured]
+I (xxx) vdog: identity: chip=esp32s3 rev=0.2 mem=8MB-flash/8MB-psram[opi-configured] mac=**:**:**:**:<xx>:<xx>
 I (xxx) vdog: esp32-camera linked: yes
 ```
 
@@ -315,8 +315,9 @@ other device function — that verification is still outstanding.
 | `check` fails on a hash | Re-download from the Release and re-verify; do not install a bundle that fails |
 | Device reports the wrong chip or flash size | You have a different board or revision. Stop; this bundle is only for the XIAO ESP32S3 Sense |
 | Secure boot / flash encryption is reported | Stop. This prototype route does not install onto protected devices and provides no security bypass |
-| An install failed partway | Rerun the same validated command: the same four segments are re-validated before any write. One exception — if the next run refuses with `on-device partition table is unreadable/unknown` (exit 3), the table itself was interrupted mid-write and the board now holds a torn table; a plain rerun will not recover it. Re-flash from a source build per [installation.md](installation.md), which writes the table from scratch |
-| `port … disappeared mid-session` | The installer keeps the board in the bootloader for the whole run (one verifying reset, then `--before no-reset`), so the native USB port should not move; if it does, it never follows a renumbered path. Run `sh ./install.sh ports` and rerun with the **current** path |
+| An install failed partway | **Stop first.** If it failed before any write (connection or classification stage), rerunning the same validated command is safe. If it failed during or after a write, do NOT blindly rerun: verify the physical board is the one you plugged in and that an interrupted vdog install actually happened — rerun only what you are sure was your own failed session |
+| `port … disappeared mid-session` | The installer holds ONE verified connection for the whole run (classification, consent, writes, read-back, reset), so the native USB port should not move; if the connection drops it never continues and never follows a renumbered path. Run `sh ./install.sh ports` and rerun with the **current** path |
+| `on-device partition table is unreadable/unknown` (exit 3) | **Stop — do not rerun to force it through.** A generic unknown-table refusal is never routed into an overwrite: verify the physical board is the expected XIAO ESP32S3 Sense and whether an interrupted vdog install actually happened. If (and only if) confirmed, recovery uses the separately authorized route (re-flash from a source build per [installation.md](installation.md), which writes the table from scratch); otherwise leave the device untouched and investigate |
 | `uv: command not found` | Install `uv`, or export `VDOG_INSTALLER_UV=/path/to/uv`, then rerun |
 
 ## 10. What the installer will never do

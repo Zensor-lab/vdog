@@ -22,11 +22,16 @@ P0-1/P0-2/P1-1 items):
     the validated packaged table semantically (type, subtype, offset, size,
     flags, labels, no duplicates) and byte-for-byte, and its otadata parses
     strictly as pinned ESP-IDF v6.1 select records (no 0xC9 heuristics);
-  * one verified download session per run: exactly one session-establishing
-    ``--before default-reset``, every later step ``--before no-reset`` on the
-    re-verified explicit port path, and exactly one explicit reset, only
-    after every written range has been read back and verified; no failure
-    path resets the board and nothing silently follows a renumbered port;
+  * classification, operator consent, every write and every read-back
+    verification run on ONE live verified esptool connection (chip, flash
+    size, MAC pinned from the read-only preflight probe, and security-off
+    are verified on that connection; the port stays held, so a same-path
+    device swap is refused and a connection loss never continues or resets);
+    the read-only preflight CLI probe uses exactly one session-establishing
+    ``--before default-reset`` and then ``--before no-reset`` steps,
+    re-verifying the explicit port path and never following a renumbered
+    one; exactly one explicit reset, only after every written range has
+    been read back and verified; no failure path resets the board;
   * there is no wiping, security-configuration, or override switch reachable
     from this CLI; nothing outside the four manifest image ranges is written;
   * NVS/SD contents are never written and provisioned/unknown devices are
@@ -1095,6 +1100,25 @@ class EsptoolTransport:
         # for erased content or accepted as matching an expected digest.
         return self._check_exact_read(data, offset, size)
 
+    def read_mac(self, port: str) -> str:
+        """Read the MAC address through the CLI (read-only preflight pin).
+
+        The MAC becomes the install-session identity pin: the single live
+        write connection must report the same MAC or the install aborts
+        with zero writes (same-path device swap protection)."""
+        self._check_port_identity(port)
+        try:
+            out = self._run(self._global_args(port, after="no-reset") + ["read-mac"],
+                            CONNECT_TIMEOUT_SECONDS)
+        except EsptoolFailure:
+            self.invalidate_session()
+            raise
+        match = re.search(r"MAC:\s*([0-9a-fA-F:]{17})", out)
+        if not match:
+            self._fail("esptool did not report a MAC address; refusing to continue")
+        self._establish(port)
+        return match.group(1).lower()
+
     # -- the only write operation (never outside manifest-approved ranges) ----
     def write_flash(self, port: str, offset: int, image_path: Path) -> None:
         self._check_port_identity(port)
@@ -1188,6 +1212,212 @@ def default_ports_provider() -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 # Device-state decision logic (blank factory vs matching dev layout vs refuse)
 # ---------------------------------------------------------------------------
+
+
+class EsptoolSessionBackend:
+    """The production write-session backend: ONE esptool 5.4.0 API connection
+    for the whole install (P0, review round 1 of PR #9).
+
+    Every chip access after ``connect()`` goes through the single
+    ``ESPLoader`` connection esptool opened there — no per-command
+    subprocesses and no reopening of the serial path after consent. The
+    port stays held by this process until close()/reset(), so a different
+    ESP32-S3 presenting the same path can never be written to mid-install:
+    the connection itself, not the path string, is the write target. The
+    esptool import is lazy so environments without it (and the entire test
+    suite, which injects fakes) are unaffected. Live hardware behavior of
+    this path remains UNVERIFIED until a qualified on-device run.
+    """
+
+    def __init__(self, *, ports_provider: Callable[[], list[tuple[str, str]]] | None = None) -> None:
+        self.ports_provider = ports_provider
+        self._esp: Any = None
+        self._write_fn: Any = None
+
+    def connect(self, port: str, *, expect: dict[str, Any]) -> dict[str, Any]:
+        if self.ports_provider is not None:
+            try:
+                present = [device for device, _desc in self.ports_provider()]
+            except Exception as exc:  # noqa: BLE001 - enumeration loss is fatal
+                raise EsptoolFailure(f"cannot confirm port {port}: {exc}") from exc
+            if port not in present:
+                raise EsptoolFailure(
+                    f"port {port} is not currently enumerated; refusing to open a "
+                    "write connection on a vanished path"
+                )
+        try:
+            from esptool import detect_chip  # lazy: only the live path needs it
+            from esptool.cmds import write_flash as esp_write_flash
+        except ImportError as exc:
+            raise EsptoolFailure(
+                f"the qualified esptool 5.4.0 API is not importable here: {exc}"
+            ) from exc
+        self._write_fn = esp_write_flash
+        self._esp = detect_chip(port, connect_mode="default-reset",
+                                connect_attempts=3)
+        if not re.search(r"esp[- ]?32[- ]?s3", str(self._esp.CHIP_NAME), re.I):
+            self.close()
+            raise EsptoolFailure(f"device is not an ESP32-S3: {self._esp.CHIP_NAME!r}")
+        from esptool.cmds import _get_flash_info  # documented at cmds.py:696-706
+        flash_bytes = _get_flash_info(self._esp)[2]
+        if flash_bytes is None:
+            self.close()
+            raise EsptoolFailure("cannot detect flash size on the live connection")
+        try:
+            mac_bytes = self._esp.read_mac("mac")
+        except Exception as exc:  # noqa: BLE001 - surfaced as a transport failure
+            self.close()
+            raise EsptoolFailure(f"cannot read MAC on the live connection: {exc}") from exc
+        mac = ":".join(f"{b:02x}" for b in bytes(mac_bytes))
+        security = self._esp.get_security_info()
+        flags = int(security.get("flags", 0))
+        return {
+            "chip": "esp32s3",
+            "flash_bytes": int(flash_bytes),
+            "mac": mac,
+            "secure_boot": bool(flags & 0x1),
+            "flash_encryption": bool(flags & 0x2),
+        }
+
+    def read_flash(self, port: str, offset: int, size: int) -> bytes:
+        if self._esp is None:
+            raise EsptoolFailure("install session is not connected")
+        return self._esp.read_flash(offset, size)
+
+    def write_flash(self, port: str, offset: int, image_path: Path) -> None:
+        if self._esp is None:
+            raise EsptoolFailure("install session is not connected")
+        self._write_fn(self._esp, [(offset, str(image_path))],
+                       flash_mode=FLASH_MODE, flash_size=FLASH_SIZE,
+                       flash_freq=FLASH_FREQ)
+
+    def reset(self, port: str) -> None:
+        if self._esp is None:
+            raise EsptoolFailure("install session is not connected")
+        self._esp.hard_reset()
+
+    def close(self) -> None:
+        esp, self._esp = self._esp, None
+        if esp is not None:
+            try:
+                esp._port.close()  # ESPLoader.__exit__ closes exactly this
+            except Exception:  # noqa: BLE001 - best effort on teardown
+                pass
+
+
+class VerifiedInstallSession:
+    """One live verified connection for preflight classification, operator
+    consent, ALL writes and ALL read-back verification (P0, review round 1).
+
+    The connection is opened by classify() — BEFORE consent is ever asked —
+    and the explicit port path stays held by this process until finish()
+    performs the single reset or an error path closes it without one, so
+    "the path" can never silently become a different board mid-flow. The
+    connection's own chip/flash/MAC/security are verified before anything
+    is written; the MAC must equal the preflight pin (a different ESP32-S3
+    that took the path after preflight aborts with zero writes). Any
+    failure aborts without resetting. The backend is EsptoolSessionBackend
+    in production and an injected fake in tests; protocol:
+
+        connect(port, *, expect) -> {"chip", "flash_bytes", "mac",
+                                     "secure_boot", "flash_encryption"}
+        read_flash(port, offset, size) -> bytes
+        write_flash(port, offset, image_path) -> None
+        reset(port) -> None
+        close() -> None
+    """
+
+    def __init__(self, backend: Any, package: "Package", manifest: dict[str, Any],
+                 packaged_table: bytes, log: Callable[[str], None], *,
+                 expect: dict[str, Any]) -> None:
+        self.backend = backend
+        self.package = package
+        self.manifest = manifest
+        self.packaged_table = packaged_table
+        self.log = log
+        self.expect = dict(expect)
+        self.identity: dict[str, Any] | None = None
+        self._closed = False
+
+    # -- transport-shaped surface consumed by classify_device ----------------
+    def flash_id(self, port: str) -> tuple[str, int]:
+        self._require_open()
+        return str(self.identity["chip"]), int(self.identity["flash_bytes"])
+
+    def security_flags(self, port: str) -> dict[str, bool]:
+        self._require_open()
+        return {"secure_boot": bool(self.identity["secure_boot"]),
+                "flash_encryption": bool(self.identity["flash_encryption"])}
+
+    def read_flash(self, port: str, offset: int, size: int) -> bytes:
+        self._require_open()
+        return self.backend.read_flash(port, offset, size)
+
+    def _require_open(self) -> None:
+        if self.identity is None or self._closed:
+            raise EsptoolFailure("install session is not connected")
+
+    # -- lifecycle ------------------------------------------------------------
+    def classify(self, port: str) -> str:
+        self.identity = self.backend.connect(port, expect=self.expect)
+        want_mac = str(self.expect.get("mac", "")).lower()
+        got_mac = str(self.identity.get("mac", "")).lower()
+        if want_mac and got_mac != want_mac:
+            self.close()
+            raise InstallerError(
+                f"refusing: the device answering {port} changed between preflight "
+                f"and connect (preflight MAC {want_mac}, connection MAC {got_mac}) "
+                "— a same-path device swap is never written to; nothing was written",
+                EXIT_REFUSED,
+            )
+        return classify_device(self, port, self.manifest, self.log,
+                               packaged_table=self.packaged_table)
+
+    def write_and_verify(self, port: str) -> list[dict[str, Any]]:
+        self._require_open()
+        images = {i["role"]: i for i in self.manifest["images"]}
+        ordered = [images[role] for role in IMAGE_ROLES]
+        # Phase 1 — write every manifest range on the live connection; the
+        # stub stays loaded because nothing between writes leaves it.
+        for image in ordered:
+            self.log(
+                f"write: {image['role']} -> 0x{image['offset']:08x} "
+                f"({image['size']} B)"
+            )
+            self.backend.write_flash(
+                port, image["offset"], self.package.root / image["file"]
+            )
+        # Phase 2 — verify every range by read-back on the same connection,
+        # BEFORE any reset; short reads are fatal, never "close enough".
+        for image in ordered:
+            back = self.backend.read_flash(port, image["offset"], image["size"])
+            if len(back) != image["size"]:
+                raise EsptoolFailure(
+                    f"read-back of {image['role']} at 0x{image['offset']:x} returned "
+                    f"{len(back)} bytes, expected exactly {image['size']}"
+                )
+            if sha256_bytes(back) != image["sha256"]:
+                raise InstallerError(
+                    f"install failed: read-back verification of {image['role']} "
+                    f"at 0x{image['offset']:08x} did not match the manifest digest; "
+                    "no reset was performed; the board may need a manual power cycle",
+                    EXIT_FLASH_FAILED,
+                )
+        return ordered
+
+    def finish(self, port: str) -> None:
+        try:
+            self.backend.reset(port)
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            try:
+                self.backend.close()
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
 
 
 def _read_exact(transport: EsptoolTransport, port: str, label: str,
@@ -1370,6 +1600,7 @@ class InstallerApp:
         package_root: Path,
         *,
         transport: EsptoolTransport | None = None,
+        session_backend: Any = None,
         esptool_python: str | None = None,
         ports_provider: Callable[[], list[tuple[str, str]]] | None = None,
         input_fn: Callable[[str], str] = input,
@@ -1378,6 +1609,7 @@ class InstallerApp:
     ) -> None:
         self.package = Package(package_root)
         self._transport = transport
+        self._session_backend = session_backend
         self.esptool_python = esptool_python
         self.ports_provider = ports_provider or default_ports_provider
         self.input_fn = input_fn
@@ -1391,6 +1623,15 @@ class InstallerApp:
                 ports_provider=self.ports_provider,
             )
         return self._transport
+
+    def get_session_backend(self) -> Any:
+        """The write-phase backend. Tests inject a fake; production opens the
+        single live esptool API connection."""
+        if self._session_backend is None:
+            self._session_backend = EsptoolSessionBackend(
+                ports_provider=self.ports_provider,
+            )
+        return self._session_backend
 
     def _require_pinned_esptool(self, transport: EsptoolTransport) -> None:
         """Version gate; a broken/missing esptool is an environment failure,
@@ -1437,19 +1678,18 @@ class InstallerApp:
     # -- plan --------------------------------------------------------------------
     def plan_lines(self, manifest: dict[str, Any]) -> list[str]:
         lines: list[str] = []
-        esptool_hint = " ".join(
-            self._transport.command if self._transport else ["<esptool>"]
+        lines.append(
+            "session: ONE live verified esptool 5.4.0 connection carries classification, "
+            "consent, every write, every read-back verification and the single reset — "
+            "the port stays held by this process the whole time, so the write target is "
+            "the verified connection (chip + flash + MAC pinned from preflight + "
+            "security-off), never just a path string another board could take over"
         )
         lines.append(
-            "session: one verified download session for the whole run — exactly one "
-            "--before default-reset (below) establishes it; every later step reuses it "
-            "with --before no-reset and re-verifies the explicit port path, so a reset "
-            "transition can never silently drop or renumber the native USB port"
-        )
-        lines.append(
-            f"session: {esptool_hint} --chip esp32s3 --port <port> --before default-reset "
-            "--after no-reset flash-id  # the single session-establishing reset; chip "
-            "and flash are verified here"
+            "preflight: read-only CLI probe on the pinned esptool (one --before "
+            "default-reset establishing step, then --before no-reset steps; the "
+            "explicit port path is re-verified before every step and a vanished or "
+            "renumbered port is never followed)"
         )
         for image in manifest["images"]:
             end = image["offset"] + image["size"] - 1
@@ -1459,20 +1699,19 @@ class InstallerApp:
                 f"sha256={image['sha256'][:12]}…"
             )
             lines.append(
-                f"invoke: {esptool_hint} --chip esp32s3 --port <port> --before no-reset "
-                f"--after no-reset "
-                f"write-flash --flash-mode {FLASH_MODE} --flash-size {FLASH_SIZE} "
-                f"--flash-freq {FLASH_FREQ} 0x{image['offset']:x} {image['file']}"
+                f"invoke: esptool API write-flash on the live verified connection "
+                f"--flash-mode {FLASH_MODE} --flash-size {FLASH_SIZE} "
+                f"--flash-freq {FLASH_FREQ} 0x{image['offset']:x} {image['file']} "
+                f"(stub stays loaded between steps; no per-command reconnect)"
             )
         lines.append(
-            "read-back verify: each written range is read back (exact length required) "
-            "and compared to the manifest sha256; on any mismatch NO reset is performed "
-            "(manual power cycle needed)"
+            "read-back verify: each written range is read back on the same connection "
+            "(exact length required) and compared to the manifest sha256; on any "
+            "mismatch or connection loss NO reset is performed (manual power cycle needed)"
         )
         lines.append(
-            f"invoke: {esptool_hint} --chip esp32s3 --port <port> --before no-reset "
-            f"--after hard-reset flash-id  # the single explicit reset, only after "
-            "every digest matched"
+            "reset: exactly one explicit hard reset on the same connection, only after "
+            "every digest matched; it is also the connection's last operation"
         )
         lines.append("never written: NVS, phy_init, storage, SD card, security fuses")
         return lines
@@ -1533,37 +1772,29 @@ class InstallerApp:
 
         transport = self.get_transport()
         self._require_pinned_esptool(transport)
+        # Read-only preflight probe (CLI): the MAC read here becomes the
+        # identity pin the single live write connection must reproduce.
         try:
-            state = classify_device(
-                transport, port, manifest, self.out,
-                packaged_table=self.package.read(ROLE_FILES["partition_table"]),
-            )
+            transport.flash_id(port)
+            pin_mac = transport.read_mac(port)
+        except EsptoolFailure as exc:
+            raise InstallerError(f"install failed: {exc}", EXIT_FLASH_FAILED) from exc
+        session = VerifiedInstallSession(
+            self.get_session_backend(), self.package, manifest,
+            self.package.read(ROLE_FILES["partition_table"]), self.out,
+            expect={"chip": TARGET, "flash_bytes": EXPECTED_FLASH_BYTES,
+                    "mac": pin_mac},
+        )
+        try:
+            # ONE live verified connection: chip, flash, MAC pin and security
+            # are verified on it during classification, it stays held through
+            # consent, carries every write and every read-back verification,
+            # and performs the single reset — or none at all on any failure.
+            state = session.classify(port)
             self._consent(manifest, confirm_replace=confirm_replace, state=state)
-            images = {i["role"]: i for i in manifest["images"]}
-            ordered = [images[role] for role in IMAGE_ROLES]
-            # Phase 1 — write every manifest range with --after no-reset, so
-            # the board stays in the bootloader until verification finished.
-            for image in ordered:
-                self.out(
-                    f"write: {image['role']} -> 0x{image['offset']:08x} "
-                    f"({image['size']} B)"
-                )
-                transport.write_flash(
-                    port, image["offset"], self.package.root / image["file"]
-                )
-            # Phase 2 — verify every range by read-back BEFORE any reset.
-            for image in ordered:
-                back = transport.read_flash(port, image["offset"], image["size"])
-                if sha256_bytes(back) != image["sha256"]:
-                    raise InstallerError(
-                        f"install failed: read-back verification of {image['role']} "
-                        f"at 0x{image['offset']:08x} did not match the manifest digest; "
-                        "no reset was performed; the board may need a manual power cycle",
-                        EXIT_FLASH_FAILED,
-                    )
-            # Phase 3 — exactly one explicit reset, only now.
+            ordered = session.write_and_verify(port)
             try:
-                transport.reset(port)
+                session.finish(port)
             except EsptoolFailure as exc:
                 raise InstallerError(
                     f"install: every range was written and read-back verified, but the "
@@ -1578,6 +1809,8 @@ class InstallerApp:
             )
         except EsptoolFailure as exc:
             raise InstallerError(f"install failed: {exc}", EXIT_FLASH_FAILED) from exc
+        finally:
+            session.close()  # idempotent; ensures no handle survives any exit
         return EXIT_OK
 
     def _require_port(self, port: str | None) -> None:
@@ -1670,6 +1903,9 @@ def main(
     app = InstallerApp(
         package_root,
         transport=transport,
+        # A test-injected transport doubles as the session backend; when
+        # None, both resolve to their real production implementations.
+        session_backend=transport,
         esptool_python=getattr(args, "esptool_python", None),
         ports_provider=ports_provider,
         input_fn=input_fn,

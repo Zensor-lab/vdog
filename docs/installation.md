@@ -121,10 +121,10 @@ logs `vdog firmware ... (0.2 proto build)`, the build identity line
 `build identity: build_id=... source_sha=...` (for a source build without CI
 context that reads `build_id=local source_sha=local`), the Stage 1.1 board
 profile line `board: vdog 0.2.0-proto board=seeed_xiao_esp32s3 target=esp32s3
-flash=8MB-dio-80m psram=8MB-opi-80m`, the Stage 1.2 memory baseline line
-`mem: flash_size=8MB[measured] flash_mode=dio[configured] flash_freq=80M[configured]
-psram=8MB[measured:init-ok] psram_mode=opi[configured] psram_speed=80M[configured]`,
-the sanitized identity line `identity: chip=ESP32-S3 rev=0.2
+flash=8MB-qio-80m psram=8MB-opi-80m`, the Stage 1.2 memory baseline line
+`mem: flash_size=8MB[measured] flash_mode=qio[configured] flash_freq=80m[configured]
+psram=8MB[measured:init-ok] psram_mode=opi[configured] psram_speed=80m[configured]`,
+the sanitized identity line `identity: chip=esp32s3 rev=0.2
 mem=8MB-flash/8MB-psram[opi-configured] mac=**:**:**:**:<xx>:<xx>` (MAC tail
 only), and `esp32-camera linked: yes`. These are expected messages from the
 source, not a recorded device test result; they do not prove camera capture or

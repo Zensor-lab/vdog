@@ -22,8 +22,11 @@ CI-T10/CI-T11/CI-T12/CI-T13):
 * a completed matching published release is reused only after its ZIP has
   been RE-VERIFIED: the ZIP bytes must hash to the published detached digest,
   pass package validation, and carry the verified release identity in their
-  embedded manifest; an un-downloadable (unverifiable) ZIP is a failure,
-  never a silent "reused";
+  embedded manifest; the published ``.sha256`` must be the canonical single
+  ``shasum -a 256`` line naming the release ZIP exactly, and the standalone
+  ``manifest.json`` asset — downloaded exactly once — must match the embedded
+  manifest byte-for-byte; an un-downloadable (unverifiable) ZIP or manifest is
+  a failure, never a silent "reused";
 * an unpublished draft carrying a partial asset set from the same tag/source
   has its **entire** asset set replaced in one attempt (delete-all then
   upload-all, published only after the set verifies);
@@ -42,6 +45,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import stat
 import sys
 import urllib.error
@@ -652,25 +656,73 @@ def _identity_projection(manifest: dict[str, Any]) -> dict[str, Any]:
     return node
 
 
+#: One canonical ``shasum -a 256`` checksum line: 64 hex digest, exactly two
+#: spaces, then a bare file name (no path separators, no binary-mode ``*``).
+CHECKSUM_LINE_PATTERN = re.compile(r"([0-9a-fA-F]{64})  ([^ \t/\\]+)")
+
+
+def parse_checksum_file(text: str, *, expected_name: str) -> str:
+    """Return the digest from a canonical ``shasum -a 256`` checksum file.
+
+    A published ``<zip>.sha256`` must be exactly the one line that
+    ``shasum -a 256`` writes and ``shasum -a 256 -c`` verifies (the very
+    command this tool's Release body and the installation guide tell users
+    to run)::
+
+        <64-hex digest><two spaces><expected_name>
+
+    A bare digest with no file name, a name that is not exactly
+    *expected_name*, a name containing a path separator, the GNU binary-mode
+    ``*`` marker, a single-space separator, or extra or missing lines are all
+    rejected with ``ValueError``: the published digest is only trustworthy
+    when the checksum tool the release itself documents can verify it.
+    """
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # the single terminating newline shasum itself writes
+    if len(lines) != 1:
+        raise ValueError(f"expected exactly one checksum line, found {len(lines)}")
+    line = lines[0]
+    match = CHECKSUM_LINE_PATTERN.fullmatch(line)
+    if match is None:
+        raise ValueError(
+            f"{line[:72]!r} is not a canonical '<sha256>  <name>' checksum line "
+            "(64 hex digest, exactly two spaces, bare file name)"
+        )
+    digest, name = match.groups()
+    if name != expected_name:
+        raise ValueError(
+            f"the checksum line names {name!r}, not the release file "
+            f"{expected_name!r}"
+        )
+    return digest.lower()
+
+
 def _verify_published_zip(
     adapter: GitHubAdapter,
     release: Release,
     inputs: PublishInputs,
     report: PublishReport,
     errors: list[str],
+    published_manifest_bytes: bytes | None,
 ) -> None:
     """P1-3: a reused published ZIP must VERIFY before reuse is reported.
 
     Before ``publish()`` may report ``reused-published`` it downloads the
     existing ZIP and its detached ``.sha256`` sidecar from the release and
-    checks, in order: (1) the ZIP bytes hash to the digest the published
-    sidecar records; (2) the ZIP is internally consistent (manifest digests,
-    SHA256SUMS, images, headers) via the same validator CI runs; and (3) the
-    manifest EMBEDDED in the ZIP carries this build's verified release
-    identity. A ZIP that cannot be downloaded — i.e. cannot be verified — is
-    an error, never a warning: reuse is reported only for a ZIP that actually
-    passed. (A byte-different digest vs *this rebuild* stays a warning:
-    identical source may legitimately rebuild byte-differently.)
+    checks, in order: (1) the sidecar is the canonical one-line
+    ``shasum -a 256`` checksum file naming exactly the release ZIP, and the
+    ZIP bytes hash to the digest it records; (2) the ZIP is internally
+    consistent (manifest digests, SHA256SUMS, images, headers) via the same
+    validator CI runs; (3) the manifest EMBEDDED in the ZIP carries this
+    build's verified release identity; and (4) the standalone published
+    manifest.json — downloaded exactly once by the caller and passed in as
+    *published_manifest_bytes* — matches the embedded manifest byte-for-byte.
+    A ZIP or manifest that cannot be downloaded — i.e. cannot be verified —
+    is an error, never a warning: reuse is reported only for a ZIP that
+    actually passed every check. (A byte-different digest vs *this rebuild*
+    stays a warning: identical source may legitimately rebuild
+    byte-differently.)
     """
     assets = {asset.name: asset for asset in adapter.list_assets(release.id)}
     zip_asset = assets.get(inputs.zip_name)
@@ -698,10 +750,15 @@ def _verify_published_zip(
         )
         return
     try:
-        recorded = sidecar_text.decode("utf-8").split()[0].lower()
-    except (UnicodeDecodeError, IndexError) as exc:
+        recorded = parse_checksum_file(
+            sidecar_text.decode("utf-8"), expected_name=inputs.zip_name
+        )
+    except (UnicodeDecodeError, ValueError) as exc:
         errors.append(
-            f"publish: published {inputs.zip_name}.sha256 is unreadable: {exc}"
+            f"publish: published {inputs.zip_name}.sha256 is not a canonical "
+            f"shasum -a 256 checksum file for {inputs.zip_name}: {exc}; reuse "
+            "requires the exact '<sha256>  <file>' line that "
+            f"'shasum -a 256 -c {inputs.zip_name}.sha256' verifies — reuse refused"
         )
         return
     digest = sha256_bytes(zip_bytes)
@@ -748,17 +805,20 @@ def _verify_published_zip(
             f"on {differing} with the verified release identity; the ZIP does "
             "not contain the build its metadata claims — reuse refused"
         )
-    published_manifest = assets.get(contract.MANIFEST_FILE)
-    if published_manifest is not None:
-        published_bytes = adapter.download_asset(published_manifest)
-        if published_bytes is not None and published_bytes != payload[
-            contract.MANIFEST_FILE
-        ]:
-            errors.append(
-                "publish: the standalone published manifest.json differs from "
-                "the manifest embedded in the published ZIP; a swapped asset "
-                "set is never reported as reused"
-            )
+    embedded_manifest_bytes = payload[contract.MANIFEST_FILE]
+    if published_manifest_bytes is None:
+        errors.append(
+            f"publish: the standalone published {contract.MANIFEST_FILE} is not "
+            "downloadable from this release; reuse requires its bytes to be "
+            "compared against the manifest embedded in the ZIP — an "
+            "unverifiable manifest is never reported as reused"
+        )
+    elif published_manifest_bytes != embedded_manifest_bytes:
+        errors.append(
+            "publish: the standalone published manifest.json differs from the "
+            "manifest embedded in the published ZIP; a swapped asset set is "
+            "never reported as reused"
+        )
 
 
 def _verify_published_identity(
@@ -767,7 +827,14 @@ def _verify_published_identity(
     inputs: PublishInputs,
     report: PublishReport,
 ) -> None:
-    """A published release must carry the exact tested identity, or fail loudly."""
+    """A published release must carry the exact tested identity, or fail loudly.
+
+    The standalone ``manifest.json`` asset is downloaded exactly ONCE here;
+    its bytes are reused both for the manifest-identity check below and for
+    the byte-for-byte comparison against the ZIP's embedded manifest in
+    :func:`_verify_published_zip`. An undownloadable manifest is a hard
+    failure recorded there, never a warning that skips the comparison.
+    """
     errors: list[str] = []
     if release.tag_name != inputs.tag:
         errors.append(f"publish: published release targets tag {release.tag_name!r}, "
@@ -790,45 +857,46 @@ def _verify_published_identity(
             "in place"
         )
 
-    published_manifest = None
-    for asset in adapter.list_assets(release.id):
-        if asset.name != contract.MANIFEST_FILE:
-            continue
-        published_manifest = adapter.download_asset(asset)
-        if published_manifest is None:
-            report.warnings.append(
-                "published manifest.json could not be downloaded by this adapter; "
-                "identity was checked from release metadata and asset names only"
-            )
-            break
-        try:
-            published_doc = json.loads(published_manifest.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            errors.append(f"publish: published manifest.json is unreadable: {exc}")
-            break
-        want = _identity_projection(inputs.manifest)
-        got = _identity_projection(published_doc)
-        if want != got:
-            differing = sorted(k for k in want if want.get(k) != got.get(k))
-            errors.append(
-                "publish: the already published manifest disagrees on "
-                f"{differing}; refusing to treat it as this build (never mixing builds)"
-            )
-        want_hashes = {i["role"]: i["sha256"] for i in inputs.manifest.get("images", [])}
-        got_hashes = {i["role"]: i["sha256"] for i in published_doc.get("images", [])}
-        if want_hashes != got_hashes:
-            changed = sorted(
-                role for role in set(want_hashes) | set(got_hashes)
-                if want_hashes.get(role) != got_hashes.get(role)
-            )
-            report.warnings.append(
-                "published image digests differ from this rebuild for roles "
-                f"{changed}; identical source can legitimately rebuild byte-differently, "
-                "so this is reported and never overwritten"
-            )
-        break
+    published_manifest_bytes: bytes | None = None
+    published_manifest = next(
+        (asset for asset in adapter.list_assets(release.id)
+         if asset.name == contract.MANIFEST_FILE),
+        None,
+    )
+    if published_manifest is not None:
+        published_manifest_bytes = adapter.download_asset(published_manifest)
+        if published_manifest_bytes is not None:
+            try:
+                published_doc = json.loads(published_manifest_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                errors.append(f"publish: published manifest.json is unreadable: {exc}")
+            else:
+                want = _identity_projection(inputs.manifest)
+                got = _identity_projection(published_doc)
+                if want != got:
+                    differing = sorted(k for k in want if want.get(k) != got.get(k))
+                    errors.append(
+                        "publish: the already published manifest disagrees on "
+                        f"{differing}; refusing to treat it as this build "
+                        "(never mixing builds)"
+                    )
+                want_hashes = {i["role"]: i["sha256"]
+                               for i in inputs.manifest.get("images", [])}
+                got_hashes = {i["role"]: i["sha256"]
+                              for i in published_doc.get("images", [])}
+                if want_hashes != got_hashes:
+                    changed = sorted(
+                        role for role in set(want_hashes) | set(got_hashes)
+                        if want_hashes.get(role) != got_hashes.get(role)
+                    )
+                    report.warnings.append(
+                        "published image digests differ from this rebuild for roles "
+                        f"{changed}; identical source can legitimately rebuild "
+                        "byte-differently, so this is reported and never overwritten"
+                    )
 
-    _verify_published_zip(adapter, release, inputs, report, errors)
+    _verify_published_zip(adapter, release, inputs, report, errors,
+                          published_manifest_bytes)
 
     if errors:
         raise PublishConflict(errors)

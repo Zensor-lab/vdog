@@ -730,7 +730,11 @@ class FakeTransport:
         corrupt_store: bool = False,
         short_read_at: tuple[int, int] | None = None,
         short_read_by: int = 1,
+        short_read_when: str = "always",
         drop_port_after: int | None = None,
+        mac: str = "00:11:22:33:44:55",
+        preflight_mac: str | None = None,
+        swap_mac: str | None = None,
     ) -> None:
         from tools.firmware.installer.install import EsptoolFailure
 
@@ -759,6 +763,10 @@ class FakeTransport:
         self.drop_port_after = drop_port_after
         self.short_read_at = short_read_at
         self.short_read_by = short_read_by
+        self.short_read_when = short_read_when
+        self.mac = mac
+        self.preflight_mac = preflight_mac
+        self.swap_mac = swap_mac
 
     # -- adapter surface -----------------------------------------------------
     def _maybe_fail(self, kind: str) -> None:
@@ -830,7 +838,8 @@ class FakeTransport:
                 out[overlap_start - offset:overlap_end - offset] = region[
                     overlap_start - region_start:overlap_end - region_start
                 ]
-        if self.short_read_at == (offset, size):
+        if (self.short_read_at == (offset, size)
+                and (self.short_read_when == "always" or self.writes)):
             out = out[: max(0, size - self.short_read_by)]
         self._establish(port)
         return bytes(out)
@@ -864,6 +873,39 @@ class FakeTransport:
             raise self._failure_cls("injected reset failure")
         self.resets.append(port)
         # The session ends with the one reset: the port re-enumerates.
+        self.session_port = None
+        self.session_verified = False
+
+    # -- verified-session backend surface (mirrors EsptoolSessionBackend) ----
+    def read_mac(self, port: str) -> str:
+        before = self._begin(port)
+        self.calls.append(["read-mac", port, before])
+        self._maybe_fail("read-mac")
+        self._establish(port)
+        return self.preflight_mac or self.mac
+
+    def connect(self, port: str, *, expect: dict) -> dict:
+        """Open the ONE live connection: the identity returned comes from the
+        connection itself; hooks let tests present a different board that
+        took the same path after preflight."""
+        before = self._begin(port)
+        self.calls.append(["connect", port, before])
+        self._maybe_fail("connect")
+        if self.chip != "esp32s3":
+            raise self._failure_cls(
+                f"device is not an ESP32-S3: {ESPTOOL_540_CHIP_LINE_C3!r}"
+            )
+        self._establish(port)
+        return {
+            "chip": self.chip,
+            "flash_bytes": self.flash_size,
+            "mac": (self.swap_mac if self.swap_mac is not None else self.mac),
+            "secure_boot": self.security["secure_boot"],
+            "flash_encryption": self.security["flash_encryption"],
+        }
+
+    def close(self) -> None:
+        self.calls.append(["close"])
         self.session_port = None
         self.session_verified = False
 

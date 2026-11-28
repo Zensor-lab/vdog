@@ -504,9 +504,7 @@ def test_published_release_without_prototype_flags_is_rejected(tmp_path: Path) -
     assert "prerelease" in messages and "make_latest" in messages
 
 
-def test_unreadable_published_manifest_asset_warns_but_zip_always_verified(
-    tmp_path: Path,
-) -> None:
+def test_undownloadable_published_manifest_asset_refuses_reuse(tmp_path: Path) -> None:
     zip_path, _sha, _manifest = build_main_package(tmp_path)
     adapter = FakeGitHubAdapter()
     report = publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
@@ -521,12 +519,18 @@ def test_unreadable_published_manifest_asset_warns_but_zip_always_verified(
     adapter.downloadable = True
 
     # The ZIP and its sidecar verify, but the standalone manifest.json asset
-    # cannot be downloaded: the manifest-identity step degrades to a warning
-    # and the ZIP's OWN embedded manifest is still identity-checked.
+    # cannot be downloaded: reuse is REFUSED outright — the byte-for-byte
+    # comparison against the ZIP's embedded manifest must actually run, so a
+    # failed download is a hard failure, never a warning that skips it.
     adapter.fail_download_names = {"manifest.json"}
-    report = publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
-    assert report.decision == "reused-published"
-    assert any("could not be downloaded" in w for w in report.warnings)
+    mutating_before = list(adapter.mutating_calls())
+    with pytest.raises(PublishConflict) as exc:
+        publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    messages = " ".join(exc.value.errors)
+    assert "standalone published manifest.json is not downloadable" in messages
+    assert "never reported as reused" in messages
+    assert not any("manifest" in w for w in report.warnings)
+    assert adapter.mutating_calls() == mutating_before
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +663,141 @@ def test_rerun_refuses_an_unverifiable_published_zip(tmp_path: Path, missing: st
         publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
     messages = " ".join(exc.value.errors)
     assert "could not be downloaded" in messages
+
+
+def _manifest_asset(adapter: FakeGitHubAdapter, release_id: int) -> Asset:
+    for asset in adapter.assets[release_id]:
+        if asset.name == "manifest.json":
+            return asset
+    raise AssertionError("published manifest.json asset not seeded")
+
+
+# ---------------------------------------------------------------------------
+# P1-3 (PR-R9): the published checksum file must be the canonical
+# "shasum -a 256" line for the exact release ZIP basename
+# ---------------------------------------------------------------------------
+
+
+def test_rerun_accepts_the_canonical_checksum_line(tmp_path: Path) -> None:
+    """The '<sha256><two spaces><exact ZIP basename>' line that
+    ``shasum -a 256`` writes (and package.py publishes) keeps verifying."""
+    adapter, report, zip_path = _publish_once(tmp_path)
+    zip_asset = _stored_zip_asset(adapter, report.release_id)
+    digest = support.sha256_bytes(adapter.asset_bytes[zip_asset.id])
+    sidecar = _sidecar_asset(adapter, report.release_id)
+    adapter.asset_bytes[sidecar.id] = f"{digest}  {zip_asset.name}\n".encode()
+    report = publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    assert report.decision == "reused-published"
+
+
+@pytest.mark.parametrize(
+    "render, needle",
+    [
+        pytest.param(lambda d, n: f"{d}\n", "64 hex digest", id="missing-name"),
+        pytest.param(lambda d, n: f"{d}  not-the-release.zip\n",
+                     "not the release file", id="wrong-name"),
+        pytest.param(lambda d, n: f"{d}  dist/{n}\n",
+                     "64 hex digest", id="path-in-name"),
+        pytest.param(lambda d, n: f"{d} {n}\n",
+                     "64 hex digest", id="single-space"),
+        pytest.param(lambda d, n: f"{d}  *{n}\n",
+                     "not the release file", id="binary-star"),
+        pytest.param(lambda d, n: f"{d}  {n}\n{d}  {n}.bak\n",
+                     "exactly one checksum line", id="extra-line"),
+        pytest.param(lambda d, n: "", "exactly one checksum line", id="empty"),
+    ],
+)
+def test_rerun_rejects_a_noncanonical_published_checksum_file(
+    tmp_path: Path, render: Any, needle: str
+) -> None:
+    """A sidecar that ``shasum -a 256 -c`` could not verify — missing or
+    mismatched basename, path separator, wrong separator or extra content —
+    is refused even when its digest alone would match the published ZIP."""
+    adapter, report, zip_path = _publish_once(tmp_path)
+    zip_asset = _stored_zip_asset(adapter, report.release_id)
+    digest = support.sha256_bytes(adapter.asset_bytes[zip_asset.id])
+    sidecar = _sidecar_asset(adapter, report.release_id)
+    adapter.asset_bytes[sidecar.id] = render(digest, zip_asset.name).encode()
+    mutating_before = list(adapter.mutating_calls())
+
+    with pytest.raises(PublishConflict) as exc:
+        publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    messages = " ".join(exc.value.errors)
+    assert "shasum -a 256" in messages
+    assert needle in messages
+    assert "reuse refused" in messages
+    assert adapter.mutating_calls() == mutating_before
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param("a" * 64 + "\n", id="no-name"),
+        pytest.param("a" * 64 + "  \n", id="empty-name"),
+        pytest.param("a" * 63 + "  x.zip\n", id="short-digest"),
+        pytest.param("g" * 64 + "  x.zip\n", id="non-hex-digest"),
+        pytest.param("a" * 64 + "   x.zip\n", id="three-spaces"),
+        pytest.param("a" * 64 + "\tx.zip\n", id="tab-separator"),
+        pytest.param("a" * 64 + "  ./x.zip\n", id="relative-path"),
+        pytest.param("a" * 64 + "  x.zip\nextra\n", id="trailing-garbage"),
+    ],
+)
+def test_parse_checksum_file_rejects_noncanonical_lines(line: str) -> None:
+    with pytest.raises(ValueError):
+        publish.parse_checksum_file(line, expected_name="x.zip")
+
+
+def test_parse_checksum_file_accepts_the_canonical_line() -> None:
+    digest = "ab" * 32
+    assert publish.parse_checksum_file(
+        f"{digest}  vdog-xiao-sense-main-0123456789ab.zip\n",
+        expected_name="vdog-xiao-sense-main-0123456789ab.zip",
+    ) == digest
+    # Hex case is normalised for the digest comparison, never the name.
+    assert publish.parse_checksum_file(
+        f"{digest.upper()}  x.zip\n", expected_name="x.zip"
+    ) == digest
+
+
+# ---------------------------------------------------------------------------
+# P1-3 (PR-R9): the standalone manifest.json is downloaded exactly once and
+# its byte comparison against the embedded manifest can never be skipped
+# ---------------------------------------------------------------------------
+
+
+def test_rerun_downloads_the_standalone_manifest_exactly_once(tmp_path: Path) -> None:
+    adapter, report, zip_path = _publish_once(tmp_path)
+    zip_asset = _stored_zip_asset(adapter, report.release_id)
+    calls_before = list(adapter.calls)
+
+    rerun = publish_run(adapter, load_publish_inputs(zip_path,
+                                                     expected_sha=MAIN_SHA_A))
+    assert rerun.decision == "reused-published"
+    new_calls = adapter.calls[len(calls_before):]
+    assert new_calls.count("GET asset-bytes manifest.json") == 1
+    assert new_calls.count(f"GET asset-bytes {zip_asset.name}") == 1
+
+
+def test_rerun_rejects_a_standalone_manifest_that_differs_from_the_embedded_one(
+    tmp_path: Path,
+) -> None:
+    """Same parsed identity, different bytes (reformatted): the single
+    download's bytes are still compared, so the swap is caught."""
+    adapter, report, zip_path = _publish_once(tmp_path)
+    manifest_asset = _manifest_asset(adapter, report.release_id)
+    doc = json.loads(adapter.asset_bytes[manifest_asset.id].decode("utf-8"))
+    adapter.asset_bytes[manifest_asset.id] = (
+        json.dumps(doc, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    mutating_before = list(adapter.mutating_calls())
+
+    with pytest.raises(PublishConflict) as exc:
+        publish_run(adapter, load_publish_inputs(zip_path, expected_sha=MAIN_SHA_A))
+    messages = " ".join(exc.value.errors)
+    assert "standalone published manifest.json differs from the manifest embedded" \
+        in messages
+    assert "swapped asset set" in messages
+    assert adapter.mutating_calls() == mutating_before
 
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ def app(root: Path, transport=None, input_fn=lambda p: "install", **kw):
     return inst.InstallerApp(
         root,
         transport=transport,
+        session_backend=kw.pop("session_backend", transport),
         ports_provider=kw.pop("ports_provider", lambda: []),
         input_fn=input_fn,
         out=lines.append,
@@ -88,15 +89,18 @@ def test_plan_never_opens_port(installed_package) -> None:
     for image in manifest["images"]:
         assert f"0x{image['offset']:08x}" in "\n".join(lines)
     assert any("never written: NVS" in line for line in lines)
-    # F4 contract in the plan output: every write keeps the board in the
-    # bootloader; exactly one explicit hard-reset (read-only flash-id).
+    # PR-R2 contract in the plan output: one live verified connection carries
+    # writes and the single reset; no per-command CLI reconnect is promised.
     invokes = [line for line in lines if line.startswith("invoke:")]
     write_invokes = [line for line in invokes if "write-flash" in line]
     assert len(write_invokes) == 4
-    assert all("--after no-reset" in line for line in write_invokes)
-    reset_invokes = [line for line in invokes if "--after hard-reset" in line]
-    assert len(reset_invokes) == 1
-    assert "flash-id" in reset_invokes[0]
+    assert all("live verified connection" in line for line in write_invokes)
+    assert not any("--after" in line for line in write_invokes)
+    reset_lines = [line for line in lines
+                   if line.startswith("reset: exactly one explicit hard reset")]
+    assert len(reset_lines) == 1
+    assert any(line.startswith("session: ONE live verified esptool 5.4.0 connection")
+               for line in lines)
 
 
 def test_plan_rejects_unknown_board(installed_package) -> None:
@@ -146,7 +150,8 @@ def test_install_blank_factory_happy_path(installed_package) -> None:
     # no erase / eFuse / force style invocations exist anywhere
     assert all("write-flash" in call or "read-flash" in call
                or "flash-id" in call or "get-security-info" in call
-               or "reset" in call
+               or "reset" in call or "close" in call
+               or "read-mac" in call or "connect" in call
                or "version" in call for call in transport.calls)
 
 
@@ -603,9 +608,9 @@ def test_mid_session_port_loss_stops_writes_and_never_resets(
     """The port vanishing mid-operation (native USB re-enumeration) aborts
     with no reset and never continues on another path."""
     root, _payload, _manifest = installed_package
-    # calls so far when the port dies: version, flash-id, security, table and
-    # otadata reads — abort as the NVS classification read attempts to start.
-    transport = support.FakeTransport(drop_port_after=5)
+    # calls so far when the port dies: version, flash-id, read-mac, connect,
+    # table and otadata reads — abort as the NVS classification read starts.
+    transport = support.FakeTransport(drop_port_after=6)
     a, _lines = app(root, transport=transport)
     with pytest.raises(inst.InstallerError) as exc:
         a.cmd_install(
@@ -622,9 +627,9 @@ def test_mid_session_port_loss_after_writes_stops_before_reset(
     installed_package,
 ) -> None:
     root, _payload, _manifest = installed_package
-    # calls so far when the port dies: version, flash-id, security, 3 classify
-    # reads, 2 writes — abort as the third write attempts to start.
-    transport = support.FakeTransport(drop_port_after=8)
+    # calls so far when the port dies: version, flash-id, read-mac, connect,
+    # 3 classify reads, 2 writes — abort as the third write attempts to start.
+    transport = support.FakeTransport(drop_port_after=9)
     a, _lines = app(root, transport=transport)
     with pytest.raises(inst.InstallerError) as exc:
         a.cmd_install(
@@ -665,6 +670,90 @@ def test_installer_constants_mirror_contract_ota_and_partition_fields() -> None:
     assert contract.validate_ota_data_records(bytes(bad))
     with pytest.raises(inst.InstallerError):
         inst.require_ota_data_records(bytes(bad))
+
+
+# ---------------------------------------------------------------------------
+# PR-R2: classification, consent, writes and verification on ONE connection
+# ---------------------------------------------------------------------------
+
+
+def test_same_path_device_swap_after_preflight_writes_nothing(
+    installed_package,
+) -> None:
+    """A different ESP32-S3 taking the same path after the preflight probe
+    is caught by the MAC pin the live connection must reproduce — abort
+    with zero writes, never a reset."""
+    root, _payload, _manifest = installed_package
+    transport = support.FakeTransport(
+        preflight_mac="aa:bb:cc:dd:ee:ff", swap_mac="11:22:33:44:55:66",
+    )
+    a, _lines = app(root, transport=transport)
+    with pytest.raises(inst.InstallerError) as exc:
+        a.cmd_install(
+            "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+            dry_run=False, confirm_replace=True,
+        )
+    assert exc.value.code == inst.EXIT_REFUSED
+    assert "same-path device swap" in str(exc.value)
+    assert transport.writes == []
+    assert transport.resets == []
+
+
+def test_identity_and_classification_precede_consent(installed_package) -> None:
+    """Consent is only ever asked AFTER the single connection was opened and
+    identity-verified and classification completed — on that same
+    connection — and before it, nothing was written."""
+    root, _payload, _manifest = installed_package
+    transport = support.FakeTransport()
+    seen: dict[str, object] = {}
+
+    def input_fn(prompt: str) -> str:
+        seen["writes_at_consent"] = list(transport.writes)
+        seen["ops_at_consent"] = [call[0] for call in transport.calls]
+        return "install"
+
+    a, _lines = app(root, transport=transport, input_fn=input_fn)
+    assert a.cmd_install(
+        "/dev/cu.usbmodem1", inst.HARDWARE_CLASS, dry_run=False, confirm_replace=False,
+    ) == inst.EXIT_OK
+    assert seen["writes_at_consent"] == []
+    ops = seen["ops_at_consent"]
+    assert "connect" in ops and "read-mac" in ops
+    assert ops.index("connect") < len(ops)  # connection opened before consent
+    assert transport.calls[-2][0] == "reset"  # single reset, then close
+
+
+def test_short_read_back_aborts_without_reset(installed_package) -> None:
+    """A verification read shorter than the range is fatal — never treated
+    as matching — and the board is NOT reset."""
+    root, payload, _manifest = installed_package
+    pt_size = len(payload["images/partitions.bin"])
+    transport = support.FakeTransport(
+        short_read_at=(0x8000, pt_size), short_read_by=64,
+        short_read_when="after_writes",
+    )
+    a, _lines = app(root, transport=transport)
+    with pytest.raises(inst.InstallerError) as exc:
+        a.cmd_install(
+            "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+            dry_run=False, confirm_replace=True,
+        )
+    assert exc.value.code == inst.EXIT_FLASH_FAILED
+    assert "expected exactly" in str(exc.value)
+    assert transport.resets == []
+
+
+def test_transport_read_mac_argv(monkeypatch) -> None:
+    captured = CapturedRun(
+        support.esptool_540_flash_id_output() + "\nMAC: AA:BB:CC:DD:EE:FF\n"
+    )
+    monkeypatch.setattr(inst.subprocess, "run", captured)
+    transport = inst.EsptoolTransport(["esptool"])
+    transport.flash_id("/dev/ttyX")  # establish the preflight session
+    assert transport.read_mac("/dev/ttyX") == "aa:bb:cc:dd:ee:ff"
+    argv = captured.argvs[-1]
+    assert argv[-1] == "read-mac"
+    assert _pair(argv, "--before", "no-reset")  # inside the established session
 
 
 def test_refuses_unpinned_esptool_without_port_touch(installed_package) -> None:
@@ -732,10 +821,11 @@ def test_install_sequence_writes_then_reads_then_single_reset(installed_package)
         dry_run=False, confirm_replace=True,
     ) == inst.EXIT_OK
     ops = [call[0] for call in transport.calls]
-    # exactly one reset, and it is the final operation
+    # exactly one reset; the connection close follows it as the last op
     assert ops.count("reset") == 1
     reset_index = ops.index("reset")
-    assert reset_index == len(ops) - 1
+    assert ops[-1] == "close"
+    assert reset_index == len(ops) - 2
     assert transport.resets == ["/dev/cu.usbmodem1"]
     # all four writes precede the verification reads
     write_indices = [i for i, op in enumerate(ops) if op == "write-flash"]
