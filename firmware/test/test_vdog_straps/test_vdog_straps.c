@@ -10,8 +10,12 @@
  * {7,8,9} return PROVISIONAL for EVERY claimant — never an approval —,
  * GPIO21's unresolved SD-CS/user-LED sharing stays UNCLAIMED (a claim is
  * PROVISIONAL naming the unresolved sharing), microphone rows {41,42} stay
- * DISABLED, and invalid gpio / claimant inputs are named programming errors.
- * No pin is configured.
+ * DISABLED, SoC-absent {22..25} + SPI-flash-bus {26..32} + octal-PSRAM-bus
+ * {33..37} REJECT (review H-B; the bot's probes 22/26/33 included), and a
+ * full 0..48 sweep pins that EVERY gpio has a row with the class-correct
+ * verdict — the silent-OK no-row path is unreachable for valid inputs.
+ * Invalid gpio / claimant inputs are named programming errors. No pin is
+ * configured.
  */
 #include <string.h>
 
@@ -21,21 +25,22 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* Every row: flags exactly one verdict class, role present, gpio ascending
- * and unique, no claims above the SoC maximum. */
+/* Every row: flags select exactly one verdict class (or none = documented
+ * free row), role present, gpio ascending and unique, no claims above the
+ * SoC maximum. 49 rows: the ESP32-S3 has GPIO0..48 and ALL are covered. */
 static void test_table_wellformed(void)
 {
     const vdog_straps_row_t *rows = vdog_straps_table();
     unsigned n = vdog_straps_table_count();
     unsigned i;
 
-    TEST_ASSERT_EQUAL_UINT(26u, n);
+    TEST_ASSERT_EQUAL_UINT(49u, n);
     for (i = 0; i < n; ++i) {
         const unsigned flags = (unsigned)rows[i].reserved +
                                (unsigned)rows[i].candidate +
                                (unsigned)rows[i].disabled;
         TEST_ASSERT_NOT_NULL_MESSAGE(rows[i].role, "row role");
-        TEST_ASSERT_EQUAL_UINT_MESSAGE(1u, flags, "row verdict flags");
+        TEST_ASSERT_TRUE_MESSAGE(flags <= 1u, "row verdict flags (<=1 set)");
         TEST_ASSERT_LESS_OR_EQUAL_UINT8_MESSAGE(
             VDOG_STRAPS_GPIO_MAX, rows[i].gpio, "row gpio range");
         if (i > 0u) {
@@ -44,7 +49,8 @@ static void test_table_wellformed(void)
     }
 }
 
-/* The claim gate agrees with the table everywhere. */
+/* The claim gate agrees with the table everywhere, and (review H-B) EVERY
+ * gpio 0..48 has a row: the no-row path must never fire for valid inputs. */
 static void test_gate_agrees_with_table_everywhere(void)
 {
     uint8_t gpio;
@@ -55,15 +61,16 @@ static void test_gate_agrees_with_table_everywhere(void)
         vdog_straps_claim_t got =
             vdog_straps_check_claim(gpio, VDOG_STRAPS_CLAIM_GENERAL, &role);
 
-        if (row == NULL) {
-            TEST_ASSERT_EQUAL_UINT8(VDOG_STRAPS_OK, got);
-            TEST_ASSERT_NULL(role);
-        } else if (row->disabled != 0u || row->reserved != 0u) {
+        TEST_ASSERT_NOT_NULL_MESSAGE(row, "every gpio 0..48 has a row");
+        if (row->disabled != 0u || row->reserved != 0u) {
             TEST_ASSERT_EQUAL_UINT8(VDOG_STRAPS_REJECT, got);
             TEST_ASSERT_EQUAL_STRING(row->role, role);
-        } else {
+        } else if (row->candidate != 0u) {
             TEST_ASSERT_EQUAL_UINT8(VDOG_STRAPS_PROVISIONAL, got);
             TEST_ASSERT_EQUAL_STRING(row->role, role);
+        } else { /* documented free/expansion row */
+            TEST_ASSERT_EQUAL_UINT8(VDOG_STRAPS_OK, got);
+            TEST_ASSERT_NULL(role);
         }
     }
 }
@@ -243,34 +250,116 @@ static void test_microphone_rows_rejected(void)
     TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_MIC, role);
 }
 
-/* Pins with no row: OK — but documented as NOT an approval of ownership
- * (approved wiring is 0.3/0.7 evidence this table cannot grant). These are
- * the CSV expansion UNASSIGNED_* pins plus pins the CSV never lists. */
-static void test_unclaimed_pins_pass_without_approval(void)
+/* Documented free/expansion rows ({1,2,4,5,6,43,44}, CSV
+ * expansion,UNASSIGNED_*): a claim is OK — but NOT an approval of
+ * ownership (approved wiring is 0.3/0.7 evidence this table cannot grant).
+ * Review H-B: these carry explicit all-clear rows instead of relying on
+ * the (now unreachable) no-row path. */
+static void test_free_expansion_rows_pass_without_approval(void)
 {
-    static const uint8_t free_pins[] = {1u, 2u,  4u,  5u,  6u,
-                                        22u, 23u, 37u, 43u,
-                                        44u};
+    static const uint8_t free_pins[] = {1u, 2u, 4u, 5u, 6u, 43u, 44u};
     size_t i;
 
+    TEST_ASSERT_EQUAL_UINT(7u, (unsigned)(sizeof(free_pins) /
+                                          sizeof(free_pins[0])));
     for (i = 0; i < sizeof(free_pins) / sizeof(free_pins[0]); ++i) {
-        TEST_ASSERT_NULL_MESSAGE(vdog_straps_lookup(free_pins[i]),
-                                 "pin must have no row");
+        const vdog_straps_row_t *row = vdog_straps_lookup(free_pins[i]);
+        const char *role = (const char *)0x5A5A;
+
+        TEST_ASSERT_NOT_NULL_MESSAGE(row, "free pin has an explicit row");
+        TEST_ASSERT_EQUAL_UINT8(0u, row->reserved);
+        TEST_ASSERT_EQUAL_UINT8(0u, row->candidate);
+        TEST_ASSERT_EQUAL_UINT8(0u, row->disabled);
+        TEST_ASSERT_NOT_NULL(strstr(row->role, "expansion"));
         TEST_ASSERT_EQUAL_UINT8(VDOG_STRAPS_OK,
                                 vdog_straps_check_claim(free_pins[i],
                                                         VDOG_STRAPS_CLAIM_GENERAL,
-                                                        NULL));
+                                                        &role));
+        TEST_ASSERT_NULL(role); /* OK carries no role */
     }
 }
 
-/* Review F-1 cross-check: the table's class MEMBERSHIP must equal the
- * hardware/prototype-a/pin-map.csv content exactly (sets transcribed from
- * the CSV with their function,net,soc_gpio citations — this is the pinning
- * that stops the table drifting away from the CSV again). Reserved =
+/* Review H-B (the bot's host probes): SoC-absent and shared-bus pins
+ * REJECT instead of returning OK. 22-25 do not exist on the ESP32-S3
+ * (bonds out 0-21 and 26-48 only), 26-32 are the SPI flash bus, 33-37 the
+ * octal-PSRAM bus this baseline (CONFIG_SPIRAM_MODE_OCT) uses. */
+static void test_soc_absent_and_bus_pins_reject(void)
+{
+    static const uint8_t absent[] = {22u, 23u, 24u, 25u};
+    static const uint8_t flash_bus[] = {26u, 27u, 28u, 29u, 30u, 31u, 32u};
+    static const uint8_t psram_bus[] = {33u, 34u, 35u, 36u, 37u};
+    const vdog_straps_claimant_t claimants[] = {
+        VDOG_STRAPS_CLAIM_GENERAL, VDOG_STRAPS_CLAIM_CAMERA,
+        VDOG_STRAPS_CLAIM_SD};
+    size_t i;
+    size_t j;
+
+    for (i = 0; i < sizeof(absent) / sizeof(absent[0]); ++i) {
+        TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_ABSENT,
+                                 vdog_straps_lookup(absent[i])->role);
+        for (j = 0; j < sizeof(claimants) / sizeof(claimants[0]); ++j) {
+            const char *role = NULL;
+            TEST_ASSERT_EQUAL_UINT8_MESSAGE(
+                VDOG_STRAPS_REJECT,
+                vdog_straps_check_claim(absent[i], claimants[j], &role),
+                "absent GPIO claim");
+            TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_ABSENT, role);
+        }
+    }
+    for (i = 0; i < sizeof(flash_bus) / sizeof(flash_bus[0]); ++i) {
+        TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_FLASH_BUS,
+                                 vdog_straps_lookup(flash_bus[i])->role);
+        TEST_ASSERT_EQUAL_UINT8(
+            VDOG_STRAPS_REJECT,
+            vdog_straps_check_claim(flash_bus[i], VDOG_STRAPS_CLAIM_SD,
+                                    NULL));
+    }
+    for (i = 0; i < sizeof(psram_bus) / sizeof(psram_bus[0]); ++i) {
+        TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_PSRAM_BUS,
+                                 vdog_straps_lookup(psram_bus[i])->role);
+        TEST_ASSERT_EQUAL_UINT8(
+            VDOG_STRAPS_REJECT,
+            vdog_straps_check_claim(psram_bus[i], VDOG_STRAPS_CLAIM_CAMERA,
+                                    NULL));
+    }
+
+    /* The bot's exact round-2 probes: 22/26/33 must NOT be OK. */
+    TEST_ASSERT_EQUAL_UINT8(VDOG_STRAPS_REJECT,
+                            vdog_straps_check_claim(22u,
+                                                    VDOG_STRAPS_CLAIM_GENERAL,
+                                                    NULL));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_STRAPS_REJECT,
+                            vdog_straps_check_claim(26u,
+                                                    VDOG_STRAPS_CLAIM_GENERAL,
+                                                    NULL));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_STRAPS_REJECT,
+                            vdog_straps_check_claim(33u,
+                                                    VDOG_STRAPS_CLAIM_GENERAL,
+                                                    NULL));
+}
+
+static int in_set(const uint8_t *set, size_t n, uint8_t gpio)
+{
+    size_t i;
+
+    for (i = 0; i < n; ++i) {
+        if (set[i] == gpio) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Review F-1 + H-B cross-check: the table's class MEMBERSHIP must equal
+ * the documented sources exactly (sets transcribed from
+ * hardware/prototype-a/pin-map.csv with their function,net,soc_gpio
+ * citations, plus the ESP-IDF GPIO-reference classes): reserved =
  * plan-mandated straps (0/3/45/46) + CSV control/BOOT,0 + usb,USB_D_MINUS,19
  * + usb,USB_D_PLUS,20; candidates = CSV camera 10..18/38..40/47/48 + CSV sd
  * 7/8/9 (+ the 21 unclaimed-UNRESOLVED row); disabled = CSV microphone
- * 41/42. */
+ * 41/42; absent 22..25, flash bus 26..32, PSRAM bus 33..37 (ESP-IDF GPIO
+ * Peripherals reference + octal-PSRAM baseline); free = CSV
+ * expansion,UNASSIGNED_* {1,2,4,5,6,43,44}. No extras, no omissions. */
 static void test_table_membership_matches_pin_map_csv(void)
 {
     static const uint8_t csv_camera[] = {10u, 11u, 12u, 13u, 14u, 15u, 16u,
@@ -278,78 +367,103 @@ static void test_table_membership_matches_pin_map_csv(void)
     static const uint8_t csv_sd[] = {7u, 8u, 9u};
     static const uint8_t csv_mic_disabled[] = {41u, 42u};
     static const uint8_t reserved_pins[] = {0u, 3u, 19u, 20u, 45u, 46u};
+    static const uint8_t absent_pins[] = {22u, 23u, 24u, 25u};
+    static const uint8_t flash_bus_pins[] = {26u, 27u, 28u, 29u, 30u, 31u,
+                                             32u};
+    static const uint8_t psram_bus_pins[] = {33u, 34u, 35u, 36u, 37u};
+    static const uint8_t free_pins[] = {1u, 2u, 4u, 5u, 6u, 43u, 44u};
     const vdog_straps_row_t *rows = vdog_straps_table();
     unsigned n = vdog_straps_table_count();
     unsigned i;
-    size_t j;
     unsigned n_reserved = 0u;
     unsigned n_candidate = 0u;
     unsigned n_disabled = 0u;
+    unsigned n_free = 0u;
 
-    /* Every table row falls in exactly one class, and every class member
-     * from the CSV lists is present — no extras, no omissions. */
+#define IN_SET(s) in_set((s), sizeof(s) / sizeof((s)[0]), rows[i].gpio)
+
     for (i = 0; i < n; ++i) {
+        const unsigned flags = (unsigned)rows[i].reserved +
+                               (unsigned)rows[i].candidate +
+                               (unsigned)rows[i].disabled;
+        int classes = 0;
+
         n_reserved += rows[i].reserved;
         n_candidate += rows[i].candidate;
         n_disabled += rows[i].disabled;
-    }
-    TEST_ASSERT_EQUAL_UINT(6u, n_reserved);
-    TEST_ASSERT_EQUAL_UINT(18u, n_candidate); /* 14 cam + 3 sd + GPIO21 */
-    TEST_ASSERT_EQUAL_UINT(2u, n_disabled);
+        n_free += (flags == 0u) ? 1u : 0u;
 
-    for (i = 0; i < n; ++i) {
-        int in_csv_camera = 0;
-        int in_csv_sd = 0;
-        int in_csv_mic = 0;
-        int in_reserved = 0;
-
-        for (j = 0; j < sizeof(csv_camera) / sizeof(csv_camera[0]); ++j) {
-            in_csv_camera |= rows[i].gpio == csv_camera[j];
-        }
-        for (j = 0; j < sizeof(csv_sd) / sizeof(csv_sd[0]); ++j) {
-            in_csv_sd |= rows[i].gpio == csv_sd[j];
-        }
-        for (j = 0; j < sizeof(csv_mic_disabled) / sizeof(csv_mic_disabled[0]);
-             ++j) {
-            in_csv_mic |= rows[i].gpio == csv_mic_disabled[j];
-        }
-        for (j = 0; j < sizeof(reserved_pins) / sizeof(reserved_pins[0]);
-             ++j) {
-            in_reserved |= rows[i].gpio == reserved_pins[j];
-        }
+        /* Every row sits in EXACTLY one documented class set. */
+        classes += IN_SET(csv_camera) || IN_SET(csv_sd) ||
+                   (rows[i].gpio == 21u);
+        classes += IN_SET(csv_mic_disabled);
+        classes += IN_SET(reserved_pins) || IN_SET(absent_pins) ||
+                   IN_SET(flash_bus_pins) || IN_SET(psram_bus_pins);
+        classes += IN_SET(free_pins);
+        TEST_ASSERT_EQUAL_UINT_MESSAGE(1u, (unsigned)classes,
+                                       "row sits in exactly one class set");
 
         if (rows[i].disabled != 0u) {
-            TEST_ASSERT_TRUE_MESSAGE(in_csv_mic, "disabled row not CSV mic");
+            TEST_ASSERT_TRUE_MESSAGE(IN_SET(csv_mic_disabled),
+                                     "disabled row not CSV mic");
             TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_MIC, rows[i].role);
         } else if (rows[i].reserved != 0u) {
-            TEST_ASSERT_TRUE_MESSAGE(in_reserved, "reserved row not plan/CSV");
-        } else { /* candidate */
-            TEST_ASSERT_TRUE_MESSAGE(in_csv_camera || in_csv_sd ||
-                                         rows[i].gpio == 21u,
-                                     "candidate row not CSV camera/sd/21");
-            if (in_csv_camera) {
+            if (IN_SET(absent_pins)) {
+                TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_ABSENT,
+                                         rows[i].role);
+            } else if (IN_SET(flash_bus_pins)) {
+                TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_FLASH_BUS,
+                                         rows[i].role);
+            } else if (IN_SET(psram_bus_pins)) {
+                TEST_ASSERT_EQUAL_STRING(VDOG_STRAPS_ROLE_PSRAM_BUS,
+                                         rows[i].role);
+            } else {
+                TEST_ASSERT_TRUE_MESSAGE(IN_SET(reserved_pins),
+                                         "reserved row not plan/CSV");
+            }
+        } else if (rows[i].candidate != 0u) {
+            TEST_ASSERT_TRUE_MESSAGE(
+                IN_SET(csv_camera) || IN_SET(csv_sd) ||
+                    rows[i].gpio == 21u,
+                "candidate row not CSV camera/sd/21");
+            if (IN_SET(csv_camera)) {
                 TEST_ASSERT_NOT_NULL(strstr(rows[i].role, "camera"));
                 TEST_ASSERT_NULL(strstr(rows[i].role, "SD"));
             }
-            if (in_csv_sd) {
+            if (IN_SET(csv_sd)) {
                 TEST_ASSERT_NOT_NULL(strstr(rows[i].role, "SD card"));
                 TEST_ASSERT_NULL(strstr(rows[i].role, "camera"));
             }
             if (rows[i].gpio == 21u) {
                 TEST_ASSERT_NOT_NULL(strstr(rows[i].role, "UNRESOLVED"));
             }
+        } else { /* free row */
+            TEST_ASSERT_TRUE_MESSAGE(IN_SET(free_pins),
+                                     "all-clear row not CSV expansion set");
+            TEST_ASSERT_NOT_NULL(strstr(rows[i].role, "expansion"));
         }
         /* The camera and SD candidate sets are disjoint in the CSV: no row
          * may carry both halves in its role. */
-        if (in_csv_camera && in_csv_sd) {
+        if (IN_SET(csv_camera) && IN_SET(csv_sd)) {
             TEST_FAIL_MESSAGE("camera/sd sets must be disjoint");
         }
     }
 
+    /* Class totals: 6 plan/CSV reserved + 4 absent + 7 flash + 5 PSRAM =
+     * 22 reserved; 14 camera + 3 SD + GPIO21 = 18 candidates; 2 mic; 7
+     * free; total 49 = every gpio 0..48. */
+    TEST_ASSERT_EQUAL_UINT(22u, n_reserved);
+    TEST_ASSERT_EQUAL_UINT(18u, n_candidate); /* 14 cam + 3 sd + GPIO21 */
+    TEST_ASSERT_EQUAL_UINT(2u, n_disabled);
+    TEST_ASSERT_EQUAL_UINT(7u, n_free);
+    TEST_ASSERT_EQUAL_UINT(49u, n);
+
     /* Spot-pin the reviewer-probed flips (round 1 F-1): the pins that were
      * missing/wrong before answer from the table now. */
     {
-        const uint8_t must_be_provisional[] = {13u, 38u, 39u, 40u, 47u, 48u};
+        static const uint8_t must_be_provisional[] = {13u, 38u, 39u, 40u, 47u,
+                                                      48u};
+        size_t j;
         for (j = 0; j < sizeof(must_be_provisional) /
                       sizeof(must_be_provisional[0]);
              ++j) {
@@ -363,6 +477,55 @@ static void test_table_membership_matches_pin_map_csv(void)
                                 vdog_straps_check_claim(42u,
                                                         VDOG_STRAPS_CLAIM_GENERAL,
                                                         NULL));
+    }
+#undef IN_SET
+}
+
+/* Review H-B: full 0..48 sweep — every gpio has a row AND the gate returns
+ * the class-correct verdict; the no-row/OK path is unreachable for valid
+ * inputs (only gpio > 48 rejects as a programming error, pinned elsewhere).
+ */
+static void test_full_sweep_covers_every_gpio(void)
+{
+    static const uint8_t candidates[] = {7u,  8u,  9u,  10u, 11u, 12u,
+                                         13u, 14u, 15u, 16u, 17u, 18u,
+                                         21u, 38u, 39u, 40u, 47u, 48u};
+    static const uint8_t rejects_real[] = {
+        0u,  3u,  19u, 20u, 22u, 23u, 24u, 25u, 26u, 27u, 28u,
+        29u, 30u, 31u, 32u, 33u, 34u, 35u, 36u, 37u, 41u, 42u,
+        45u, 46u};
+    static const uint8_t free_only[] = {1u, 2u, 4u, 5u, 6u, 43u, 44u};
+    uint8_t gpio;
+
+    for (gpio = 0u; gpio <= VDOG_STRAPS_GPIO_MAX; ++gpio) {
+        const vdog_straps_row_t *row = vdog_straps_lookup(gpio);
+        const vdog_straps_claimant_t claimants[] = {
+            VDOG_STRAPS_CLAIM_GENERAL, VDOG_STRAPS_CLAIM_CAMERA,
+            VDOG_STRAPS_CLAIM_SD};
+        size_t c;
+        vdog_straps_claim_t want;
+
+        TEST_ASSERT_NOT_NULL_MESSAGE(row, "table must cover every gpio");
+
+        if (in_set(candidates, sizeof(candidates) / sizeof(candidates[0]),
+                   gpio)) {
+            want = VDOG_STRAPS_PROVISIONAL;
+        } else if (in_set(rejects_real,
+                          sizeof(rejects_real) / sizeof(rejects_real[0]),
+                          gpio)) {
+            want = VDOG_STRAPS_REJECT;
+        } else if (in_set(free_only, sizeof(free_only) / sizeof(free_only[0]),
+                          gpio)) {
+            want = VDOG_STRAPS_OK;
+        } else {
+            TEST_FAIL_MESSAGE("gpio in no expected class");
+            return;
+        }
+        for (c = 0; c < sizeof(claimants) / sizeof(claimants[0]); ++c) {
+            TEST_ASSERT_EQUAL_UINT8_MESSAGE(
+                want, vdog_straps_check_claim(gpio, claimants[c], NULL),
+                "sweep verdict must match class");
+        }
     }
 }
 
@@ -404,7 +567,7 @@ static void test_out_role_optional(void)
                                                     VDOG_STRAPS_CLAIM_SD,
                                                     NULL));
     TEST_ASSERT_EQUAL_UINT8(VDOG_STRAPS_OK,
-                            vdog_straps_check_claim(22u,
+                            vdog_straps_check_claim(44u,
                                                     VDOG_STRAPS_CLAIM_GENERAL,
                                                     NULL));
     TEST_ASSERT_EQUAL_UINT8(VDOG_STRAPS_REJECT,
@@ -438,8 +601,10 @@ void app_main(void)
     RUN_TEST(test_sd_candidates_provisional);
     RUN_TEST(test_gpio21_unclaimed_with_unresolved_sharing);
     RUN_TEST(test_microphone_rows_rejected);
-    RUN_TEST(test_unclaimed_pins_pass_without_approval);
+    RUN_TEST(test_free_expansion_rows_pass_without_approval);
+    RUN_TEST(test_soc_absent_and_bus_pins_reject);
     RUN_TEST(test_table_membership_matches_pin_map_csv);
+    RUN_TEST(test_full_sweep_covers_every_gpio);
     RUN_TEST(test_invalid_inputs_are_named);
     RUN_TEST(test_out_role_optional);
     RUN_TEST(test_cpp_smoke_linkage);
@@ -457,8 +622,10 @@ int main(void)
     RUN_TEST(test_sd_candidates_provisional);
     RUN_TEST(test_gpio21_unclaimed_with_unresolved_sharing);
     RUN_TEST(test_microphone_rows_rejected);
-    RUN_TEST(test_unclaimed_pins_pass_without_approval);
+    RUN_TEST(test_free_expansion_rows_pass_without_approval);
+    RUN_TEST(test_soc_absent_and_bus_pins_reject);
     RUN_TEST(test_table_membership_matches_pin_map_csv);
+    RUN_TEST(test_full_sweep_covers_every_gpio);
     RUN_TEST(test_invalid_inputs_are_named);
     RUN_TEST(test_out_role_optional);
     RUN_TEST(test_cpp_smoke_linkage);

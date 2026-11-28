@@ -81,6 +81,35 @@ void vdog_mem_detected_init(vdog_mem_detected_t *det)
      * are meaningless until the matching field is set by a caller. */
 }
 
+int vdog_mem_set_flash_sizes(vdog_mem_detected_t *det, uint32_t header_bytes,
+                             uint32_t physical_bytes)
+{
+    if (det == NULL) {
+        return VDOG_ERR_INVALID_ARG;
+    }
+    /* Informational header capacity only: recorded, never compared, never
+     * rendered (review H-A keeps it out of every capacity claim). */
+    if (header_bytes != 0u) {
+        det->flash_header_size_bytes = header_bytes;
+        det->flash_header_valid = 1u;
+    } else {
+        det->flash_header_size_bytes = 0u;
+        det->flash_header_valid = 0u;
+    }
+    if (physical_bytes == 0u) {
+        /* The chip-ID query failed: the MEASURED field stays UNSET so the
+         * baseline check reports MISSING rather than trusting the image
+         * header as if it proved the chip. */
+        det->field_set &= ~VDOG_MEM_FIELD_FLASH_SIZE;
+        det->flash_size_src = VDOG_MEM_SOURCE_MEASURED;
+        return VDOG_ERR_MEM_FLASH;
+    }
+    det->flash_size_bytes = physical_bytes;
+    det->flash_size_src = VDOG_MEM_SOURCE_MEASURED;
+    det->field_set |= VDOG_MEM_FIELD_FLASH_SIZE;
+    return VDOG_OK;
+}
+
 /* One pass over the field table; returns the offending descriptor or NULL.
  * phase 0: any field whose bit is absent; phase 1: any field whose tag is
  * not the required one (including an out-of-range tag); caller stops at the

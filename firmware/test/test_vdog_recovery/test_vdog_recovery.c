@@ -2,11 +2,14 @@
  * Host (native environment) tests for the vdog portable recovery/identity
  * core. Run with: pio test -d firmware -e native   (HOST evidence only)
  *
- * These cases pin plan 1.2 A2/§A4: ROM-line boot-mode classification with a
- * fixed token priority and UNKNOWN-for-anything-unrecognised (never
- * guessed), and the sanitized identity line where the MAC appears ONLY as
- * its last-two-octet tail — the struct cannot even store a full MAC, and
- * the tests pin both the storage width and the rendering. No device.
+ * These cases pin plan 1.2 A2/§A4: ROM-line boot-mode classification by
+ * COMPLETE banner FORM only (review M-C — prefix-anchored "boot:0x<hex>
+ * (<banner>)" plus closed whole-word sets; prose that merely CONTAINS
+ * tokens and truncated lookalikes stay UNKNOWN, never guessed), and the
+ * sanitized identity line where the MAC appears ONLY as its last-two-octet
+ * tail — the struct cannot store a full MAC, the chip model is a CLOSED
+ * enum and the board tag is validated at set time and re-validated with a
+ * bounded scan at render time (review M-D). No device.
  */
 #include <string.h>
 
@@ -18,49 +21,60 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ---- boot-mode classification ------------------------------------------------ */
+/* ---- boot-mode classification (review M-C: whole forms only) -------------- */
 
 static void test_classify_normal_boot_lines(void)
 {
+    /* Genuine ROM SPI-boot banners (esptool boot-mode doc forms). */
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL,
+                            vdog_recovery_classify("boot:0x27 (SPI_FAST_FLASH_BOOT)"));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL,
                             vdog_recovery_classify("boot:0x2 (spi_fast_flash)"));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL,
-                            vdog_recovery_classify("SPI_FAST_FLASH_BOOT"));
+                            vdog_recovery_classify("boot:0x1 (SPI_BOOT)"));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL,
-                            vdog_recovery_classify("boot:0x1 (spi_boot)"));
-    /* "basic" is one of the documented ROM boot spellings. */
+                            vdog_recovery_classify("boot:0x5 (SPI_FLASH_BOOT)"));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL,
                             vdog_recovery_classify("boot:0x1 (basic)"));
+    /* Leading/trailing blanks are padding, not content. */
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL,
+                            vdog_recovery_classify("  boot:0x27 (SPI_FAST_FLASH_BOOT) "));
 }
 
 static void test_classify_download_boot_lines(void)
 {
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_DOWNLOAD,
-                            vdog_recovery_classify("boot:0x0 (download)"));
+                            vdog_recovery_classify("boot:0xf (DOWNLOAD(USB/UART0))"));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_DOWNLOAD,
-                            vdog_recovery_classify("DOWNLOAD_BOOT"));
+                            vdog_recovery_classify("boot:0x7 (UART_DOWNLOAD)"));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_DOWNLOAD,
-                            vdog_recovery_classify("Waiting for bit flip in download mode"));
-    /* Documented priority: "download" is checked BEFORE the spi_fast
-     * spellings, so a download banner on an SPI path is DOWNLOAD. */
+                            vdog_recovery_classify("boot:0x6 (SDIO_DOWNLOAD)"));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_DOWNLOAD,
-                            vdog_recovery_classify("spi_fast_download"));
+                            vdog_recovery_classify("boot:0x3 (DOWNLOAD)"));
+    /* Documented priority: "spi_fast_download" is a DOWNLOAD form, checked
+     * BEFORE the normal-boot words. */
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_DOWNLOAD,
+                            vdog_recovery_classify("boot:0x8 (SPI_FAST_DOWNLOAD)"));
 }
 
 static void test_classify_usb_jtag_boot_lines(void)
 {
     /* USB-Serial-JTAG is checked FIRST: a JTAG-path download banner is
-     * labelled USBJTAG, never plain DOWNLOAD. */
+     * labelled USBJTAG, never plain DOWNLOAD. Hyphen spelling matches the
+     * underscored word (whole-token equality after normalisation). */
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_USBJTAG,
-                            vdog_recovery_classify("boot:0x1 (usb_jtag)"));
+                            vdog_recovery_classify("boot:0x1 (USB_JTAG)"));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_USBJTAG,
-                            vdog_recovery_classify("USB-JTAG/serial boot mode"));
+                            vdog_recovery_classify("boot:0x1 (USB-JTAG/serial)"));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_USBJTAG,
-                            vdog_recovery_classify("download ... USB-JTAG ..."));
+                            vdog_recovery_classify("boot:0xf (USB_SERIAL_JTAG)"));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_USBJTAG,
+                            vdog_recovery_classify("boot:0x9 (USB_JTAG_DOWNLOAD)"));
 }
 
 static void test_classify_unknown_never_guessed(void)
 {
+    /* NULL/empty and unrelated prose. */
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
                             vdog_recovery_classify(NULL));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
@@ -69,8 +83,36 @@ static void test_classify_unknown_never_guessed(void)
                             vdog_recovery_classify("ets Jun  2 2021 h:0"));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
                             vdog_recovery_classify("invalid header magic 0xffffffff"));
+    /* Review M-C: prose MERELY CONTAINING tokens is not a ROM banner.
+     * (Part B still records every such line verbatim; it just is not
+     * classified.) */
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
-                            vdog_recovery_classify("boot:0x7"));
+                            vdog_recovery_classify("download failed"));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("boot loader"));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("fast pattern"));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("Waiting for bit flip in download mode"));
+    /* Truncated / near-miss lookalikes of the anchored form. */
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("spi_fas"));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("boot:0x"));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("boot:0x27"));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("boot:0x2 (spi_fast_flash_boot"));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("boot:0xzz (spi_fast_flash_boot)"));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("boot:0x2 (spi_fas)"));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("boot:0x2 (usb_jtag) trailing junk"));
+    /* A well-formed banner with an UNRECOGNISED word is UNKNOWN, never a
+     * guess from the nearest class. */
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_UNKNOWN,
+                            vdog_recovery_classify("boot:0x4 (SOMETHING_NEW)"));
 }
 
 static void test_boot_mode_names(void)
@@ -90,13 +132,13 @@ static void test_boot_mode_names(void)
 
 /* ---- sanitized identity ------------------------------------------------------ */
 
-/* Identity with every part present, values matching the mem baseline. */
+/* Identity with every part present, built through the validated setters. */
 static vdog_identity_t full_identity(void)
 {
     vdog_identity_t id;
 
     vdog_identity_init(&id);
-    strcpy(id.chip_model, "esp32s3");
+    vdog_identity_set_chip_model(&id, VDOG_IDENTITY_CHIP_ESP32S3);
     id.chip_major = 0u;
     id.chip_minor = 2u;
     id.mem.flash_size_bytes = VDOG_MEM_BASELINE_FLASH_SIZE_BYTES;
@@ -109,7 +151,7 @@ static vdog_identity_t full_identity(void)
     id.mem.psram_present_src = VDOG_MEM_SOURCE_MEASURED;
     id.mem.psram_size_bytes = VDOG_MEM_BASELINE_PSRAM_SIZE_BYTES;
     id.mem.psram_size_src = VDOG_MEM_SOURCE_MEASURED;
-    id.mem.psram_mode = VDOG_MEM_BASELINE_PSRAM_MODE;
+    id.mem.psram_mode = VDOG_BOARD_PSRAM_MODE_OPI;
     id.mem.psram_mode_src = VDOG_MEM_SOURCE_CONFIGURED;
     id.mem.psram_speed_mhz = VDOG_MEM_BASELINE_PSRAM_SPEED_MHZ;
     id.mem.psram_speed_src = VDOG_MEM_SOURCE_CONFIGURED;
@@ -117,7 +159,8 @@ static vdog_identity_t full_identity(void)
     id.mem_valid = 1u;
     id.mac_tail = 0xABCDu;
     id.mac_valid = 1u;
-    strcpy(id.board_tag, "proto-a1");
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_identity_set_board_tag(&id, "proto-a1"));
     return id;
 }
 
@@ -128,7 +171,8 @@ static void test_identity_init_marks_nothing(void)
 
     memset(&id, 0xA5, sizeof(id));
     vdog_identity_init(&id);
-    TEST_ASSERT_EQUAL_CHAR('\0', id.chip_model[0]);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)VDOG_IDENTITY_CHIP_UNKNOWN,
+                            (uint8_t)id.chip_model);
     TEST_ASSERT_EQUAL_CHAR('\0', id.board_tag[0]);
     TEST_ASSERT_EQUAL_UINT8(0u, id.mem_valid);
     TEST_ASSERT_EQUAL_UINT8(0u, id.mac_valid);
@@ -152,27 +196,157 @@ static void test_identity_exact_line(void)
 }
 
 /* THE sanitizer proof (plan 1.2 acceptance 5): the struct stores ONLY a
- * 16-bit tail, and the line can only ever contain the last two octets. */
+ * 16-bit tail, and the line can only ever contain the last two octets.
+ * Review M-D: the chip model is an ENUM (no caller string can reach the
+ * render), and the board tag array is bounded + validated. */
 static void test_identity_mac_storage_cannot_hold_a_full_mac(void)
 {
+    vdog_identity_t id = full_identity();
+    char buf[256];
+
     TEST_ASSERT_EQUAL_UINT(2u, (unsigned)sizeof(((vdog_identity_t *)0)->mac_tail));
 
     /* Even if a caller tried to leak the whole MAC through every member,
      * the render contains exactly the masked-tail pattern and nothing
      * resembling the first four octets. */
-    vdog_identity_t id = full_identity();
-    char buf[256];
-
     id.mac_tail = 0x1A2Bu;
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
     TEST_ASSERT_NOT_NULL(strstr(buf, "mac=**:**:**:**:1a:2b"));
     TEST_ASSERT_NULL(strstr(buf, "1a:2b:")); /* tail octets are the last group */
-    /* No member other than the tail can receive 6 MAC bytes: the largest
-     * char array members are bounded display strings, not eFuse blobs. */
-    TEST_ASSERT_EQUAL_UINT(VDOG_IDENTITY_CHIP_MODEL_MAX,
+
+    /* The model field is the closed enum type, not a char array: there is
+     * no member into which a "model" string could ever be written. */
+    TEST_ASSERT_EQUAL_UINT(sizeof(vdog_identity_chip_t),
                            (unsigned)sizeof(id.chip_model));
     TEST_ASSERT_EQUAL_UINT(VDOG_IDENTITY_TAG_MAX,
                            (unsigned)sizeof(id.board_tag));
+}
+
+/* Review M-D: the render vocabulary is fixed internally. */
+static void test_identity_chip_model_is_closed_set(void)
+{
+    vdog_identity_t id;
+    char buf[64];
+
+    vdog_identity_init(&id);
+    vdog_identity_set_chip_model(&id, VDOG_IDENTITY_CHIP_ESP32S3);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("chip=esp32s3 rev=0.0", buf);
+
+    /* An out-of-range enum value (e.g. through uninitialized memory)
+     * collapses to the fixed "unknown" spelling — never a caller string. */
+    vdog_identity_set_chip_model(&id, (vdog_identity_chip_t)99);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("chip=unknown rev=0.0", buf);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)VDOG_IDENTITY_CHIP_UNKNOWN,
+                            (uint8_t)id.chip_model);
+
+    /* NULL id is a documented no-op. */
+    vdog_identity_set_chip_model(NULL, VDOG_IDENTITY_CHIP_ESP32S3);
+
+    /* The compact MAC a caller might have "typed in as a model" is
+     * impossible by construction: the setter takes an enum. */
+}
+
+/* Review M-D: the board tag is validated at SET time with a specific
+ * error; rejected content is never stored and never rendered. */
+static void test_identity_board_tag_validation(void)
+{
+    vdog_identity_t id;
+    char buf[256];
+
+    vdog_identity_init(&id);
+
+    /* A compact 12-hex-digit MAC (with or without case play) is rejected:
+     * the tag channel can never carry a MAC. */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_IDENTITY_TAG,
+                          vdog_identity_set_board_tag(&id, "abcdef012345"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_IDENTITY_TAG,
+                          vdog_identity_set_board_tag(&id, "ABCDEF012345"));
+    TEST_ASSERT_EQUAL_CHAR('\0', id.board_tag[0]); /* never half-stored */
+
+    /* Charset [A-Za-z0-9_-] only. */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_IDENTITY_TAG,
+                          vdog_identity_set_board_tag(&id, "bad tag"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_IDENTITY_TAG,
+                          vdog_identity_set_board_tag(&id, "bad:tag"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_IDENTITY_TAG,
+                          vdog_identity_set_board_tag(&id, "tag.bin"));
+    /* An 11-hex or 13-hex label is NOT the compact-MAC shape and passes
+     * the charset rule. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_identity_set_board_tag(&id, "abcdef01234"));
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_identity_set_board_tag(&id, "abcdef0123456"));
+
+    /* Exact-fit boundary: 15 chars (capacity 16 including NUL) is
+     * valid... */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_identity_set_board_tag(&id, "unit-proto-a-12"));
+    TEST_ASSERT_EQUAL_STRING("unit-proto-a-12", id.board_tag);
+    /* ...16 chars (no room for the NUL) is not. */
+    {
+        char too_long[VDOG_IDENTITY_TAG_MAX + 1u];
+        memset(too_long, 'x', sizeof(too_long) - 1u);
+        too_long[sizeof(too_long) - 1u] = '\0'; /* 16 'x' + NUL */
+        TEST_ASSERT_EQUAL_INT(VDOG_ERR_IDENTITY_TAG,
+                              vdog_identity_set_board_tag(&id, too_long));
+    }
+    /* An unterminated array within capacity is rejected via the bounded
+     * scan (no out-of-bounds read, no store). */
+    {
+        char unterminated[VDOG_IDENTITY_TAG_MAX];
+        memset(unterminated, 'a', sizeof(unterminated));
+        TEST_ASSERT_EQUAL_INT(VDOG_ERR_IDENTITY_TAG,
+                              vdog_identity_set_board_tag(&id, unterminated));
+    }
+
+    /* A rejected set attempt leaves the previously valid tag UNCHANGED. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_identity_set_board_tag(&id, "keep-me"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_IDENTITY_TAG,
+                          vdog_identity_set_board_tag(&id, "no spaces here"));
+    vdog_identity_set_chip_model(&id, VDOG_IDENTITY_CHIP_ESP32S3);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "board=keep-me"));
+
+    /* NULL/"" clear the tag; the board= section then disappears. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, NULL));
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
+    TEST_ASSERT_NULL(strstr(buf, "board="));
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, ""));
+    /* NULL id is the invalid-arg case. */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(NULL, "x"));
+}
+
+/* Review M-D defense in depth: bytes that bypassed the setter (raw
+ * struct writes) are still never rendered — the formatter re-validates
+ * with a bounded scan and omits an invalid tag entirely. */
+static void test_identity_render_never_emits_unvalidated_bytes(void)
+{
+    vdog_identity_t id;
+    char buf[256];
+
+    vdog_identity_init(&id);
+    vdog_identity_set_chip_model(&id, VDOG_IDENTITY_CHIP_ESP32S3);
+
+    /* Compact-MAC bytes smuggled straight into the array: not rendered. */
+    memcpy(id.board_tag, "abcdef012345", 13u);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
+    TEST_ASSERT_NULL(strstr(buf, "board="));
+    TEST_ASSERT_NULL(strstr(buf, "abcdef012345"));
+
+    /* Unterminated garbage: bounded scan, no crash, nothing rendered. */
+    memset(id.board_tag, 'A', sizeof(id.board_tag));
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
+    TEST_ASSERT_NULL(strstr(buf, "board="));
+    TEST_ASSERT_NULL(strstr(buf, "AAAA"));
+
+    /* Charset violation: same omission. */
+    memcpy(id.board_tag, "ok tag", 7u); /* space is outside the charset */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
+    TEST_ASSERT_NULL(strstr(buf, "board="));
 }
 
 /* Review F-2: the SDK chip-info revision is DECIMAL MXX (major*100 + minor,
@@ -213,7 +387,7 @@ static void test_identity_revision_mxx_decode(void)
         char buf[64];
 
         vdog_identity_init(&id);
-        strcpy(id.chip_model, "esp32s3");
+        vdog_identity_set_chip_model(&id, VDOG_IDENTITY_CHIP_ESP32S3);
         vdog_identity_set_revision_mxx(&id, 101u);
         TEST_ASSERT_EQUAL_INT(VDOG_OK,
                               vdog_identity_format(&id, buf, sizeof(buf)));
@@ -238,7 +412,7 @@ static void test_identity_absent_parts(void)
         buf);
 
     id = full_identity();
-    id.board_tag[0] = '\0'; /* no opaque tag */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, NULL));
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
     TEST_ASSERT_NULL(strstr(buf, "board="));
 
@@ -318,6 +492,9 @@ void app_main(void)
     RUN_TEST(test_boot_mode_names);
     RUN_TEST(test_identity_init_marks_nothing);
     RUN_TEST(test_identity_exact_line);
+    RUN_TEST(test_identity_chip_model_is_closed_set);
+    RUN_TEST(test_identity_board_tag_validation);
+    RUN_TEST(test_identity_render_never_emits_unvalidated_bytes);
     RUN_TEST(test_identity_revision_mxx_decode);
     RUN_TEST(test_identity_mac_storage_cannot_hold_a_full_mac);
     RUN_TEST(test_identity_absent_parts);
@@ -337,6 +514,9 @@ int main(void)
     RUN_TEST(test_boot_mode_names);
     RUN_TEST(test_identity_init_marks_nothing);
     RUN_TEST(test_identity_exact_line);
+    RUN_TEST(test_identity_chip_model_is_closed_set);
+    RUN_TEST(test_identity_board_tag_validation);
+    RUN_TEST(test_identity_render_never_emits_unvalidated_bytes);
     RUN_TEST(test_identity_revision_mxx_decode);
     RUN_TEST(test_identity_mac_storage_cannot_hold_a_full_mac);
     RUN_TEST(test_identity_absent_parts);

@@ -15,6 +15,15 @@
  * (GPIO3 appears in the CSV only as expansion UNASSIGNED_D2 with "audit
  * straps/debug before use"; reserved outranks expansion). Rows are pinned
  * against the CSV by test_vdog_straps.c.
+ *
+ * Review H-B closes the silent-OK gap: the table carries a row for EVERY
+ * gpio 0..48. Absent GPIO22-25 (the ESP32-S3 bonds out only GPIO0-21 and
+ * GPIO26-48), the SPI flash bus GPIO26-32, and the octal-PSRAM bus
+ * GPIO33-37 (this baseline builds CONFIG_SPIRAM_MODE_OCT) are RESERVED
+ * rejects, citing the ESP-IDF "GPIO Peripherals" reference (SoC GPIO
+ * existence + flash/PSRAM shared-bus warnings) and the octal-PSRAM build
+ * baseline. The free CSV expansion pins {1,2,4,5,6,43,44} get explicit
+ * all-clear rows so the no-row path is unreachable for valid inputs.
  */
 #include <stdio.h>
 #include <string.h>
@@ -29,9 +38,22 @@
 static const vdog_straps_row_t g_vdog_straps_rows[] = {
     /* pin-map: control,BOOT,0 (owner boot_recovery; strap pulls review) */
     {0u, VDOG_STRAPS_ROLE_BOOT, 1u, 0u, 0u},
+    /* ---- free CSV expansion pins (expansion,UNASSIGNED_*, "audit
+     * straps/debug before use"). All-clear rows: a claim is OK but NEVER
+     * an approval of ownership (that is 0.3/0.7 evidence). ---- */
+    /* pin-map: expansion,UNASSIGNED_D0,1 */
+    {1u, VDOG_STRAPS_ROLE_EXPANSION, 0u, 0u, 0u},
+    /* pin-map: expansion,UNASSIGNED_D1,2 */
+    {2u, VDOG_STRAPS_ROLE_EXPANSION, 0u, 0u, 0u},
     /* strap pin per plan A2b; CSV lists GPIO3 only as expansion
      * UNASSIGNED_D2 ("audit straps/debug before use") — reserved outranks */
     {3u, VDOG_STRAPS_ROLE_JTAG, 1u, 0u, 0u},
+    /* pin-map: expansion,UNASSIGNED_D3,4 */
+    {4u, VDOG_STRAPS_ROLE_EXPANSION, 0u, 0u, 0u},
+    /* pin-map: expansion,UNASSIGNED_D4,5 */
+    {5u, VDOG_STRAPS_ROLE_EXPANSION, 0u, 0u, 0u},
+    /* pin-map: expansion,UNASSIGNED_D5,6 */
+    {6u, VDOG_STRAPS_ROLE_EXPANSION, 0u, 0u, 0u},
     /* ---- SD-card candidates (CSV function=sd, owner=storage,
      * CANDIDATE_NOT_APPROVED; the CSV's own note names the SPI-SD host
      * driver, spelled here without the driver symbol) ---- */
@@ -73,6 +95,32 @@ static const vdog_straps_row_t g_vdog_straps_rows[] = {
      * and claims return PROVISIONAL naming the unresolved sharing until
      * 0.3/E07 (Jada's sign-off) resolves it. ---- */
     {21u, VDOG_STRAPS_ROLE_UNCLAIMED, 0u, 1u, 0u},
+    /* ---- SoC-impossible and shared-bus pins (review H-B; ESP-IDF
+     * "GPIO Peripherals" reference, ESP32-S3 section): claims here are
+     * programming errors, never "unclaimed pins". ---- */
+    /* ESP32-S3 bonds out GPIO0-21 and GPIO26-48 only: GPIO22-25 do not
+     * exist on this SoC (IDF GPIO Peripherals doc). */
+    {22u, VDOG_STRAPS_ROLE_ABSENT, 1u, 0u, 0u},
+    {23u, VDOG_STRAPS_ROLE_ABSENT, 1u, 0u, 0u},
+    {24u, VDOG_STRAPS_ROLE_ABSENT, 1u, 0u, 0u},
+    {25u, VDOG_STRAPS_ROLE_ABSENT, 1u, 0u, 0u},
+    /* GPIO26-32 are the SPI flash bus (IDF GPIO Peripherals doc: flash
+     * uses these pins; the ROM/SDK owns them at all times). */
+    {26u, VDOG_STRAPS_ROLE_FLASH_BUS, 1u, 0u, 0u},
+    {27u, VDOG_STRAPS_ROLE_FLASH_BUS, 1u, 0u, 0u},
+    {28u, VDOG_STRAPS_ROLE_FLASH_BUS, 1u, 0u, 0u},
+    {29u, VDOG_STRAPS_ROLE_FLASH_BUS, 1u, 0u, 0u},
+    {30u, VDOG_STRAPS_ROLE_FLASH_BUS, 1u, 0u, 0u},
+    {31u, VDOG_STRAPS_ROLE_FLASH_BUS, 1u, 0u, 0u},
+    {32u, VDOG_STRAPS_ROLE_FLASH_BUS, 1u, 0u, 0u},
+    /* GPIO33-37 are the octal SPI PSRAM bus on this baseline
+     * (CONFIG_SPIRAM_MODE_OCT in the image's sdkconfig; IDF GPIO
+     * Peripherals doc reserves 33-37 for octal PSRAM). */
+    {33u, VDOG_STRAPS_ROLE_PSRAM_BUS, 1u, 0u, 0u},
+    {34u, VDOG_STRAPS_ROLE_PSRAM_BUS, 1u, 0u, 0u},
+    {35u, VDOG_STRAPS_ROLE_PSRAM_BUS, 1u, 0u, 0u},
+    {36u, VDOG_STRAPS_ROLE_PSRAM_BUS, 1u, 0u, 0u},
+    {37u, VDOG_STRAPS_ROLE_PSRAM_BUS, 1u, 0u, 0u},
     /* pin-map: camera,VSYNC,38 (input; no external expansion) */
     {38u, VDOG_STRAPS_ROLE_CAM_SYNC, 0u, 1u, 0u},
     /* pin-map: camera,SCCB_SCL,39 (output; reconcile SCCB pulls) */
@@ -85,6 +133,10 @@ static const vdog_straps_row_t g_vdog_straps_rows[] = {
     {41u, VDOG_STRAPS_ROLE_MIC, 0u, 0u, 1u},
     /* pin-map: microphone,MIC_CLK,42 */
     {42u, VDOG_STRAPS_ROLE_MIC, 0u, 0u, 1u},
+    /* pin-map: expansion,UNASSIGNED_D6,43 */
+    {43u, VDOG_STRAPS_ROLE_EXPANSION, 0u, 0u, 0u},
+    /* pin-map: expansion,UNASSIGNED_D7,44 */
+    {44u, VDOG_STRAPS_ROLE_EXPANSION, 0u, 0u, 0u},
     /* strap pins per plan A2b (ESP32-S3 datasheet straps; no CSV row) */
     {45u, VDOG_STRAPS_ROLE_VDD_SPI, 1u, 0u, 0u},
     {46u, VDOG_STRAPS_ROLE_BOOT_MODE, 1u, 0u, 0u},
@@ -94,10 +146,11 @@ static const vdog_straps_row_t g_vdog_straps_rows[] = {
     {48u, VDOG_STRAPS_ROLE_CAM_DATA, 0u, 1u, 0u},
 };
 
-/* GPIOs with NO row are unclaimed by this table (CSV lists some as
- * expansion UNASSIGNED_*: 1,2,4,5,6,43,44 — "audit straps/debug before
- * use"; OK from this gate is NOT an approval of ownership: approved wiring
- * is 0.3/0.7 evidence this table cannot grant). */
+/* Coverage (review H-B): the table above carries a row for EVERY gpio
+ * 0..48 — 6 strap/USB reserved + 4 absent + 7 flash-bus + 5 PSRAM-bus +
+ * 14 camera + 3 SD + GPIO21 + 2 disabled mic + 7 free expansion = 49.
+ * The host suite sweeps 0..48 asserting table coverage and the per-class
+ * verdict, so the no-row/OK path below stays defensive-only. */
 
 const vdog_straps_row_t *vdog_straps_table(void)
 {
@@ -178,9 +231,10 @@ vdog_straps_claim_t vdog_straps_check_claim(uint8_t gpio,
     }
     row = vdog_straps_lookup(gpio);
     if (row == NULL) {
-        /* Unclaimed by this table — NOT an approval of wiring ownership:
-         * approved pin assignments are 0.3/0.7 evidence this table cannot
-         * grant. */
+        /* DEFENSIVE-ONLY: unreachable for valid inputs (the host 0..48
+         * sweep pins full coverage, review H-B). Even here this is NOT an
+         * approval of wiring ownership: approved pin assignments are
+         * 0.3/0.7 evidence this table cannot grant. */
         return VDOG_STRAPS_OK;
     }
     return decide(row, out_role);

@@ -6,8 +6,11 @@
  * tags (a CONFIGURED capacity NEVER satisfies the baseline, finding 2), the
  * fixed decision order (missing -> source -> value, each in declaration
  * order), the named wrong-board classes (4MB flash, no PSRAM, quad-only
- * PSRAM, Plus/N16R8-shaped 16MB), and the exact tagged render line — so a
- * configuration-only OPI can never print as detected. No device is involved.
+ * PSRAM, Plus/N16R8-shaped 16MB), the H-A flash-capacity rule (MEASURED
+ * comes from the PHYSICAL chip-ID query only — an 8MiB image header on a
+ * 16MiB chip is rejected, never rendered 8MB[measured]), and the exact
+ * tagged render line — so a configuration-only OPI can never print as
+ * detected. No device is involved.
  */
 #include <string.h>
 
@@ -347,6 +350,113 @@ static void test_format_rejects_too_small_and_null(void)
                           vdog_mem_format_detected(NULL, buf, sizeof(buf)));
 }
 
+/* Review H-A: the MEASURED flash capacity comes from the PHYSICAL (chip-ID)
+ * query, never from the image-header capacity. Table pins the helper's
+ * verdicts against the documented 8 MiB baseline (classes 8/16, 16/8, 8/8,
+ * 4/8, 0/8; "header" first, "physical" second) — the regression case is
+ * 8/16: an 8 MiB IMAGE on a 16 MiB (N16R8-shaped) chip must be REJECTED
+ * naming the flash field, not passed with 8MB[measured]. */
+static void test_set_flash_sizes_uses_physical_only(void)
+{
+    struct {
+        uint32_t header;
+        uint32_t physical;
+        int set_rc;
+        int check_rc;
+        const char *field; /* expected error_field on check failure */
+    } cases[] = {
+        {8u * 1024u * 1024u, 8u * 1024u * 1024u, VDOG_OK, VDOG_OK,
+         NULL}, /* 8/8 honest board: accepted                       */
+        {8u * 1024u * 1024u, 16u * 1024u * 1024u, VDOG_OK, VDOG_ERR_MEM_FLASH,
+         "flash_size_bytes"}, /* THE H-A case: 8MiB image, 16MiB chip */
+        {16u * 1024u * 1024u, 8u * 1024u * 1024u, VDOG_OK, VDOG_OK,
+         NULL}, /* header overstates: chip still 8MiB -> OK          */
+        {4u * 1024u * 1024u, 8u * 1024u * 1024u, VDOG_OK, VDOG_OK,
+         NULL}, /* header understates: chip still 8MiB -> OK         */
+        {0u, 8u * 1024u * 1024u, VDOG_OK, VDOG_OK,
+         NULL}, /* header query failed: physical alone suffices      */
+        {8u * 1024u * 1024u, 0u, VDOG_ERR_MEM_FLASH,
+         VDOG_ERR_MEM_MISSING_FIELD, "flash_size_bytes"},
+        {0u, 0u, VDOG_ERR_MEM_FLASH, VDOG_ERR_MEM_MISSING_FIELD,
+         "flash_size_bytes"}, /* both failed: MISSING, never header    */
+    };
+    size_t i;
+
+    TEST_ASSERT_EQUAL_UINT(7u, (unsigned)(sizeof(cases) / sizeof(cases[0])));
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        vdog_mem_detected_t det = expected_ok();
+        char buf[256];
+
+        det.field_set &= ~VDOG_MEM_FIELD_FLASH_SIZE; /* re-set via helper */
+        TEST_ASSERT_EQUAL_INT_MESSAGE(cases[i].set_rc,
+                                      vdog_mem_set_flash_sizes(
+                                          &det, cases[i].header,
+                                          cases[i].physical),
+                                      "set_flash_sizes rc");
+        TEST_ASSERT_EQUAL_INT_MESSAGE(cases[i].check_rc,
+                                      vdog_mem_check_baseline(&det),
+                                      "baseline verdict");
+        if (cases[i].field != NULL) {
+            TEST_ASSERT_EQUAL_STRING(cases[i].field, vdog_mem_error_field());
+        }
+        if (cases[i].physical != 0u) {
+            TEST_ASSERT_EQUAL_UINT32(cases[i].physical,
+                                     det.flash_size_bytes);
+            TEST_ASSERT_EQUAL_UINT8(VDOG_MEM_SOURCE_MEASURED,
+                                    det.flash_size_src);
+            if (cases[i].check_rc == VDOG_OK) {
+                /* Baseline-equal: only a too-small buffer can stop the
+                 * render. */
+                TEST_ASSERT_EQUAL_INT(VDOG_ERR_BUFFER_TOO_SMALL,
+                                      vdog_mem_format_detected(&det, buf, 8u));
+            } else {
+                /* Rejected set: the render refuses with the SAME check
+                 * code, never a truncated line. */
+                TEST_ASSERT_EQUAL_INT(cases[i].check_rc,
+                                      vdog_mem_format_detected(&det, buf,
+                                                               sizeof(buf)));
+            }
+        }
+        /* Header capacity is recorded as INFORMATION ONLY, never lost. */
+        if (cases[i].header != 0u) {
+            TEST_ASSERT_EQUAL_UINT8(1u, det.flash_header_valid);
+            TEST_ASSERT_EQUAL_UINT32(cases[i].header,
+                                     det.flash_header_size_bytes);
+        } else {
+            TEST_ASSERT_EQUAL_UINT8(0u, det.flash_header_valid);
+            TEST_ASSERT_EQUAL_UINT32(0u, det.flash_header_size_bytes);
+        }
+    }
+}
+
+/* The header capacity can NEVER leak into a capacity claim: with header
+ * 16 MiB and physical 8 MiB the rendered line still says 8MB[measured]
+ * (baseline-equal) and contains no "16MB" anywhere. */
+static void test_header_capacity_never_rendered(void)
+{
+    vdog_mem_detected_t det = expected_ok();
+    char buf[256];
+
+    det.field_set &= ~VDOG_MEM_FIELD_FLASH_SIZE;
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_mem_set_flash_sizes(
+                              &det, 16u * 1024u * 1024u, 8u * 1024u * 1024u));
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_mem_check_baseline(&det));
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_mem_format_detected(&det, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING(EXPECTED_MEM_LINE, buf);
+    TEST_ASSERT_NULL(strstr(buf, "16MB"));
+    TEST_ASSERT_EQUAL_UINT8(1u, det.flash_header_valid);
+    TEST_ASSERT_EQUAL_UINT32(16u * 1024u * 1024u,
+                             det.flash_header_size_bytes);
+}
+
+static void test_set_flash_sizes_rejects_null(void)
+{
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_mem_set_flash_sizes(NULL, 8u, 8u));
+}
+
 /* Crosses the C/C++ link boundary: vdog_mem_cpp_smoke() is DEFINED in C++
  * (cpp_smoke_mem.cpp) with extern "C" linkage and called from this C TU. */
 extern int vdog_mem_cpp_smoke(void);
@@ -378,6 +488,9 @@ void app_main(void)
     RUN_TEST(test_format_exact_fit);
     RUN_TEST(test_format_refuses_rejected_set_without_touching_buffer);
     RUN_TEST(test_format_rejects_too_small_and_null);
+    RUN_TEST(test_set_flash_sizes_uses_physical_only);
+    RUN_TEST(test_header_capacity_never_rendered);
+    RUN_TEST(test_set_flash_sizes_rejects_null);
     RUN_TEST(test_cpp_smoke_linkage);
     UNITY_END();
 }
@@ -400,6 +513,9 @@ int main(void)
     RUN_TEST(test_format_exact_fit);
     RUN_TEST(test_format_refuses_rejected_set_without_touching_buffer);
     RUN_TEST(test_format_rejects_too_small_and_null);
+    RUN_TEST(test_set_flash_sizes_uses_physical_only);
+    RUN_TEST(test_header_capacity_never_rendered);
+    RUN_TEST(test_set_flash_sizes_rejects_null);
     RUN_TEST(test_cpp_smoke_linkage);
     return UNITY_END();
 }

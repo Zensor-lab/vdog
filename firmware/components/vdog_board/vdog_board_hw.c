@@ -79,8 +79,11 @@ vdog_mem_detected_t vdog_mem_detected_from_sdkconfig(void)
 
 int vdog_mem_read_detected(vdog_mem_detected_t *det)
 {
-    uint32_t size = 0u;
+    uint32_t header_bytes = 0u;
+    uint32_t physical_bytes = 0u;
     int failed = VDOG_OK;
+    esp_err_t header_err;
+    esp_err_t physical_err;
 
     if (det == NULL) {
         return VDOG_ERR_INVALID_ARG;
@@ -92,13 +95,24 @@ int vdog_mem_read_detected(vdog_mem_detected_t *det)
      * before app_main runs — so we pass NULL (the same default-chip object
      * the SDK's own tests query), never an uninitialised handle. Review
      * F-3: this is the ROM/bring-up inout contract, not a documented
-     * NULL-substitution in the get_size @param text. */
-    if (esp_flash_get_size(NULL, &size) == ESP_OK) {
-        det->flash_size_bytes = size;
-        det->flash_size_src = VDOG_MEM_SOURCE_MEASURED;
-        det->field_set |= VDOG_MEM_FIELD_FLASH_SIZE;
-    } else {
-        /* Query failed honestly: leave UNSET (missing beats invented). */
+     * NULL-substitution in the get_size @param text.
+     *
+     * Review H-A — the two queries answer DIFFERENT questions:
+     * esp_flash_get_size() returns the IMAGE-HEADER capacity after IDF
+     * bring-up (an 8 MiB image on a 16 MiB N16R8-shaped chip reports 8
+     * MiB — trusting it would defeat the wrong-board rejection), while
+     * esp_flash_get_physical_size() detects the REAL chip size from its
+     * ID (installed esp_flash.h:75: "If you want to get the real size of
+     * the chip, please call esp_flash_get_physical_size instead"). The
+     * MEASURED field is fed ONLY by the physical query; the header value
+     * is recorded as honest informational data by the portable helper. */
+    header_err = esp_flash_get_size(NULL, &header_bytes);
+    physical_err = esp_flash_get_physical_size(NULL, &physical_bytes);
+    if (vdog_mem_set_flash_sizes(
+            det, (header_err == ESP_OK) ? header_bytes : 0u,
+            (physical_err == ESP_OK) ? physical_bytes : 0u) != VDOG_OK) {
+        /* Physical (chip-ID) query failed: flash_size stays UNSET so the
+         * baseline check reports MISSING, never header-as-fact. */
         failed = VDOG_ERR_MEM_FLASH;
     }
 
@@ -134,11 +148,12 @@ void vdog_identity_read_esp(vdog_identity_t *id)
         return;
     }
     esp_chip_info(&info); /* read-only chip identity */
-    if (info.model == CHIP_ESP32S3) {
-        strcpy(id->chip_model, "esp32s3");
-    } else {
-        strcpy(id->chip_model, "unknown");
-    }
+    /* Closed-set model (review M-D): the SDK enum maps onto the portable
+     * enum; anything unrecognised renders "unknown" and no caller string
+     * can ever reach the identity line. */
+    vdog_identity_set_chip_model(
+        id, (info.model == CHIP_ESP32S3) ? VDOG_IDENTITY_CHIP_ESP32S3
+                                         : VDOG_IDENTITY_CHIP_UNKNOWN);
     /* Wafer revision is DECIMAL MXX (major*100 + minor) per the installed
      * esp_hw_support/include/esp_chip_info.h:53 — the portable helper does
      * the /100 %100 split (review F-2: a byte split would render S3 v1.1,

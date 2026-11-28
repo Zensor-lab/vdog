@@ -37,14 +37,19 @@ int vdog_straps_cpp_smoke(void)
         return 4;
     }
 
-    /* Microphone baseline stays dead; unclaimed pins pass. */
+    /* Microphone baseline stays dead; SoC-absent pins REJECT (review H-B);
+     * documented free expansion rows pass. */
     if (vdog_straps_check_claim(41u, VDOG_STRAPS_CLAIM_GENERAL, nullptr) !=
         VDOG_STRAPS_REJECT) {
         return 5;
     }
     if (vdog_straps_check_claim(22u, VDOG_STRAPS_CLAIM_GENERAL, nullptr) !=
-        VDOG_STRAPS_OK) {
+        VDOG_STRAPS_REJECT) {
         return 6;
+    }
+    if (vdog_straps_check_claim(44u, VDOG_STRAPS_CLAIM_GENERAL, nullptr) !=
+        VDOG_STRAPS_OK) {
+        return 10;
     }
 
     /* Enum-typed inputs from C++; invalid inputs named. */

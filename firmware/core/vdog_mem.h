@@ -81,13 +81,20 @@ extern "C" {
 typedef uint8_t vdog_mem_source_t;
 
 typedef struct {
-    uint32_t flash_size_bytes;     /* chip capacity (MEASURED in Part B)    */
+    uint32_t flash_size_bytes;     /* CHIP capacity, MEASURED from the chip
+                                    * ID (vdog_mem_set_flash_sizes, H-A)    */
     vdog_board_flash_mode_t flash_mode; /* build-configured QIO/DIO/...     */
     uint16_t flash_freq_mhz;       /* build-configured frequency, whole MHz */
     uint8_t psram_present;         /* 1 = PSRAM initialized (MEASURED)      */
     uint32_t psram_size_bytes;     /* usable PSRAM (MEASURED; 0 valid = no) */
     vdog_board_psram_mode_t psram_mode;  /* build-configured OPI/QSPI       */
     uint16_t psram_speed_mhz;      /* build-configured frequency, whole MHz */
+    uint32_t flash_header_size_bytes; /* informational ONLY (plan 1.2 review
+                                       * H-A): capacity recorded in the
+                                       * image header. Never a chip-capacity
+                                       * claim: never compared, never
+                                       * rendered. 0 unless recorded.       */
+    uint8_t flash_header_valid;    /* 1 = flash_header_size_bytes recorded  */
     uint32_t field_set;            /* VDOG_MEM_FIELD_* bitmask              */
     vdog_mem_source_t flash_size_src;
     vdog_mem_source_t flash_mode_src;
@@ -114,6 +121,32 @@ typedef struct {
  * distinguishable from "probed as zero". Callers then set each field WITH
  * its source tag. */
 void vdog_mem_detected_init(vdog_mem_detected_t *det);
+
+/* Record the flash capacity from the target adapter (plan 1.2 review H-A).
+ * The two SDK queries answer DIFFERENT questions and are kept apart here so
+ * a wrong-board 16 MiB chip can never hide behind an 8 MiB image header:
+ *   physical_bytes — what the CHIP really is, detected from its JEDEC ID
+ *     (the SDK's "real size of the chip" query; the installed SPI-flash
+ *     public header documents the OTHER query as returning the image-
+ *     header size and points real-size callers at this one). This is the
+ *     ONLY value that may become the MEASURED
+ *     flash capacity: it is what check_baseline compares and what the
+ *     tagged line renders. 0 means the query FAILED: the flash_size field
+ *     stays UNSET (missing beats invented) and VDOG_ERR_MEM_FLASH is
+ *     returned so the boot log says so instead of trusting the header.
+ *   header_bytes — the capacity recorded in the image header (what the
+ *     SDK's header-size query returns after bring-up: an 8 MiB IMAGE on a
+ *     16 MiB chip reports 8 MiB here). Stored INFORMATIONAL ONLY
+ *     (flash_header_size_bytes/flash_header_valid) for the boot record —
+ *     never compared, never rendered, never labelled a chip capacity. 0
+ *     means "not recorded". A header/physical DISAGREEMENT (e.g. header
+ *     8 MiB, physical 16 MiB) therefore still fails the baseline through
+ *     the physical value alone (host-pinned: 8/16 REJECT names
+ *     flash_size_bytes; 8/8 OK; classes 16/8, 4/8, 0/8 pinned).
+ * Returns VDOG_OK on success (physical recorded as MEASURED) or
+ * VDOG_ERR_INVALID_ARG / VDOG_ERR_MEM_FLASH as above. */
+int vdog_mem_set_flash_sizes(vdog_mem_detected_t *det, uint32_t header_bytes,
+                             uint32_t physical_bytes);
 
 /* Compare a detector against the documented baseline.
  * Fixed decision order (so the diagnosis is deterministic): argument check
