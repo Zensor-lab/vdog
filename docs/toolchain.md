@@ -657,3 +657,18 @@ upload, and no monitor beyond the recorded session remain in force. No
 measurement has been performed as of this commit — Part B is still gated on
 board marking photos, operation-time port re-identification and the lead's
 release of the reviewed Part A commit.
+
+### Driver arbitration (2026-11-28, recorded per append-only policy)
+
+A second member session drove the same Part A in `.worktrees/1.2-impl`
+(branch `opencode/1.2-board-bringup`, now `9f27f96`, clean, never pushed, no
+PR), beginning by overwriting in-progress files here at 01:10–01:14 UTC.
+The lead could not answer the arbitration question (turn ended), so the
+package owner ruled: **single driver = this branch; PR #6 at `23f53d4` is
+the only reviewable Part A change** (pushed, 4/4 CI, reviewer tasked). The
+other tree is frozen for handoff only; its F7(b) re-home of the gate scenario
+drivers stays on `opencode/1.2-board-bringup` as the 0.9 merge-window
+follow-up (the plan's 0.9-pending guard excludes it from this PR). Both
+collision states remain preserved at `tmp/opencode/1.2-collision-20261128/`
+for byte comparison. Ruling communicated in-thread (msg_416a06b416e2) and to
+the other session with a freeze request (msg_903c3a320897).
