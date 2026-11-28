@@ -87,6 +87,14 @@ top-level `.bin` files of §2.1:
   report instead.**
 - Record the actual esptool command line (PlatformIO verbose upload) here.
 
+> **F-6 correction (append-only, 2026-11-28):** the app endpoint in the
+> proof above was a derived-arithmetic typo — `firmware.bin`
+> 0x20000 + 216704 B ends at **0x54E80** (216704 = 0x34E80; verified
+> `python3 -c "print(hex(0x20000 + 216704))"` → `0x54e80`), not the
+> 0x54E40 written above (original line preserved as recorded). The
+> conclusion is unchanged: 0x54E80 is still far inside app0
+> (0x20000–0x31FFFF), so no written image overlaps nvs or phy_init.
+
 ## 5. Wake conditions (ALL required before any flash — plan §6)
 
 | # | Condition | Status |

@@ -728,3 +728,18 @@ main-side files, and the only commits ADDING files to that directory
 off-main are ours (`9f27f96`, `test_12_*`), which no 0.9 branch touches.
 A7's re-homed drivers therefore collide with no pending 0.9-owned test
 file.
+
+#### F-6 correction — app endpoint arithmetic (append-only, 2026-11-28)
+
+Reviewer round-2 close-out LOW: the M-E row above (and the matching proof
+in `docs/bench-assignment.md` §4) recorded the app-image endpoint as
+`0x20000 + 216704 = 0x54E40` — a derived-arithmetic typo in MY derivation
+(the measured length 216704 B itself is correct). Verified:
+`216704 == 0x34E80`, so `0x20000 + 216704 = 0x54E80`
+(`python3 -c "print(hex(0x20000 + 216704))"` → `0x54e80`; 0x54E40 =
+347712 ≠ 347776). The true endpoint 0x54E80 remains far inside app0
+(0x20000–0x31FFFF), so the non-overlap conclusion and the BLOCKING rule
+are unchanged. Grep sweep of `docs/bench-assignment.md`,
+`docs/toolchain.md` and `docs/plans/1.2-assignment.md`: 0x54E40 occurred
+in exactly those two places (plan §6 never carried the sum); the original
+lines are preserved as recorded and corrected here by append.
