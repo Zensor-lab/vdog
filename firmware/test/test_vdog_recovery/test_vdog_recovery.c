@@ -203,9 +203,11 @@ static void test_boot_evidence_poweron_verbatim(void)
     TEST_ASSERT_EQUAL_INT(VDOG_OK,
                           vdog_recovery_classify_boot(ROM_POWERON_NORMAL, &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    /* "POWERON_RESET" is the accepted rtc.h/esptool-doc ALIAS of value 1;
+     * the structured name is the canonical ROM print "POWERON" (R3-A/R3-B). */
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_UINT8(1u, ev.rst_value);
-    TEST_ASSERT_EQUAL_STRING("POWERON_RESET", ev.cause_name);
+    TEST_ASSERT_EQUAL_STRING("POWERON", ev.cause_name);
     /* The wrapper agrees with the extended entry point (same parse). */
     TEST_ASSERT_EQUAL_UINT8((uint8_t)ev.boot_mode,
                             (uint8_t)vdog_recovery_classify(ROM_POWERON_NORMAL));
@@ -241,24 +243,211 @@ static void test_boot_evidence_cause_states(void)
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_UINT8(15u, ev.rst_value);
 
-    /* Download line carries its cause too. */
+    /* Download line carries its cause too (alias spelling -> canonical). */
     TEST_ASSERT_EQUAL_INT(VDOG_OK,
                           vdog_recovery_classify_boot(ROM_USB_DOWNLOAD, &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_DOWNLOAD, (uint8_t)ev.boot_mode);
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_UINT8(1u, ev.rst_value);
-    TEST_ASSERT_EQUAL_STRING("POWERON_RESET", ev.cause_name);
+    TEST_ASSERT_EQUAL_STRING("POWERON", ev.cause_name);
 
-    /* UNRECOGNISED cause: well-formed token not in the RESET_REASON set —
-     * the boot-mode verdict still stands (cause vocab never vetoes), and
-     * the name is kept VERBATIM for the transcript cross-check. */
+    /* UNRECOGNISED cause: well-formed token with no (value, name) pair in
+     * the cited table — the boot-mode verdict still stands (cause vocab
+     * never vetoes), and the token is NOT copied into the evidence
+     * (review R3-B): the structured name is "" with every byte zero. */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
         "rst:0x1 (SOMETHING_NEW),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
     TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
                             (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(1u, ev.rst_value); /* parsed value recorded    */
+    TEST_ASSERT_EQUAL_STRING("", ev.cause_name);
+    TEST_ASSERT_EACH_EQUAL_CHAR('\0', ev.cause_name, sizeof(ev.cause_name));
+}
+
+/* Review R3-A: the ROM's OWN printed spellings (published S3 captures)
+ * classify KNOWN — the old table wrongly demanded the rtc.h enum names.
+ * Pair citations live in core/vdog_recovery.c (partitions_ota README,
+ * boot-log/startup docs, rtc.h, rtc_wdt.h). */
+static void test_boot_evidence_rom_printed_aliases(void)
+{
+    vdog_boot_evidence_t ev;
+
+    /* examples/system/ota/partitions_ota/README.md verbatim. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
     TEST_ASSERT_EQUAL_UINT8(1u, ev.rst_value);
-    TEST_ASSERT_EQUAL_STRING("SOMETHING_NEW", ev.cause_name);
+    TEST_ASSERT_EQUAL_STRING("POWERON", ev.cause_name);
+
+    /* rst:0xc (RTC_SW_CPU_RST) — ROM print differs from rtc.h enum name
+     * (RTC_SW_CPU_RESET); both accepted, canonical is the ROM print. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0xc (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(12u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("RTC_SW_CPU_RST", ev.cause_name);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0xc (RTC_SW_CPU_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("RTC_SW_CPU_RST", ev.cause_name);
+
+    /* Enum-spelling rows (rtc.h values), incl. deep-sleep and USB-JTAG. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x5 (DEEPSLEEP_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(5u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("DEEPSLEEP_RESET", ev.cause_name);
+
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x16 (USB_JTAG_CHIP_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(22u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("USB_JTAG_CHIP_RESET", ev.cause_name);
+
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x10 (RTCWDT_RTC_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(16u, ev.rst_value);
+
+    /* Case-insensitivity of the pair match (documented). */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x1 (poweron),boot:0x8 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("POWERON", ev.cause_name);
+}
+
+/* Review R3-A: KNOWN requires VALUE <-> NAME agreement. A known name
+ * with the wrong value, or a known value with the wrong name, is
+ * UNRECOGNISED — and the boot verdict still comes from the banner. */
+static void test_boot_evidence_pair_mismatch(void)
+{
+    vdog_boot_evidence_t ev;
+
+    /* The bot's probe: 0xf (POWERON_RESET) — POWERON_RESET is known (at
+     * 0x1) but value 15 pairs with RTCWDT_BROWN_OUT_RESET. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0xf (POWERON_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(15u, ev.rst_value);
+    TEST_ASSERT_EQUAL_STRING("", ev.cause_name);
+    TEST_ASSERT_EACH_EQUAL_CHAR('\0', ev.cause_name, sizeof(ev.cause_name));
+
+    /* The bot's probe: 0x1 (RTC_SW_CPU_RST) — known name, wrong value. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x1 (RTC_SW_CPU_RST),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("", ev.cause_name);
+
+    /* Wrong-value spellings of the OTHER alias form too. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x1 (RTC_SW_CPU_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0xc (POWERON),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+
+    /* Value outside the table entirely (0x22=34): UNRECOGNISED. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x22 (INTRUSION_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+}
+
+/* grep-style substring search over the RAW evidence bytes. */
+static const unsigned char *ev_find_bytes(const vdog_boot_evidence_t *ev,
+                                          const char *needle)
+{
+    const unsigned char *b = (const unsigned char *)ev;
+    const size_t n = sizeof(*ev);
+    const size_t m = strlen(needle);
+    size_t i;
+    size_t j;
+
+    for (i = 0; i + m <= n; ++i) {
+        for (j = 0; j < m; ++j) {
+            if (b[i + j] != (unsigned char)needle[j]) {
+                break;
+            }
+        }
+        if (j == m) {
+            return b + i;
+        }
+    }
+    return NULL;
+}
+
+/* Review R3-B(a): a synthetic full MAC as the cause token must not
+ * escape into the structured result — boot verdict stands, cause
+ * UNRECOGNISED, cause_name empty, and the raw bytes appear NOWHERE in
+ * the evidence struct. (The verbatim token lives only in the caller's
+ * raw transcript, kept outside this API by the Part B drill.) */
+static void test_boot_evidence_cause_privacy_mac_token(void)
+{
+    vdog_boot_evidence_t ev;
+
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x1 (001122334455),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("", ev.cause_name);
+    TEST_ASSERT_NULL_MESSAGE(ev_find_bytes(&ev, "001122334455"),
+                             "MAC-shaped cause must not appear in evidence");
+    /* Also with separators inside the token charset (A-F0-9 + _ stays): */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x1 (AABB_CC_DD_EE_FF),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_NULL(ev_find_bytes(&ev, "AABB"));
+}
+
+/* Review R3-B(b): stale stack bytes. A cause line then a boot-only line
+ * into the SAME struct must leave the whole cause_name buffer zero (not
+ * just up to the NUL), and a dirty struct must enter fully cleared. */
+static void test_boot_evidence_no_stale_bytes(void)
+{
+    vdog_boot_evidence_t ev;
+
+    /* 1. A KNOWN cause line populates the canonical name... */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x9 (RTCWDT_SYS_RESET),boot:0x3 (SPI_FAST_FLASH_BOOT)", &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_KNOWN, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_STRING("RTCWDT_SYS_RESET", ev.cause_name);
+
+    /* 2. ...then a boot-only line over the SAME struct: the old bug left
+     * nonzero bytes behind the NUL. Entire buffer must be zero. */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_recovery_classify_boot(ROM_BARE_NORMAL, &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_MODE_NORMAL, (uint8_t)ev.boot_mode);
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_NONE, (uint8_t)ev.cause_state);
+    TEST_ASSERT_EQUAL_UINT8(0u, ev.rst_value);
+    TEST_ASSERT_EACH_EQUAL_CHAR('\0', ev.cause_name, sizeof(ev.cause_name));
+
+    /* 3. A UNRECOGNISED token after a KNOWN name leaves nothing behind
+     * either (bot probe pattern: successive calls into one struct). */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_recovery_classify_boot(
+        "rst:0x1 (SECRET_MAC_001122334455),boot:0x3 (SPI_FAST_FLASH_BOOT)",
+        &ev));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_UNRECOGNISED,
+                            (uint8_t)ev.cause_state);
+    TEST_ASSERT_EACH_EQUAL_CHAR('\0', ev.cause_name, sizeof(ev.cause_name));
+    TEST_ASSERT_NULL(ev_find_bytes(&ev, "SECRET_MAC"));
+
+    /* 4. Dirty struct at the entry point: cleared before filling. */
+    memset(&ev, 0xA5, sizeof(ev));
+    TEST_ASSERT_EQUAL_INT(VDOG_OK,
+                          vdog_recovery_classify_boot(ROM_BARE_NORMAL, &ev));
+    TEST_ASSERT_EACH_EQUAL_CHAR('\0', ev.cause_name, sizeof(ev.cause_name));
+    TEST_ASSERT_EQUAL_UINT8(VDOG_BOOT_CAUSE_NONE, (uint8_t)ev.cause_state);
 }
 
 /* Evidence commit discipline + argument contracts. */
@@ -714,6 +903,10 @@ void app_main(void)
     RUN_TEST(test_classify_rst_prefix_structure);
     RUN_TEST(test_boot_evidence_poweron_verbatim);
     RUN_TEST(test_boot_evidence_cause_states);
+    RUN_TEST(test_boot_evidence_rom_printed_aliases);
+    RUN_TEST(test_boot_evidence_pair_mismatch);
+    RUN_TEST(test_boot_evidence_cause_privacy_mac_token);
+    RUN_TEST(test_boot_evidence_no_stale_bytes);
     RUN_TEST(test_boot_evidence_arg_contracts);
     RUN_TEST(test_boot_mode_names);
     RUN_TEST(test_identity_init_marks_nothing);
@@ -742,6 +935,10 @@ int main(void)
     RUN_TEST(test_classify_rst_prefix_structure);
     RUN_TEST(test_boot_evidence_poweron_verbatim);
     RUN_TEST(test_boot_evidence_cause_states);
+    RUN_TEST(test_boot_evidence_rom_printed_aliases);
+    RUN_TEST(test_boot_evidence_pair_mismatch);
+    RUN_TEST(test_boot_evidence_cause_privacy_mac_token);
+    RUN_TEST(test_boot_evidence_no_stale_bytes);
     RUN_TEST(test_boot_evidence_arg_contracts);
     RUN_TEST(test_boot_mode_names);
     RUN_TEST(test_identity_init_marks_nothing);

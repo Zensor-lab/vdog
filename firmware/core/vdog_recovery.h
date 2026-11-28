@@ -54,25 +54,43 @@ typedef enum {
  * tokens are structurally invalid, not UNRECOGNISED). */
 #define VDOG_BOOT_CAUSE_MAX 23
 
-/* State of the optional rst:0xNN (CAUSE), prefix of a ROM line. */
+/* State of the optional rst:0xNN (CAUSE), prefix of a ROM line. KNOWN
+ * means the (VALUE, NAME) PAIR matched the core's cited ROM table
+ * (review R3-A): per value the union of the ROM-printed spelling (the
+ * ESP-IDF Reset-Reasons docs and the published example/boot-log captures)
+ * and the ROM reset-reason header's enum spelling — e.g. 0x1 accepts
+ * "POWERON" and "POWERON_RESET"; 0xc accepts "RTC_SW_CPU_RST" and
+ * "RTC_SW_CPU_RESET". A known name with the wrong value, or a known
+ * value with the wrong name, is UNRECOGNISED (never "closest match");
+ * the boot-mode verdict always comes from the BANNER alone. */
 typedef enum {
     VDOG_BOOT_CAUSE_NONE = 0,       /* no rst: prefix on this line         */
-    VDOG_BOOT_CAUSE_KNOWN,          /* name in the documented RESET_REASON
-                                     * set (ROM reset-reason header)       */
-    VDOG_BOOT_CAUSE_UNRECOGNISED    /* well-formed [A-Za-z0-9_]{1,23} but
-                                     * not a documented name: still does
-                                     * not veto the boot-mode verdict      */
+    VDOG_BOOT_CAUSE_KNOWN,          /* (value, name) pair matched the
+                                     * cited ROM table                     */
+    VDOG_BOOT_CAUSE_UNRECOGNISED    /* well-formed [A-Za-z0-9_]{1,23}
+                                     * token or value/name mismatch: not
+                                     * named in the evidence (see below),
+                                     * never vetoes the boot-mode verdict  */
 } vdog_boot_cause_state_t;
 
 /* What ONE recognized ROM line proves. Valid ONLY after
  * vdog_recovery_classify_boot() recognized the FULL line form; any line
  * that is not recognized yields a fully cleared evidence (no half
- * claims). cause_name is the ROM's own spelling, verbatim. */
+ * claims). cause_name (review R3-B): populated ONLY for
+ * VDOG_BOOT_CAUSE_KNOWN, and then only with the matched entry's CANONICAL
+ * spelling from the cited table — never the input bytes verbatim; for
+ * NONE/UNRECOGNISED the whole field is zeroed ("" with all bytes past
+ * the NUL zero too, asserted by tests). A synthetic MAC typed as the
+ * cause token therefore cannot escape into the structured result; the
+ * ROM's raw token lives only in the caller's raw transcript, which the
+ * Part B drill records verbatim OUTSIDE this API (verbatim-everything
+ * stance, plan §6 B4/B5). */
 typedef struct {
     vdog_boot_mode_t boot_mode;
     vdog_boot_cause_state_t cause_state;
-    uint8_t rst_value; /* ROM hex value; only if cause_state != NONE       */
-    char cause_name[VDOG_BOOT_CAUSE_MAX + 1u]; /* verbatim; "" if NONE     */
+    uint8_t rst_value; /* parsed hex whenever the rst: prefix was
+                        * well-formed (KNOWN or UNRECOGNISED); 0 for NONE */
+    char cause_name[VDOG_BOOT_CAUSE_MAX + 1u]; /* canonical or ""         */
 } vdog_boot_evidence_t;
 
 /* Clear evidence: UNKNOWN + NONE + rst 0 + "" cause. out NULL is a no-op

@@ -152,44 +152,103 @@ static int banner_in_set(const char *banner, size_t len,
     return 0;
 }
 
-/* Reset-cause names of the ROM RESET_REASON enum (installed framework's
- * ROM reset-reason header for this target; the esptool boot-log reference
- * points at exactly this enum for the rst:0xNN (REASON) mapping). A name
- * here is CAUSE_KNOWN; any other well-formed token is UNRECOGNISED but
- * never vetoes the boot-mode verdict. */
-static const char *const g_vdog_cause_names[] = {
-    "poweron_reset",
-    "rtc_sw_sys_reset",
-    "deepsleep_reset",
-    "tg0wdt_sys_reset",
-    "tg1wdt_sys_reset",
-    "rtcwdt_sys_reset",
-    "intrusion_reset",
-    "tg0wdt_cpu_reset",
-    "rtc_sw_cpu_reset",
-    "rtcwdt_cpu_reset",
-    "rtcwdt_brown_out_reset",
-    "rtcwdt_rtc_reset",
-    "tg1wdt_cpu_reset",
-    "super_wdt_reset",
-    "glitch_rtc_reset",
-    "efuse_reset",
-    "usb_uart_chip_reset",
-    "usb_jtag_chip_reset",
-    "power_glitch_reset"
+/* Reset-cause PAIR TABLE (review R3-A): KNOWN requires the parsed rst
+ * VALUE and the printed NAME to agree on one entry. Per value we accept
+ * the UNION of the two documented spellings — (a) the ROM RESET_REASON
+ * enum name (installed framework's esp32s3 ROM reset-reason header, the
+ * same enum the esptool boot-log reference points at for the
+ * rst:0xNN (REASON) mapping), and (b) the ROM-printed alias the ROM
+ * actually emits where published sources show it differs. Published S3
+ * ROM prints (per-entry citations):
+ *   0x1 POWERON       — installed framework examples/system/ota/
+ *                       partitions_ota/README.md ("rst:0x1 (POWERON),
+ *                       boot:0x8 (SPI_FAST_FLASH_BOOT)") and Espressif's
+ *                       ESP32-S3 startup-log doc (ESP-Techpedia, "Chip
+ *                       Power-On Startup Log"); alias POWERON_RESET —
+ *                       esptool ESP32-S3 Boot Mode Selection example and
+ *                       the ESP-IDF S3 get-started monitor capture
+ *                       (same value). rtc.h: POWERON_RESET = 1.
+ *   0xc RTC_SW_CPU_RST — partitions_ota README ("rst:0xc
+ *                       (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)");
+ *                       alias RTC_SW_CPU_RESET — rtc.h (RTC_SW_CPU_RESET
+ *                       = 12).
+ *   0x10 RTCWDT_RTC_RESET — installed framework's rtc_wdt.h docs comment
+ *                       ("rst:0x10 (RTCWDT_RTC_RESET),boot:
+ *                       0x13 (SPI_FAST_FLASH_BOOT)"); rtc.h value 16.
+ *   0x5 DEEPSLEEP_RESET / 0x7 TG0WDT_SYS_RESET — ESP-IDF S3 get-started
+ *                       monitor captures; rtc.h values 5/7.
+ * All other entries carry the rtc.h enum name/value alone. Mismatched
+ * pairs (name-known-but-wrong-value or value-known-but-wrong-name) are
+ * UNRECOGNISED — never "closest match"; the boot verdict always comes
+ * from the BANNER alone. The structured cause_name stores ONLY the
+ * entry's canonical primary spelling (review R3-B): unrecognised tokens,
+ * including MAC-shaped ones, are never copied into the evidence (they
+ * live only in the caller's verbatim transcript, which Part B keeps
+ * outside this API). */
+typedef struct {
+    uint8_t value;       /* the ROM's rst:0xNN hex value (rtc.h)          */
+    const char *primary; /* canonical name stored on a KNOWN match        */
+    const char *alias;   /* accepted alternate spelling, or NULL          */
+} vdog_cause_entry_t;
+
+static const vdog_cause_entry_t g_vdog_causes[] = {
+    {1u, "POWERON", "POWERON_RESET"},            /* see citation above    */
+    {3u, "RTC_SW_SYS_RESET", NULL},
+    {5u, "DEEPSLEEP_RESET", NULL},
+    {7u, "TG0WDT_SYS_RESET", NULL},
+    {8u, "TG1WDT_SYS_RESET", NULL},
+    {9u, "RTCWDT_SYS_RESET", NULL},
+    {10u, "INTRUSION_RESET", NULL},
+    {11u, "TG0WDT_CPU_RESET", NULL},
+    {12u, "RTC_SW_CPU_RST", "RTC_SW_CPU_RESET"}, /* see citation above    */
+    {13u, "RTCWDT_CPU_RESET", NULL},
+    {15u, "RTCWDT_BROWN_OUT_RESET", NULL},
+    {16u, "RTCWDT_RTC_RESET", NULL},
+    {17u, "TG1WDT_CPU_RESET", NULL},
+    {18u, "SUPER_WDT_RESET", NULL},
+    {19u, "GLITCH_RTC_RESET", NULL},
+    {20u, "EFUSE_RESET", NULL},
+    {21u, "USB_UART_CHIP_RESET", NULL},
+    {22u, "USB_JTAG_CHIP_RESET", NULL},
+    {23u, "POWER_GLITCH_RESET", NULL}
 };
 
-static int cause_is_known(const char *name, size_t len)
+/* Plain case-insensitive whole-string equality (no hyphen folding: reset
+ * cause spellings contain only [A-Za-z0-9_]). */
+static int name_equals_ci(const char *tok, size_t len, const char *name)
 {
-    size_t k;
-    size_t n = sizeof(g_vdog_cause_names) / sizeof(g_vdog_cause_names[0]);
+    size_t i;
 
-    for (k = 0; k < n; ++k) {
-        if (banner_equals(name, len, g_vdog_cause_names[k])) {
-            return 1; /* banner_equals' hyphen fold is harmless here */
+    for (i = 0; i < len; ++i) {
+        if (name[i] == '\0' || ascii_lower(tok[i]) != ascii_lower(name[i])) {
+            return 0;
         }
     }
-    return 0;
+    return name[len] == '\0';
+}
+
+/* Pair-matched lookup: returns the entry's canonical name ONLY when the
+ * parsed value and the printed token agree on one entry (union of the
+ * value's documented spellings), else NULL. */
+static const char *cause_lookup(unsigned value, const char *tok, size_t len)
+{
+    size_t k;
+    size_t n = sizeof(g_vdog_causes) / sizeof(g_vdog_causes[0]);
+
+    for (k = 0; k < n; ++k) {
+        if (g_vdog_causes[k].value != (uint8_t)value) {
+            continue;
+        }
+        if (name_equals_ci(tok, len, g_vdog_causes[k].primary)) {
+            return g_vdog_causes[k].primary;
+        }
+        if (g_vdog_causes[k].alias != NULL &&
+            name_equals_ci(tok, len, g_vdog_causes[k].alias)) {
+            return g_vdog_causes[k].primary;
+        }
+        return NULL; /* right value, wrong name: mismatch is NOT nearest */
+    }
+    return NULL; /* wrong value: wrong-name pairs never match by name */
 }
 
 void vdog_boot_evidence_init(vdog_boot_evidence_t *out)
@@ -210,13 +269,15 @@ static vdog_boot_mode_t classify_line(const char *s, size_t end,
     size_t i = skip_blank(s, 0, end);
     vdog_boot_cause_state_t cause_state = VDOG_BOOT_CAUSE_NONE;
     uint8_t rst_value = 0u;
-    char cause_name[VDOG_BOOT_CAUSE_MAX + 1u];
+    const char *cause_canonical = NULL;
+    /* Whole array zero-initialized (review R3-B): the match token is a
+     * scratch buffer that is NEVER committed to the evidence; only the
+     * table's canonical spelling ever reaches cause_name. */
+    char cause_tok[VDOG_BOOT_CAUSE_MAX + 1u] = { '\0' };
     const char *open;
     const char *close;
     size_t banner_len;
     size_t j;
-
-    cause_name[0] = '\0';
 
     /* Optional "rst:0xNN (CAUSE)," prefix — structurally exact or the
      * WHOLE line is UNKNOWN (review R2-A). */
@@ -251,12 +312,12 @@ static vdog_boot_mode_t classify_line(const char *s, size_t end,
         if (cause_len < 1u || cause_len > VDOG_BOOT_CAUSE_MAX) {
             return VDOG_BOOT_MODE_UNKNOWN; /* empty/oversized: malformed */
         }
-        memcpy(cause_name, s + cause_start, cause_len);
-        cause_name[cause_len] = '\0';
+        memcpy(cause_tok, s + cause_start, cause_len);
+        cause_tok[cause_len] = '\0'; /* scratch only: never committed */
         rst_value = (uint8_t)val;
-        cause_state = cause_is_known(cause_name, cause_len)
-                          ? VDOG_BOOT_CAUSE_KNOWN
-                          : VDOG_BOOT_CAUSE_UNRECOGNISED;
+        cause_canonical = cause_lookup(val, cause_tok, cause_len);
+        cause_state = (cause_canonical != NULL) ? VDOG_BOOT_CAUSE_KNOWN
+                                                : VDOG_BOOT_CAUSE_UNRECOGNISED;
     }
 
     i = skip_blank(s, i, end);
@@ -305,10 +366,17 @@ static vdog_boot_mode_t classify_line(const char *s, size_t end,
     } else {
         return VDOG_BOOT_MODE_UNKNOWN; /* closed set only, never guessed */
     }
-    /* Full-form success: commit the evidence. */
+    /* Full-form success: commit the evidence (review R3-B: the struct was
+     * fully cleared at the entry point; cause_name is explicitly
+     * zero-filled here too, and ONLY the canonical table spelling is
+     * written — bytes after the NUL are always zero, and an unrecognised
+     * token (even a MAC-shaped one) can never land in the struct). */
     ev->cause_state = cause_state;
     ev->rst_value = rst_value;
-    memcpy(ev->cause_name, cause_name, sizeof(ev->cause_name));
+    memset(ev->cause_name, 0, sizeof(ev->cause_name));
+    if (cause_state == VDOG_BOOT_CAUSE_KNOWN) {
+        memcpy(ev->cause_name, cause_canonical, strlen(cause_canonical));
+    }
     return ev->boot_mode;
 }
 
