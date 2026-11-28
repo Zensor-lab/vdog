@@ -315,7 +315,8 @@ other device function — that verification is still outstanding.
 | `check` fails on a hash | Re-download from the Release and re-verify; do not install a bundle that fails |
 | Device reports the wrong chip or flash size | You have a different board or revision. Stop; this bundle is only for the XIAO ESP32S3 Sense |
 | Secure boot / flash encryption is reported | Stop. This prototype route does not install onto protected devices and provides no security bypass |
-| An install failed partway | Rerun the same validated command: the same four segments are re-validated before any write |
+| An install failed partway | Rerun the same validated command: the same four segments are re-validated before any write. One exception — if the next run refuses with `on-device partition table is unreadable/unknown` (exit 3), the table itself was interrupted mid-write and the board now holds a torn table; a plain rerun will not recover it. Re-flash from a source build per [installation.md](installation.md), which writes the table from scratch |
+| `port … disappeared mid-session` | The installer keeps the board in the bootloader for the whole run (one verifying reset, then `--before no-reset`), so the native USB port should not move; if it does, it never follows a renumbered path. Run `sh ./install.sh ports` and rerun with the **current** path |
 | `uv: command not found` | Install `uv`, or export `VDOG_INSTALLER_UV=/path/to/uv`, then rerun |
 
 ## 10. What the installer will never do

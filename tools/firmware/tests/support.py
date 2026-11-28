@@ -104,7 +104,9 @@ def make_partitions_bin(entries: list[tuple[str, int, int, int, int]] | None = N
     for index in range(3072):
         table[index] = 0xFF
     used = bytearray()
-    for name, type_, subtype, offset, size in entries:
+    for entry_spec in entries:
+        name, type_, subtype, offset, size = entry_spec[:5]
+        flags = entry_spec[5] if len(entry_spec) > 5 else 0
         entry = bytearray(32)
         entry[0:2] = struct.pack("<H", 0x50AA)
         entry[2] = type_
@@ -112,6 +114,7 @@ def make_partitions_bin(entries: list[tuple[str, int, int, int, int]] | None = N
         entry[4:8] = struct.pack("<I", offset)
         entry[8:12] = struct.pack("<I", size)
         entry[12:28] = name.encode("ascii").ljust(16, b"\x00")
+        entry[28:32] = struct.pack("<I", flags)
         table[(index_pos := len(used)):(index_pos + 32)] = entry
         used += entry
     count = len(used)
@@ -723,6 +726,9 @@ class FakeTransport:
         fail_on_write: int | None = None,
         fail_reset: bool = False,
         corrupt_store: bool = False,
+        short_read_at: tuple[int, int] | None = None,
+        short_read_by: int = 1,
+        drop_port_after: int | None = None,
     ) -> None:
         from tools.firmware.installer.install import EsptoolFailure
 
@@ -743,11 +749,45 @@ class FakeTransport:
         self.writes: list[tuple[int, str]] = []
         self.reads: list[tuple[int, int]] = []
         self.resets: list[str] = []
+        # P1-1 session mirroring: --before channel per op + port identity.
+        self.befores: list[str] = []
+        self.session_port: str | None = None
+        self.session_verified = False
+        self.port_exists = True
+        self.drop_port_after = drop_port_after
+        self.short_read_at = short_read_at
+        self.short_read_by = short_read_by
 
     # -- adapter surface -----------------------------------------------------
     def _maybe_fail(self, kind: str) -> None:
         if self.fail_on_call is not None and len(self.calls) == self.fail_on_call:
             raise self._failure_cls(f"injected serial failure at call {kind}")
+
+    def _port_state(self) -> None:
+        if self.drop_port_after is not None and len(self.calls) >= self.drop_port_after:
+            self.port_exists = False
+        if not self.port_exists:
+            gone = self.session_port or "the session port"
+            self.session_port = None
+            self.session_verified = False
+            raise self._failure_cls(
+                f"port {gone} disappeared mid-session (USB re-enumeration)"
+            )
+
+    def _begin(self, port: str) -> str:
+        """Mirror EsptoolTransport: first op on a port is the one
+        session-establishing default-reset; later ops reuse the session."""
+        self._port_state()
+        if self.session_verified and self.session_port == port:
+            before = "no-reset"
+        else:
+            before = "default-reset"
+        self.befores.append(before)
+        return before
+
+    def _establish(self, port: str) -> None:
+        self.session_port = port
+        self.session_verified = True
 
     def version(self) -> str:
         self.calls.append(["version"])
@@ -757,21 +797,26 @@ class FakeTransport:
         return self.fail_version or self.version_value
 
     def flash_id(self, port: str) -> tuple[str, int]:
-        self.calls.append(["flash-id", port])
+        before = self._begin(port)
+        self.calls.append(["flash-id", port, before])
         self._maybe_fail("flash-id")
         if self.chip != "esp32s3":
             raise self._failure_cls(
                 f"device is not an ESP32-S3: {ESPTOOL_540_CHIP_LINE_C3!r}"
             )
+        self._establish(port)
         return self.chip, self.flash_size
 
     def security_flags(self, port: str) -> dict[str, bool]:
-        self.calls.append(["get-security-info", port])
+        before = self._begin(port)
+        self.calls.append(["get-security-info", port, before])
         self._maybe_fail("security")
+        self._establish(port)
         return dict(self.security)
 
     def read_flash(self, port: str, offset: int, size: int) -> bytes:
-        self.calls.append(["read-flash", port, offset, size])
+        before = self._begin(port)
+        self.calls.append(["read-flash", port, offset, size, before])
         self._maybe_fail("read-flash")
         self.reads.append((offset, size))
         out = bytearray(b"\xFF" * size)
@@ -783,14 +828,20 @@ class FakeTransport:
                 out[overlap_start - offset:overlap_end - offset] = region[
                     overlap_start - region_start:overlap_end - region_start
                 ]
+        if self.short_read_at == (offset, size):
+            out = out[: max(0, size - self.short_read_by)]
+        self._establish(port)
         return bytes(out)
 
     def write_flash(self, port: str, offset: int, image_path: Path) -> None:
+        before = self._begin(port)
         # Mirrors EsptoolTransport: every write keeps the board in the
         # bootloader (--after no-reset); reset() is the only reset.
-        self.calls.append(["write-flash", port, offset, str(image_path)])
+        self.calls.append(["write-flash", port, offset, str(image_path), before])
         self._maybe_fail("write-flash")
         if self.fail_on_write is not None and len(self.writes) == self.fail_on_write:
+            self.session_verified = False
+            self.session_port = None
             raise self._failure_cls(f"injected write failure at segment {offset:#x}")
         data = Path(image_path).read_bytes()
         self.writes.append((offset, sha256_bytes(data)))
@@ -801,13 +852,18 @@ class FakeTransport:
             self.flash_map[offset] = bytes(flipped)
         else:
             self.flash_map[offset] = data
+        self._establish(port)
 
     def reset(self, port: str) -> None:
-        self.calls.append(["reset", port])
+        before = self._begin(port)
+        self.calls.append(["reset", port, before])
         self._maybe_fail("reset")
         if self.fail_reset:
             raise self._failure_cls("injected reset failure")
         self.resets.append(port)
+        # The session ends with the one reset: the port re-enumerates.
+        self.session_port = None
+        self.session_verified = False
 
 
 def blank_device_table(build_dir_payload: dict[str, bytes], *,

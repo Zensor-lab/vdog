@@ -365,6 +365,308 @@ def test_never_assumes_blank_on_partial_erase(installed_package) -> None:
     assert transport.writes == []
 
 
+# ---------------------------------------------------------------------------
+# P0-1: the packaged-installer replacement gate (semantic + byte-exact)
+# ---------------------------------------------------------------------------
+
+
+def test_refuses_altered_subtype_with_matching_geometry_and_valid_md5(
+    installed_package,
+) -> None:
+    """A device table with perfect geometry, erased padding and a VALID MD5
+    but an altered semantic field is refused (not replaceable)."""
+    root, payload, _manifest = installed_package
+    for index, want_subtype in ((5, 0x81), (3, 0x00)):  # storage→fat, app0→factory
+        altered = [
+            (name, type_, want_subtype if i == index else subtype, offset, size)
+            for i, (name, type_, subtype, offset, size) in enumerate(support.BASELINE_ENTRIES)
+        ]
+        table = support.make_partitions_bin(entries=altered)  # recomputes a valid MD5
+        flash_map = dict(support.blank_device_table(payload))
+        flash_map[0x8000] = table
+        transport = _install_expect(
+            installed_package, support.FakeTransport(flash_map=flash_map),
+            inst.EXIT_REFUSED, "differs from the qualified layout", "subtype",
+        )
+        assert transport.writes == []
+
+
+def test_refuses_altered_flags(installed_package) -> None:
+    """Flags are a semantic field too: an ENCRYPTED-flagged entry with
+    otherwise-identical geometry and a valid MD5 is refused."""
+    root, payload, _manifest = installed_package
+    flagged = [
+        (*entry, 0x1) if entry[0] == "app0" else entry
+        for entry in support.BASELINE_ENTRIES
+    ]
+    table = support.make_partitions_bin(entries=flagged)
+    flash_map = dict(support.blank_device_table(payload))
+    flash_map[0x8000] = table
+    transport = _install_expect(
+        installed_package, support.FakeTransport(flash_map=flash_map),
+        inst.EXIT_REFUSED, "differs from the qualified layout", "flags",
+    )
+    assert transport.writes == []
+
+
+def test_refuses_duplicate_labels_in_device_table(installed_package) -> None:
+    root, payload, _manifest = installed_package
+    dup = list(support.BASELINE_ENTRIES)
+    dup[2] = ("nvs", 1, 0x01, 0x11000, 0x1000)  # phy_init relabelled "nvs"
+    table = support.make_partitions_bin(entries=dup)
+    flash_map = dict(support.blank_device_table(payload))
+    flash_map[0x8000] = table
+    transport = _install_expect(
+        installed_package, support.FakeTransport(flash_map=flash_map),
+        inst.EXIT_REFUSED, "unreadable/unknown", "duplicate label",
+    )
+    assert transport.writes == []
+
+
+def test_refuses_non_erased_builder_trailer_padding(installed_package) -> None:
+    """The old parser only checked the MD5 bytes; any other byte in the
+    trailer slot went unnoticed. The hardened parser refuses non-erased
+    padding even when the MD5 itself still validates."""
+    root, payload, _manifest = installed_package
+    table = bytearray(support.make_partitions_bin())
+    table[6 * 32 + 5] ^= 0x01  # opaque builder-slot padding, MD5 untouched
+    flash_map = dict(support.blank_device_table(payload))
+    flash_map[0x8000] = bytes(table)
+    transport = _install_expect(
+        installed_package, support.FakeTransport(flash_map=flash_map),
+        inst.EXIT_REFUSED, "non-erased builder trailer padding",
+    )
+    assert transport.writes == []
+
+
+def test_refuses_short_nvs_read_never_reads_as_blank(installed_package) -> None:
+    """P0-1: a truncated NVS read must not pass as erased (provisioned
+    boards could otherwise slip through)."""
+    root, payload, _manifest = installed_package
+    flash_map = dict(support.blank_device_table(payload))
+    transport = _install_expect(
+        installed_package,
+        support.FakeTransport(flash_map=flash_map,
+                              short_read_at=(0x9000, 0x6000), short_read_by=64),
+        inst.EXIT_FLASH_FAILED, "expected exactly 24576",
+    )
+    assert transport.writes == []
+
+
+def test_refuses_short_ota_read(installed_package) -> None:
+    root, payload, _manifest = installed_package
+    flash_map = dict(support.blank_device_table(payload))
+    transport = _install_expect(
+        installed_package,
+        support.FakeTransport(flash_map=flash_map,
+                              short_read_at=(0xF000, 0x2000), short_read_by=16),
+        inst.EXIT_FLASH_FAILED, "expected exactly 8192",
+    )
+    assert transport.writes == []
+
+
+def test_refuses_short_read_on_the_blank_path(installed_package) -> None:
+    """Even the factory-blank route requires exact reads: a truncated all-FF
+    NVS read is NOT blank evidence."""
+    root, _payload, _manifest = installed_package
+    transport = _install_expect(
+        installed_package,
+        support.FakeTransport(short_read_at=(0x9000, 0x6000), short_read_by=1),
+        inst.EXIT_FLASH_FAILED, "short reads are never treated as blank",
+    )
+    assert transport.writes == []
+
+
+# ---------------------------------------------------------------------------
+# P0-2: on-device otadata parsed against the pinned v6.1 layout
+# ---------------------------------------------------------------------------
+
+
+def test_reinstall_after_real_first_boot_succeeds(installed_package) -> None:
+    """blank -> install -> first-boot (v6.1 select records) -> inspect ->
+    reinstall, all through the public CLI surface."""
+    root, payload, _manifest = installed_package
+    transport = support.FakeTransport()
+    a, lines = app(root, transport=transport)
+    assert a.cmd_install(
+        "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+        dry_run=False, confirm_replace=True,
+    ) == inst.EXIT_OK
+    assert transport.resets == ["/dev/cu.usbmodem1"]
+
+    # Device now holds the written images; the first boot leaves ONE valid
+    # esp_ota_select_entry_t per sector (pinned v6.1).
+    transport.flash_map = dict(
+        support.blank_device_table(payload, otadata=support.first_boot_otadata(1))
+    )
+    a2, lines2 = app(root, transport=transport)
+    assert a2.cmd_inspect("/dev/cu.usbmodem1") == inst.EXIT_OK
+    assert any("state=dev-match" in line for line in lines2)
+
+    a3, lines3 = app(root, transport=transport)
+    assert a3.cmd_install(
+        "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+        dry_run=False, confirm_replace=True,
+    ) == inst.EXIT_OK
+    # The reinstall rewrote the packaged (erased) initializer over the records.
+    assert len(transport.writes) == 8  # four original + four reinstall
+    assert transport.flash_map[0xF000] == b"\xFF" * 0x2000
+
+
+def test_refuses_corrupted_first_boot_record(installed_package) -> None:
+    root, payload, _manifest = installed_package
+    broken = bytearray(support.first_boot_otadata(1))
+    broken[30] ^= 0xFF  # corrupt the stored crc of the sector-0 record
+    flash_map = dict(support.blank_device_table(payload, otadata=bytes(broken)))
+    transport = _install_expect(
+        installed_package, support.FakeTransport(flash_map=flash_map),
+        inst.EXIT_REFUSED, "crc32",
+    )
+    assert transport.writes == []
+
+
+def test_refuses_corrupted_record_with_legacy_c9_first_byte(installed_package) -> None:
+    """The retired single-byte heuristic would have called this valid; strict
+    v6.1 parsing must refuse it."""
+    root, payload, _manifest = installed_package
+    c9 = support.make_ota_data([b"\xc9" + b"\xAA" * 31, None])
+    flash_map = dict(support.blank_device_table(payload, otadata=c9))
+    transport = _install_expect(
+        installed_package, support.FakeTransport(flash_map=flash_map),
+        inst.EXIT_REFUSED, "sector 0",
+    )
+    assert transport.writes == []
+
+
+def test_refuses_state_outside_v61_enum(installed_package) -> None:
+    root, payload, _manifest = installed_package
+    record = bytearray(support.make_ota_record(2, 0x00000002))
+    record[24:28] = (0x00000077).to_bytes(4, "little")  # undefined ota_state
+    record[28:32] = support.esp_crc32_le(
+        0xFFFFFFFF, bytes(record[0:4])).to_bytes(4, "little")  # crc now valid
+    flash_map = dict(support.blank_device_table(
+        payload, otadata=support.make_ota_data([bytes(record), None])))
+    transport = _install_expect(
+        installed_package, support.FakeTransport(flash_map=flash_map),
+        inst.EXIT_REFUSED, "ota_state",
+    )
+    assert transport.writes == []
+
+
+def test_check_rejects_prebaked_packaged_ota_initializer(tmp_path: Path) -> None:
+    """install.py check refuses a package whose ota_data_initial.bin carries
+    pre-baked records — even perfectly self-consistent, re-signed ones."""
+    zip_path, _sha, payload, _manifest = support.package_from_build_dir(tmp_path)
+    payload = dict(payload)
+    payload["images/ota_data_initial.bin"] = support.first_boot_otadata(1)
+    payload = support.with_resolved_hashes(payload)
+    forged = support.rezip(tmp_path / "forged.zip", payload)
+    import zipfile
+
+    with zipfile.ZipFile(forged) as archive:
+        archive.extractall(tmp_path / "out")
+    root = next(iter((tmp_path / "out").iterdir()))
+    a, _lines = app(root)
+    with pytest.raises(inst.InstallerError) as exc:
+        a.cmd_check()
+    assert exc.value.code == inst.EXIT_PACKAGE_INVALID
+    assert "fully erased" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# P1-1: one verified download session; port identity is never followed
+# ---------------------------------------------------------------------------
+
+
+def test_install_uses_exactly_one_session_establishing_reset(
+    installed_package,
+) -> None:
+    root, _payload, _manifest = installed_package
+    transport = support.FakeTransport()
+    a, _lines = app(root, transport=transport)
+    assert a.cmd_install(
+        "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+        dry_run=False, confirm_replace=True,
+    ) == inst.EXIT_OK
+    # classification (flash-id + security + 3 reads) + 4 writes + 4 verify
+    # reads + the single reset: only the FIRST operation may reset.
+    assert transport.befores[0] == "default-reset"
+    assert set(transport.befores[1:]) == {"no-reset"}
+    assert transport.befores.count("default-reset") == 1
+    assert transport.befores[-1] == "no-reset"  # the final --after hard-reset step
+    assert len(transport.resets) == 1
+
+
+def test_mid_session_port_loss_stops_writes_and_never_resets(
+    installed_package,
+) -> None:
+    """The port vanishing mid-operation (native USB re-enumeration) aborts
+    with no reset and never continues on another path."""
+    root, _payload, _manifest = installed_package
+    # calls so far when the port dies: version, flash-id, security, table and
+    # otadata reads — abort as the NVS classification read attempts to start.
+    transport = support.FakeTransport(drop_port_after=5)
+    a, _lines = app(root, transport=transport)
+    with pytest.raises(inst.InstallerError) as exc:
+        a.cmd_install(
+            "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+            dry_run=False, confirm_replace=True,
+        )
+    assert exc.value.code == inst.EXIT_FLASH_FAILED
+    assert "disappeared mid-session" in str(exc.value)
+    assert transport.writes == []      # stopped before any write completed
+    assert transport.resets == []      # a lost port is never reset through
+
+
+def test_mid_session_port_loss_after_writes_stops_before_reset(
+    installed_package,
+) -> None:
+    root, _payload, _manifest = installed_package
+    # calls so far when the port dies: version, flash-id, security, 3 classify
+    # reads, 2 writes — abort as the third write attempts to start.
+    transport = support.FakeTransport(drop_port_after=8)
+    a, _lines = app(root, transport=transport)
+    with pytest.raises(inst.InstallerError) as exc:
+        a.cmd_install(
+            "/dev/cu.usbmodem1", inst.HARDWARE_CLASS,
+            dry_run=False, confirm_replace=True,
+        )
+    assert exc.value.code == inst.EXIT_FLASH_FAILED
+    assert "disappeared mid-session" in str(exc.value)
+    assert len(transport.writes) == 2  # no writes continued past the loss
+    assert transport.resets == []      # NEVER reset after an interrupted write
+
+
+def test_inspect_port_identity_loss_is_reported(installed_package) -> None:
+    root, _payload, _manifest = installed_package
+    transport = support.FakeTransport(drop_port_after=2)
+    a, _lines = app(root, transport=transport)
+    with pytest.raises(inst.InstallerError) as exc:
+        a.cmd_inspect("/dev/cu.usbmodem1")
+    assert exc.value.code == inst.EXIT_FLASH_FAILED
+    assert "disappeared mid-session" in str(exc.value)
+
+
+def test_installer_constants_mirror_contract_ota_and_partition_fields() -> None:
+    """P0-1/P0-2 mirror-lockstep: the installer's compact copies match the
+    contract authority exactly."""
+    assert inst.CSV_SUBTYPE_CODES == contract.CSV_SUBTYPE_CODES
+    assert inst.OTA_IMG_STATE_NAMES == contract.OTA_IMG_STATE_NAMES
+    assert inst.OTA_SELECT_ENTRY_SIZE == contract.OTA_SELECT_ENTRY_SIZE
+    assert inst.OTA_DATA_SECTOR_SIZE == contract.OTA_DATA_SECTOR_SIZE
+    for sample in (b"", b"\x01\x02\x03\x04", bytes(range(256))):
+        assert inst.esp_ota_crc32(sample) == contract.esp_ota_crc32(sample)
+    # the same on-device image is accepted/refused identically by both layers
+    good = support.first_boot_otadata(9)
+    assert contract.validate_ota_data_records(good) == []
+    inst.require_ota_data_records(good)  # must not raise
+    bad = bytearray(good)
+    bad[31] ^= 0xFF
+    assert contract.validate_ota_data_records(bytes(bad))
+    with pytest.raises(inst.InstallerError):
+        inst.require_ota_data_records(bytes(bad))
+
+
 def test_refuses_unpinned_esptool_without_port_touch(installed_package) -> None:
     root, _payload, _manifest = installed_package
     transport = support.FakeTransport(version="4.8.1")
@@ -560,6 +862,16 @@ class CapturedRun:
         return sp.CompletedProcess(argv, 0, stdout=self.output, stderr="")
 
 
+def _pair(argv: list[str], flag: str, value: str) -> bool:
+    """True when ``flag`` is immediately followed by ``value`` (list ``<=`` is
+    lexicographic comparison, NOT a sublist check — this is the real test)."""
+    try:
+        index = argv.index(flag)
+    except ValueError:
+        return False
+    return index + 1 < len(argv) and argv[index + 1] == value
+
+
 def test_transport_argv_vectors_are_fixed(monkeypatch) -> None:
     # VERSION-MATCHED fixture: exact esptool 5.4.0 identification output
     # (padded "Chip type:" line from __init__.py:568-572 in the pinned
@@ -580,27 +892,79 @@ def test_transport_argv_vectors_are_fixed(monkeypatch) -> None:
     assert head[:5] == ["py312", "-m", "esptool", "--chip", "esp32s3"]
     assert "--port" in head and "/dev/ttyX" in head
     assert head[-1] == "flash-id"
-    # ALL writes keep the board in the bootloader: --after no-reset.
+    # P1-1: the flash-id is the ONE session-establishing reset of the run.
+    assert _pair(head, "--before", "default-reset")
+    assert _pair(head, "--after", "no-reset")
+    # All writes keep the board in the bootloader (no-reset) INSIDE the
+    # established session: no further --before default-reset anywhere.
     write = CapturedRun("Wrote 1024 bytes")
     monkeypatch.setattr(inst.subprocess, "run", write)
     transport.write_flash("/dev/ttyX", 0x8000, Path("/tmp/x.bin"))
     argv = write.argvs[0]
     assert "write-flash" in argv
-    assert ["--flash-mode", "dio"] <= argv
-    assert ["--flash-size", "8MB"] <= argv
-    assert ["--flash-freq", "80m"] <= argv
+    assert _pair(argv, "--flash-mode", "dio")
+    assert _pair(argv, "--flash-size", "8MB")
+    assert _pair(argv, "--flash-freq", "80m")
     assert "0x8000" in argv and "/tmp/x.bin" in argv
-    assert ["--after", "no-reset"] <= argv
-    assert ["--after", "hard-reset"] not in argv
-    # The only reset: read-only flash-id with --after hard-reset
-    # (CLI form verified against the pinned 5.4.0 sdist).
+    assert _pair(argv, "--after", "no-reset")
+    assert _pair(argv, "--before", "no-reset"), \
+        "mid-session writes must never reset into the bootloader again"
+    assert not _pair(argv, "--before", "default-reset")
+    # The only reset: read-only flash-id with --after hard-reset, still on the
+    # verified session (CLI form verified against the pinned 5.4.0 sdist).
     reset = CapturedRun(support.esptool_540_flash_id_output())
     monkeypatch.setattr(inst.subprocess, "run", reset)
     transport.reset("/dev/ttyX")
     reset_argv = reset.argvs[0]
     assert reset_argv[-1] == "flash-id"
-    assert ["--before", "default-reset"] <= reset_argv
-    assert ["--after", "hard-reset"] <= reset_argv
+    assert _pair(reset_argv, "--before", "no-reset")
+    assert _pair(reset_argv, "--after", "hard-reset")
+    # After reset() the session is closed: a fresh operation pays exactly one
+    # new session-establishing default-reset.
+    assert transport.session_port is None and not transport.session_verified
+    fresh = CapturedRun(support.esptool_540_flash_id_output())
+    monkeypatch.setattr(inst.subprocess, "run", fresh)
+    transport.flash_id("/dev/ttyX")
+    assert _pair(fresh.argvs[0], "--before", "default-reset")
+
+
+def test_transport_standalone_reset_keeps_default_reset(monkeypatch) -> None:
+    """A transport that never established a session still resets explicitly
+    via --before default-reset (standalone CLI use stays functional)."""
+    reset = CapturedRun(support.esptool_540_flash_id_output())
+    monkeypatch.setattr(inst.subprocess, "run", reset)
+    transport = inst.EsptoolTransport(["esptool"])
+    transport.reset("/dev/ttyY")
+    assert _pair(reset.argvs[0], "--before", "default-reset")
+    assert _pair(reset.argvs[0], "--after", "hard-reset")
+
+
+def test_transport_rejects_short_reads(monkeypatch, tmp_path) -> None:
+    """P0-1 transport layer: esptool producing fewer bytes than requested is
+    a hard transport failure, not an erased-looking buffer."""
+    class ShortReadRun:
+        def __init__(self, path: Path):
+            self.argvs: list[list[str]] = []
+            self.path = path
+
+        def __call__(self, argv, **_kw):
+            import subprocess
+            self.argvs.append(list(argv))
+            if "read-flash" in argv:
+                out_file = Path(argv[argv.index("read-flash") + 3])
+                out_file.write_bytes(b"\xFF" * 1023)  # 1 byte short of 1024
+                stdout = "Readed 1023 bytes"
+            else:
+                stdout = support.esptool_540_flash_id_output()
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(inst.subprocess, "run", ShortReadRun(tmp_path))
+    transport = inst.EsptoolTransport(["esptool"])
+    transport.flash_id("/dev/ttyZ")  # establish a session
+    with pytest.raises(inst.EsptoolFailure, match="expected exactly 1024"):
+        transport.read_flash("/dev/ttyZ", 0x8000, 1024)
+    # The failed session is torn down — no silent continuation.
+    assert transport.session_port is None and not transport.session_verified
 
 
 def test_transport_identifies_esp32s3_from_540_output(monkeypatch) -> None:
