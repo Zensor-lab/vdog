@@ -58,18 +58,6 @@ static int token_ci_eq(const char *tok, size_t len, const char *lit)
     return 1;
 }
 
-static int token_in_set(const char *tok, size_t len,
-                        const char *const *set, size_t count)
-{
-    size_t i;
-    for (i = 0; i < count; ++i) {
-        if (token_ci_eq(tok, len, set[i])) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 /* Case-insensitive "line starts with lowercase-literal" (literal is
  * lowercase). */
 static int starts_with_ci(const char *line, const char *lit)
@@ -104,33 +92,15 @@ static const char *find_ci(const char *haystack, const char *needle_lower)
     return NULL;
 }
 
-/* Closed sets of DOCUMENTED ROM mode tokens (esptool boot-mode-selection
- * "Boot Mode Message", ESP32-S3): the only DESCRIPTION strings the ROM
- * prints inside "boot:0xNN (DESCRIPTION)". Round-2 review: nothing else
- * classifies — invented tokens are gone, and the documented unsupported
- * modes (SPI_FLASH_BOOT, SDIO_REI_FEO_V1_BOOT, ATE_BOOT) are deliberately
- * NOT in any set (UNKNOWN: neither normal, download, nor usb-jtag). */
-static const char *const g_mode_download[] = {
-    /* DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2), DOWNLOAD(USB/UART0) …
-     * the token is the word before the first inner '('. */
-    "download_boot", "download"
-};
-static const char *const g_mode_normal[] = {
-    "spi_fast_flash_boot" /* the normal SPI flash boot mode */
-};
-
-#define MODE_SET_COUNT(a) (sizeof(a) / sizeof((a)[0]))
-
-static vdog_boot_mode_t mode_from_token(const char *tok, size_t len)
-{
-    if (token_in_set(tok, len, g_mode_download, MODE_SET_COUNT(g_mode_download))) {
-        return VDOG_BOOT_MODE_DOWNLOAD;
-    }
-    if (token_in_set(tok, len, g_mode_normal, MODE_SET_COUNT(g_mode_normal))) {
-        return VDOG_BOOT_MODE_NORMAL;
-    }
-    return VDOG_BOOT_MODE_UNKNOWN;
-}
+/* DOCUMENTED ROM descriptions (esptool boot-mode-selection "Boot Mode
+ * Message", ESP32-S3) — the ONLY forms that classify, validated BY MODE
+ * in vdog_recovery_classify() (round-4 review):
+ *   NORMAL    (SPI_FAST_FLASH_BOOT)                      simple form only
+ *   DOWNLOAD  (DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2))
+ *             (DOWNLOAD(USB/UART0))                      exact payload
+ * The documented unsupported modes (SPI_FLASH_BOOT, SDIO_REI_FEO_V1_BOOT,
+ * ATE_BOOT) match nothing: neither normal, download, nor usb-jtag ->
+ * UNKNOWN, and no token may borrow another mode's shape or payload. */
 
 /* Find the next ROM boot-word marker "boot:" that is a WORD, not a
  * substring: the match must start the line or follow a non-token
@@ -153,6 +123,7 @@ vdog_boot_mode_t vdog_recovery_classify(const char *rom_line)
     const char *p;
     const char *tok;
     size_t len;
+    vdog_boot_mode_t mode;
 
     if (rom_line == NULL || rom_line[0] == '\0') {
         return VDOG_BOOT_MODE_UNKNOWN;
@@ -190,9 +161,8 @@ vdog_boot_mode_t vdog_recovery_classify(const char *rom_line)
      * ("boot:0x3 (DOWNLOAD", "(DOWNLOAD_BOOT(UART0)", one missing close
      * paren) and prose appended after the leading token
      * ("(SPI_FAST_FLASH_BOOT failed)") are malformed lookalikes ->
-     * UNKNOWN. Accepted description shapes: (TOKEN) or
-     * (TOKEN(inner)) — the leading token (word before the first inner
-     * '(') must then be an exact member of the documented sets. */
+     * UNKNOWN. Round-4 review: the description is then validated BY
+     * MODE below — see the DOCUMENTED ROM descriptions block above. */
     p = find_boot_word(rom_line);
     if (p == NULL) {
         return VDOG_BOOT_MODE_UNKNOWN;
@@ -224,33 +194,55 @@ vdog_boot_mode_t vdog_recovery_classify(const char *rom_line)
     if (len == 0u) {
         return VDOG_BOOT_MODE_UNKNOWN;
     }
-    /* Complete the description: TOKEN must be followed directly by the
-     * closing ')' or by one balanced inner group then ')'. */
-    if (*p == ')') {
-        ++p; /* simple documented form, e.g. (SPI_FAST_FLASH_BOOT) */
-    } else if (*p == '(') {
-        ++p; /* documented form, e.g. (DOWNLOAD_BOOT(UART0/...)) */
+    /* ROUND-4 REVIEW HIGH: validate the description BY MODE — an inner
+     * group is not a free-form slot that any token may carry.
+     * NORMAL accepts the simple documented form only, so
+     * "(SPI_FAST_FLASH_BOOT(failed))" is a malformed lookalike; each
+     * DOWNLOAD variant REQUIRES its inner group with the exact
+     * documented payload, so "(DOWNLOAD())", "(DOWNLOAD(garbage))" and
+     * the shortened "(DOWNLOAD_BOOT(UART0))" are UNKNOWN. Tokens outside
+     * the documented set never classify regardless of shape. */
+    if (token_ci_eq(tok, len, "spi_fast_flash_boot")) {
+        if (*p != ')') {
+            return VDOG_BOOT_MODE_UNKNOWN; /* normal: simple form only */
+        }
+        ++p;
+        mode = VDOG_BOOT_MODE_NORMAL;
+    } else if (token_ci_eq(tok, len, "download_boot") ||
+               token_ci_eq(tok, len, "download")) {
+        const char *payload;
+        size_t payload_len;
+        const char *documented =
+            token_ci_eq(tok, len, "download_boot")
+                ? "uart0/uart1/sdio_rei_reo_v2" /* documented DOWNLOAD_BOOT */
+                : "usb/uart0";                   /* documented DOWNLOAD      */
+        if (*p != '(') {
+            return VDOG_BOOT_MODE_UNKNOWN; /* download forms carry the group */
+        }
+        ++p;
+        payload = p;
         while (*p != '\0' && *p != ')' && *p != '(') {
             ++p;
         }
-        if (*p != ')') {
-            return VDOG_BOOT_MODE_UNKNOWN; /* unterminated inner group */
+        payload_len = (size_t)(p - payload);
+        if (*p != ')' ||
+            !token_ci_eq(payload, payload_len, documented)) {
+            return VDOG_BOOT_MODE_UNKNOWN; /* missing/empty/undocumented */
         }
         ++p;
         if (*p != ')') {
-            return VDOG_BOOT_MODE_UNKNOWN; /* outer group not closed */
+            return VDOG_BOOT_MODE_UNKNOWN; /* outer group must close right after */
         }
         ++p;
+        mode = VDOG_BOOT_MODE_DOWNLOAD;
     } else {
-        /* Prose or anything else after the leading token
-         * ("(SPI_FAST_FLASH_BOOT failed)", "(DOWNLOAD more)") -> malformed */
-        return VDOG_BOOT_MODE_UNKNOWN;
+        return VDOG_BOOT_MODE_UNKNOWN; /* token not documented at all */
     }
     p += skip_spaces(p);
     if (*p != '\0') {
         return VDOG_BOOT_MODE_UNKNOWN; /* nothing after the closed group */
     }
-    return mode_from_token(tok, len);
+    return mode;
 }
 
 const char *vdog_boot_mode_name(vdog_boot_mode_t mode)
@@ -309,11 +301,52 @@ void vdog_identity_set_revision(vdog_identity_t *id, uint16_t sdk_revision)
     id->chip_minor = (uint8_t)(sdk_revision % 100u);
 }
 
+/* Fixed project-label grammar for board tags (round-4 review Medium —
+ * "use a project-issued label with a fixed format and a short numeric
+ * suffix"). Accepted form, case-insensitive:
+ *     VDOG-<core>-<serial>
+ * with <core> = 1..6 alphanumeric characters and <serial> = 1..4 digits
+ * (grammar maximum length 16 == VDOG_IDENTITY_TAG_MAX). Because the
+ * "vdog-" literal itself carries non-hex letters, a MAC (any notation),
+ * an 0x-prefixed hex blob or any other free text CANNOT pass — the
+ * round-2/3 hex and separator heuristics are replaced by this grammar. */
+static int tag_grammar_ok(const char *t, size_t n)
+{
+    static const char lit[] = "vdog-";
+    size_t i;
+    size_t core = 0u;
+    size_t serial = 0u;
+
+    for (i = 0; i < 5u; ++i) { /* bounded literal prefix: t may be short */
+        if (i >= n || ascii_lower(t[i]) != lit[i]) {
+            return 0;
+        }
+    }
+    i = 5u;
+    while (i < n && t[i] != '-') {
+        char c = t[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9')) || ++core > 6u) {
+            return 0;
+        }
+        ++i;
+    }
+    if (core == 0u || i >= n || t[i] != '-') {
+        return 0; /* empty core or missing '-' before the serial */
+    }
+    ++i;
+    while (i < n) {
+        if (t[i] < '0' || t[i] > '9' || ++serial > 4u) {
+            return 0;
+        }
+        ++i;
+    }
+    return serial >= 1u && i == n;
+}
+
 int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag)
 {
     size_t n;
-    size_t i;
-    int all_hex;
 
     if (id == NULL || tag == NULL) {
         return VDOG_ERR_INVALID_ARG;
@@ -323,48 +356,10 @@ int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag)
         id->tag_len = 0u; /* clearing is always legal */
         return VDOG_OK;
     }
-    if (n > VDOG_IDENTITY_TAG_MAX) {
+    if (n > VDOG_IDENTITY_TAG_MAX || !tag_grammar_ok(tag, n)) {
+        /* Only the fixed project-label grammar is stored; a rejected
+         * attempt never disturbs a previously valid tag. */
         return VDOG_ERR_INVALID_ARG;
-    }
-    all_hex = 1;
-    for (i = 0; i < n; ++i) {
-        char c = tag[i];
-        int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                 (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
-        if (!ok) {
-            return VDOG_ERR_INVALID_ARG;
-        }
-        if (!is_hex_digit(c)) {
-            all_hex = 0;
-        }
-    }
-    /* Round-2 review Medium: a delimiter-free 12-hex-digit MAC passes the
-     * charset above, so pure-hex labels are rejected outright. */
-    if (all_hex != 0) {
-        return VDOG_ERR_INVALID_ARG;
-    }
-    /* Round-3 review Medium: dots/dashes are legal in the charset, so a
-     * dotted MAC ("0200.0000.0001") is NOT pure hex — normalize by
-     * dropping the permitted separators and reject when what remains is a
-     * bare 48-bit (12) or 64-bit (16) hex address. Ordinary opaque labels
-     * ("vdog-pa-01", "dev.01") keep their non-hex characters and pass. */
-    {
-        size_t hex_run = 0u;
-        size_t stripped_all_hex = 1;
-        for (i = 0; i < n; ++i) {
-            char c = tag[i];
-            if (c == '.' || c == '_' || c == '-') {
-                continue;
-            }
-            ++hex_run;
-            if (!is_hex_digit(c)) {
-                stripped_all_hex = 0;
-                break;
-            }
-        }
-        if (stripped_all_hex != 0 && (hex_run == 12u || hex_run == 16u)) {
-            return VDOG_ERR_INVALID_ARG;
-        }
     }
     memcpy(id->tag, tag, n);
     id->tag[n] = '\0'; /* fits: array is TAG_MAX+1 (terminator slot) */

@@ -66,7 +66,7 @@ extern "C" int vdog_recovery_cpp_smoke(void)
     }
     (void)vdog_identity_set_chip_model(&id, "esp32s3");
     vdog_identity_set_revision(&id, 102u); /* 1.2, not 0.102 */
-    if (vdog_identity_set_board_tag(&id, "cpp-ok_1") != VDOG_OK) {
+    if (vdog_identity_set_board_tag(&id, "vdog-cpp-1") != VDOG_OK) {
         return 19;
     }
     if (vdog_identity_set_board_tag(&id, "bad tag!") != VDOG_ERR_INVALID_ARG) {
@@ -75,7 +75,7 @@ extern "C" int vdog_recovery_cpp_smoke(void)
     if (vdog_identity_format(&id, buf, sizeof(buf)) != VDOG_OK) {
         return 21;
     }
-    if (!same(buf, "chip=esp32s3 rev=1.2 mac=**:**:**:**:00:ff board=cpp-ok_1")) {
+    if (!same(buf, "chip=esp32s3 rev=1.2 mac=**:**:**:**:00:ff board=vdog-cpp-1")) {
         return 22;
     }
     return 0;

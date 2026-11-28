@@ -119,7 +119,11 @@ static void test_classify_normal(void)
 
 static void test_classify_download(void)
 {
-    /* The documented download-mode line, verbatim (round-2 probe). */
+    /* The documented download-mode lines, verbatim (round-2 probe).
+     * Round-4: the inner group with its documented payload is now PART
+     * of the accepted form — see
+     * test_classify_rejects_unsupported_descriptions for the bare and
+     * shortened shapes, which are UNKNOWN. */
     TEST_ASSERT_EQUAL_INT(
         VDOG_BOOT_MODE_DOWNLOAD,
         vdog_recovery_classify(
@@ -127,11 +131,10 @@ static void test_classify_download(void)
     /* DOWNLOAD(USB/UART0): token is the word before the first inner '('. */
     TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_DOWNLOAD,
                           vdog_recovery_classify("boot:0x2 (DOWNLOAD(USB/UART0))"));
-    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_DOWNLOAD,
-                          vdog_recovery_classify("boot:0x02(download_boot)"));
-    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_DOWNLOAD,
-                          vdog_recovery_classify(
-                              "rst:0x1 (BOR_RESET),boot:0x3f (DOWNLOAD_BOOT(UART0))"));
+    TEST_ASSERT_EQUAL_INT(
+        VDOG_BOOT_MODE_DOWNLOAD,
+        vdog_recovery_classify(
+            "rst:0x1 (BOR_RESET),boot:0x3f (DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2))"));
 }
 
 static void test_classify_usb_jtag(void)
@@ -190,13 +193,55 @@ static void test_classify_rejects_truncation_and_prose(void)
     TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
                           vdog_recovery_classify(
                               "boot:0x3 (SPI_FAST_FLASH_BOOT) followed by junk"));
-    /* the un-truncated forms still classify (positive control) */
+    /* the un-truncated documented forms still classify (positive control) */
     TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_DOWNLOAD,
                           vdog_recovery_classify(
-                              "boot:0x3 (DOWNLOAD_BOOT(UART0))"));
+                              "boot:0x3 (DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2))"));
     TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_NORMAL,
                           vdog_recovery_classify(
                               "boot:0x3 (SPI_FAST_FLASH_BOOT)  ")); /* trailing spaces OK */
+}
+
+/* Round-4 High finding: the inner group is validated BY MODE, not as a
+ * free-form slot. The reviewer's probes are UNKNOWN controls alongside
+ * the documented positives in test_classify_download/normal. */
+static void test_classify_rejects_unsupported_descriptions(void)
+{
+    /* NORMAL accepts the simple documented form only — an inner group on
+     * the normal token is a malformed lookalike, whatever it contains. */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "boot:0x8 (SPI_FAST_FLASH_BOOT(failed))"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "boot:0x8 (SPI_FAST_FLASH_BOOT(USB/UART0))"));
+    /* DOWNLOAD variants require the inner group with the EXACT
+     * documented payload. */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify("boot:0x3 (DOWNLOAD())"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify("boot:0x3 (DOWNLOAD(garbage))"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify("boot:0x3 (DOWNLOAD)"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify("boot:0x3 (DOWNLOAD_BOOT)"));
+    /* shortened payload is NOT the documented payload */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "boot:0x3 (DOWNLOAD_BOOT(UART0))"));
+    /* payloads must stay with their own token (no cross-mode borrowing) */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "boot:0x3 (DOWNLOAD_BOOT(USB/UART0))"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_UNKNOWN,
+                          vdog_recovery_classify(
+                              "boot:0x3 (DOWNLOAD(UART0/UART1/SDIO_REI_REO_V2))"));
+    /* positives: the verbatim documented forms (round-3 cases stay green
+     * via test_classify_download/normal — these close the loop here) */
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_DOWNLOAD,
+                          vdog_recovery_classify("boot:0x2 (DOWNLOAD(USB/UART0))"));
+    TEST_ASSERT_EQUAL_INT(VDOG_BOOT_MODE_NORMAL,
+                          vdog_recovery_classify("boot:0x8 (SPI_FAST_FLASH_BOOT)"));
 }
 
 static void test_boot_mode_names(void)
@@ -293,39 +338,60 @@ static void test_board_tag_validator(void)
     vdog_identity_t id;
     char buf[256];
     char long17[18];
-    static const char max16[] = "abcdefghijklmnop"; /* 'p' is non-hex */
-    static const char hex12[] = "1a2b3c4d5e6f";     /* compact MAC    */
-    static const char hex16[] = "0123456789abcdef";
+    static const char max16[] = "vdog-abc123-4321"; /* grammar-max label */
 
     memset(long17, 'a', 17);
     long17[17] = '\0';
 
     vdog_identity_init(&id);
-    /* Round-2 Medium findings: BOTH MAC spellings rejected — the
-     * colon-delimited form via the charset, the delimiter-free compact
-     * MAC (and any pure-hex label) via the hex rule. */
+    /* Round-4 Medium: tags are FIXED project labels
+     * VDOG-<core 1..6 alnum>-<serial 1..4 digits> (case-insensitive) or
+     * "" to clear — every MAC notation, hex blob and free-text label is
+     * rejected, so none can be echoed by the identity formatter. */
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
-                          vdog_identity_set_board_tag(&id, "1a:2b:3c:4d:5e:6f"));
+                          vdog_identity_set_board_tag(&id, "0x020000000001"));
     TEST_ASSERT_EQUAL_UINT8(0u, id.tag_len);
-    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
-                          vdog_identity_set_board_tag(&id, hex12));
-    TEST_ASSERT_EQUAL_UINT8(0u, id.tag_len);
-    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
-                          vdog_identity_set_board_tag(&id, hex16));
-    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
-                          vdog_identity_set_board_tag(&id, "deadbeef"));
-    /* Round-3 Medium: separator-normalized MAC shapes — dots/dashes are
-     * legal in the charset, so strip . _ - and reject bare 48/64-bit hex
-     * addresses. */
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
                           vdog_identity_set_board_tag(&id, "0200.0000.0001"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "1a:2b:3c:4d:5e:6f"));
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
                           vdog_identity_set_board_tag(&id, "1a-2b-3c-4d-5e-6f"));
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
                           vdog_identity_set_board_tag(&id, "0200.0000.0000.0001"));
-    /* non-MAC-shaped labels with the same separators remain legal */
-    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, "dev.01"));
-    TEST_ASSERT_EQUAL_UINT8(6u, id.tag_len);
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "1a2b3c4d5e6f"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "0123456789abcdef"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "deadbeef"));
+    /* formerly-accepted free-text labels are not project forms */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "dev.01"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "dev01"));
+    /* grammar negatives */
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "vdog-"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "vdog--01"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "vdog-pa-"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "vdog-pa"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "vdog-pa-01x"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "vdog-p.a-01"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "vdog-pa-01234567"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "vdog-abcdefg-1"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "xvdog-pa-01"));
+    TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
+                          vdog_identity_set_board_tag(&id, "vdog-pa-01 extra"));
+    /* charset/length/NULL rules unchanged */
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
                           vdog_identity_set_board_tag(&id, "bad%tag"));
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
@@ -334,6 +400,11 @@ static void test_board_tag_validator(void)
                           vdog_identity_set_board_tag(&id, long17));
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
                           vdog_identity_set_board_tag(&id, NULL));
+    /* accepted project labels */
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, "vdog-pa-01"));
+    TEST_ASSERT_EQUAL_UINT8(10u, id.tag_len);
+    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, "VDOG-PA-1"));
+    TEST_ASSERT_EQUAL_STRING("VDOG-PA-1", id.tag); /* stored verbatim */
     /* Round-2 Medium (overflow): the MAXIMUM accepted length must store 16
      * bytes AND its terminator inside the array. */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, max16));
@@ -343,14 +414,12 @@ static void test_board_tag_validator(void)
     TEST_ASSERT_EQUAL_STRING(max16, id.tag);
     /* A valid tag set earlier survives a rejected attempt (unchanged). */
     TEST_ASSERT_EQUAL_INT(VDOG_ERR_INVALID_ARG,
-                          vdog_identity_set_board_tag(&id, "no spaces ok"));
+                          vdog_identity_set_board_tag(&id, "0x020000000001"));
     TEST_ASSERT_EQUAL_STRING(max16, id.tag);
-    /* Legitimate opaque labels (contain a non-hex letter or separator). */
+    /* Formatting with a project label, then clearing. */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, "vdog-pa-01"));
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
     TEST_ASSERT_EQUAL_STRING("chip=unknown rev=0.0 board=vdog-pa-01", buf);
-    TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, "dev01"));
-    /* Clearing is legal. */
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_set_board_tag(&id, ""));
     TEST_ASSERT_EQUAL_UINT8(0u, id.tag_len);
     TEST_ASSERT_EQUAL_INT(VDOG_OK, vdog_identity_format(&id, buf, sizeof(buf)));
@@ -456,6 +525,7 @@ void app_main(void)
     RUN_TEST(test_classify_download);
     RUN_TEST(test_classify_usb_jtag);
     RUN_TEST(test_classify_rejects_truncation_and_prose);
+    RUN_TEST(test_classify_rejects_unsupported_descriptions);
     RUN_TEST(test_boot_mode_names);
     RUN_TEST(test_identity_init_zeroes);
     RUN_TEST(test_chip_model_closed_set);
@@ -479,6 +549,7 @@ int main(void)
     RUN_TEST(test_classify_download);
     RUN_TEST(test_classify_usb_jtag);
     RUN_TEST(test_classify_rejects_truncation_and_prose);
+    RUN_TEST(test_classify_rejects_unsupported_descriptions);
     RUN_TEST(test_boot_mode_names);
     RUN_TEST(test_identity_init_zeroes);
     RUN_TEST(test_chip_model_closed_set);

@@ -56,19 +56,21 @@ typedef enum {
  *   - the ROM boot word: a line containing the WORD "boot:" (a match at
  *     line start or after a non-token char — "reboot:" never matches),
  *     then optional spaces, a REQUIRED hex strap value 0xNN, optional
- *     spaces, and the COMPLETE parenthesized description: balanced
- *     parentheses with the leading token (word before the first inner
- *     '(') an exact case-insensitive member of the closed documented
- *     sets, and NOTHING after the closing paren except trailing spaces
- *     (round-3 review: truncations like "boot:0x3 (DOWNLOAD" or
- *     "(DOWNLOAD_BOOT(UART0)" and appended prose like
- *     "(SPI_FAST_FLASH_BOOT failed)" are UNKNOWN):
- *       DOWNLOAD: download_boot | download
- *                 (DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2),
- *                  DOWNLOAD(USB/UART0))
- *       NORMAL:   spi_fast_flash_boot
+ *     spaces, and the COMPLETE parenthesized description validated BY
+ *     MODE (round-3 review: balanced parentheses, nothing after the
+ *     closing paren except trailing spaces — truncations like
+ *     "boot:0x3 (DOWNLOAD" or "(DOWNLOAD_BOOT(UART0)" and appended prose
+ *     like "(SPI_FAST_FLASH_BOOT failed)" are UNKNOWN; round-4 review:
+ *     an inner group is not a free-form slot — the token and its shape/
+ *     payload must match its own mode's documented form exactly):
+ *       NORMAL:   (SPI_FAST_FLASH_BOOT) — simple form ONLY; any inner
+ *                 group ("(SPI_FAST_FLASH_BOOT(failed))") is UNKNOWN
+ *       DOWNLOAD: (DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2)) and
+ *                 (DOWNLOAD(USB/UART0)) — inner group REQUIRED with the
+ *                 exact documented payload; "(DOWNLOAD)", "(DOWNLOAD())",
+ *                 "(DOWNLOAD(garbage))" and payload swaps are UNKNOWN
  *     The documented unsupported modes (SPI_FLASH_BOOT,
- *     SDIO_REI_FEO_V1_BOOT, ATE_BOOT) are in NO set: neither normal,
+ *     SDIO_REI_FEO_V1_BOOT, ATE_BOOT) match no form: neither normal,
  *     download nor usb-jtag -> UNKNOWN.
  *   - the USB-Serial-JTAG ROM banner, SUPPORTED SHAPE ONLY:
  *     "ESP-ROM:esp32s3-usb-jtag-<digits>" then end of line
@@ -83,7 +85,7 @@ vdog_boot_mode_t vdog_recovery_classify(const char *rom_line);
 const char *vdog_boot_mode_name(vdog_boot_mode_t mode);
 
 /* ---- sanitized identity (plan 1.2 A2, acceptance 5) --------------------- */
-#define VDOG_IDENTITY_TAG_MAX 16 /* opaque caller board tag, optional     */
+#define VDOG_IDENTITY_TAG_MAX 16 /* project label VDOG-<core>-<serial>   */
 
 /* Closed set of renderable chip models: the formatter prints only these
  * internal names, never caller-supplied bytes (PR-review round 1). */
@@ -126,13 +128,17 @@ int vdog_identity_set_chip_model(vdog_identity_t *id, const char *model);
  * 0 -> 0.0, 2 -> 0.2, 102 -> 1.2, 202 -> 2.2. */
 void vdog_identity_set_revision(vdog_identity_t *id, uint16_t sdk_revision);
 
-/* Opaque board tag: stored ONLY if it matches [A-Za-z0-9._-]{1,16} exactly
- * AND is not composed purely of hex digits ([0-9a-fA-F]) — a pure-hex label
- * is indistinguishable from an unredacted compact MAC and is rejected
- * (round-2 review; the boot path keeps the tag empty anyway). An empty
- * string clears it (VDOG_OK, tag_len 0); NULL or any other byte (including
- * '%' or control chars) returns VDOG_ERR_INVALID_ARG and leaves the
- * previous value untouched. */
+/* Board tag: FIXED PROJECT-LABEL GRAMMAR (round-4 review — callers cannot
+ * smuggle a MAC, an 0x-prefixed hex blob or free text into the identity
+ * line). Stored ONLY if it matches, case-insensitively:
+ *     VDOG-<core>-<serial>
+ * with <core> = 1..6 alphanumeric characters and <serial> = 1..4 digits
+ * (maximum length 16 == VDOG_IDENTITY_TAG_MAX, so "0x020000000001",
+ * "0200.0000.0001", "1a2b3c4d5e6f" and old free-text labels like "dev.01"
+ * are all rejected). Accepted examples: "vdog-pa-01", "VDOG-PA-7". An
+ * empty string clears it (VDOG_OK, tag_len 0); NULL or anything outside
+ * the grammar returns VDOG_ERR_INVALID_ARG and leaves the previous value
+ * untouched. The boot path keeps the tag empty anyway. */
 int vdog_identity_set_board_tag(vdog_identity_t *id, const char *tag);
 
 /* Compose ONE sanitized log line, e.g.
