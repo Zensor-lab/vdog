@@ -668,3 +668,63 @@ record at `adf288d`, and Part B size checkpoints must record the full
 `-t size` output (with the commit and host) rather than a single
 remembered triple. This note is an append; the row above is preserved
 as recorded.
+
+### Package 1.2 Part A — review round 2 (append-only, 2026-11-28)
+
+External PR-bot review at `df7493c`: 2 High + 3 Medium, all fixed on this
+branch. Where this block restates a count it supersedes earlier blocks.
+
+| Item | Round-2 state |
+| --- | --- |
+| H-A flash capacity | MEASURED flash capacity now comes from the SDK's chip-ID physical-size query ONLY (installed spi_flash public header: the OTHER getter returns the image-HEADER size and directs real-size callers to the physical one — an 8 MiB image on a 16 MiB N16R8-shaped chip would have passed as 8MB[measured]). New pure helper `vdog_mem_set_flash_sizes(det, header_bytes, physical_bytes)`: physical feeds the MEASURED field (0 = query failed -> field UNSET + VDOG_ERR_MEM_FLASH, never header-as-fact); header capacity stored INFORMATION ONLY (`flash_header_size_bytes`/`flash_header_valid`; never compared, never rendered). Adapter passes both real values. Host table pins classes 8/8 OK, **8/16 REJECT naming flash_size_bytes**, 16/8 OK (header overstates), 4/8 OK, header-0 OK, physical-0 MISSING, both-0 MISSING + "16MB" never in the render. |
+| H-B strap gate | Table now covers EVERY gpio 0..48 (49 rows): REJECT rows added for SoC-absent {22..25} (ESP32-S3 bonds out 0-21 and 26-48 only), SPI flash bus {26..32}, octal-PSRAM bus {33..37} (this baseline builds CONFIG_SPIRAM_MODE_OCT) citing the ESP-IDF GPIO-Peripherals reference; documented all-clear expansion rows {1,2,4,5,6,43,44} (CSV expansion,UNASSIGNED_*) make the no-row/OK path UNREACHABLE for valid inputs (kept defensive-only). Tests: free-pin list corrected (22/23/37 now REJECT), bot probes 22/26/33 pinned REJECT with reasons, membership counts 22 reserved/18 candidate/2 disabled/7 free, full 0..48 sweep asserts row + class verdict for all three claimants. |
+| M-C classifier | `vdog_recovery_classify` no longer substring-matches prose: input must BE the ROM banner `[spaces]boot:0x<hex> [spaces](<banner>)[spaces]` and the parenthesised banner is matched by WHOLE word tokens against closed sets (JTAG words > download words > normal words; hyphen normalised to underscore). 'download failed'/'boot loader'/'fast pattern' and truncated lookalikes ('spi_fas', bare 'boot:0x', unclosed parens, bad hex) -> UNKNOWN (host-pinned). Verbatim-record-everything stance for Part B documented in the header: classification NAMES recognised banners; the transcript keeps every raw line. |
+| M-D identity text | chip model is now a CLOSED ENUM (`vdog_identity_chip_t` {UNKNOWN, ESP32S3} + `vdog_identity_set_chip_model()`; out-of-range -> UNKNOWN, render names are fixed internal strings — a compact MAC "as model" is impossible). Board tag only via `vdog_identity_set_board_tag()`: NUL-termination within VDOG_IDENTITY_TAG_MAX (bounded scan; unterminated array rejected), charset [A-Za-z0-9_-], compact-MAC lookalikes (exactly 12 hex digits) rejected, all with VDOG_ERR_IDENTITY_TAG (-24) and the stored tag left unchanged; the formatter RE-validates with the bounded scan and prints only precision-bounded validated bytes (smuggled raw bytes never render — host-pinned). Adapter maps the SDK chip-info enum. |
+| M-E bench record | `docs/bench-assignment.md` §2.1/§4/B2 and plan §6 step 2 corrected to the ACTUAL PlatformIO image set (verified from a clean build + parsed `partitions.bin`): `bootloader.bin`@0x0 (22944 B), `partitions.bin`@0x8000 (3072 B), `ota_data_initial.bin`@0xF000 (8192 B), `firmware.bin`@0x20000 (216704 B); NO `boot_app0.bin` is built (IDF otadata convention realized as ota_data_initial.bin). The build DOES emit `flash_args` with these offsets but its relative paths (bootloader/, partition_table/, vdog_firmware.bin) are IDF-style names that do not exist as flashed files — documented as offset manifest only. Non-overlap proof kept: 0x0+22944=0x59A0<0x8000; 0x8000+3072=0x8C00<0x9000 (nvs); 0xF000+8192=0x11000 exactly (otadata end, phy_init untouched); 0x20000+216704=0x54E40 inside app0. BLOCKING-overlap rule unchanged. |
+| HOST round 2 | `pio test -d firmware -e native` exit 0: **72 cases: 72 succeeded** = **50 new** (mem 19: 16 + 3 flash-size; recovery 16: 13 + chip-model/tag-validation/unvalidated-render − with classifier cases rewritten to banner forms; straps 15: 13 + free-expansion + absent/bus + full-sweep − replaced free-pin case) + inherited 22/22. Bot probes re-run out-of-tree against the real core binaries: 22/26/33 REJECT with reasons, prose→UNKNOWN, banners classify, compact MAC tag rejected (-24) both cases, unterminated tag rejected, 8/16 REJECT names flash_size_bytes, 8/8 OK, 49 rows — ALL MATCH. |
+| BUILD round 2 | `-t clean` + `pio run -e vdog_xiao_sense_proto` exit 0: **1109** compiles, **0** warnings, purity line + board-config gate at both registrations. `-t size` (full paste per the F-5 forward rule; commit `df7493c`-based tree + this round's code, host Tims-MacBook-Pro.local / macOS 26.6.2): `text 153589 / data 62996 / bss 376829 / dec 593414 / hex 90e06`, firmware.bin **216704** B (text +360 vs round 1 — bigger strap table + banner classifier). Embedded `--without-uploading --without-testing`: all five groups `[SKIPPED]`, 0 warnings. `pytest tools/firmware/tests`: **471 passed**. Standalone purity + board-config gates exit 0. `git diff --check` clean; pins/`dependencies.lock`/`sdkconfig.defaults` 0-change; tools still new-files-only. |
+
+#### F7(b) 0.9-ownership evidence (append-only, 2026-11-28)
+
+The round-1 report claimed no 0.9 pending work owns `tools/firmware/tests`
+beyond main's existing files; the bot could not verify it. Exact commands +
+findings recorded at this tip (branch list abbreviated to the 0.9 family +
+duplicate branches):
+
+```
+$ git branch -a --format='%(refname:short)'
+main, opencode/0.2-toolchains, opencode/0.6-contracts, opencode/0.9-ci-release,
+opencode/0.9-fw-meta, opencode/0.9-release-tools, opencode/0.9-review-fixes,
+opencode/1.1-fw-bootstrap, opencode/1.2-board-bringup,
+opencode/1.2-board-bringup-mine, pr-3-review, origin, origin/create-doc,
+origin/main, origin/opencode/0.6-contracts, origin/opencode/1.1-fw-bootstrap,
+origin/opencode/1.2-board-bringup, origin/opencode/1.2-board-bringup-mine,
+origin/opencode/hardware-preflight
+
+$ git log --all --not origin/main --oneline -- tools/firmware/tests
+9f27f96 test(tools): re-home 1.2 gate scenario drivers and macro-rename probe   <- ours (adds test_12_* only)
+d68f175 fix(check_lockfiles): accept exact numeric YAML version scalars; ...    <- 0.9-family
+27b110d fix(ci,installer): round-2 review findings F1-F4 ...                    <- 0.9-family
+87962b9 fix(ci,publish): address round-2 review ...                             <- 0.9-family
+5f7aff1 fix(installer): reuse a complete installer environment ...              <- 0.9-family
+663daa1 feat(ci): Stage 0.9 round 2 ...                                         <- 0.9-family
+0f54645 tools/firmware: fix review round 1 (0.9 Packet B)                       <- 0.9-family
+144f40f tools/firmware: release tooling, package validation ... (0.9 Packet B)  <- 0.9-family
+
+$ diff <(git ls-tree --name-only origin/main tools/firmware/tests/) \
+        <(git ls-tree --name-only <branch> tools/firmware/tests/)
+opencode/0.9-review-fixes: IDENTICAL to main
+opencode/0.9-ci-release / opencode/0.9-release-tools / opencode/0.9-fw-meta:
+  strict SUBSETS of main (older states; missing main files, add none)
+```
+
+Honest reading: the 0.9-family branches DO still carry SHA-wise commits not
+reachable from `origin/main` that touch `tools/firmware` (their content
+landed on main via merge/rebase, so main already contains the resulting
+files), **but none of them owns any NEW file under
+`tools/firmware/tests` beyond main's existing 13** — per-commit file lists
+(144f40f/0f54645/663daa1/5f7aff1/87962b9/27b110d/d68f175) cover exactly the
+main-side files, and the only commits ADDING files to that directory
+off-main are ours (`9f27f96`, `test_12_*`), which no 0.9 branch touches.
+A7's re-homed drivers therefore collide with no pending 0.9-owned test
+file.

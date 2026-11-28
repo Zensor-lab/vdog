@@ -24,11 +24,25 @@ Any operation beyond it is out of scope.
 
 Concretely authorized (plan §6):
 
-1. **The build's upload image set** — the authoritative image set and
-   offsets taken from the build output's `flash_args`: bootloader, partition
-   table binary, otadata/`boot_app0.bin`, and the app — **per flash_args,
-   NOT "app-image only"** (lead finding 3). Writing otadata resets the OTA
-   slot choice: acceptable on this prototype, must be stated in this record.
+1. **The build's ACTUAL upload image set** (corrected 2026-11-28 per review
+   M-E — names/offsets/lengths verified against a clean Part A build):
+   exactly **four** images live in
+   `firmware/.pio/build/vdog_xiao_sense_proto/` — there is **no
+   `boot_app0.bin`** (the IDF otadata-seed convention is realized here as
+   `ota_data_initial.bin`) and no IDF-style `flash_args` relative paths
+   (see §4):
+
+   | Image (top-level in the build dir) | Offset | Size at Part A verification |
+   | --- | --- | --- |
+   | `bootloader.bin` | `0x0` | 22944 B |
+   | `partitions.bin` | `0x8000` | 3072 B |
+   | `ota_data_initial.bin` | `0xF000` | 8192 B |
+   | `firmware.bin` | `0x20000` | 216704 B |
+
+   Re-measure the four lengths at the Part B tip before flashing. Flash
+   the **full four-image set, NOT "app-image only"** (lead finding 3).
+   Writing otadata resets the OTA slot choice: acceptable on this
+   prototype, must be stated in this record.
 2. **Serial monitor** at 115200 (`pio device monitor`) for the recorded
    boot/recovery sessions only.
 3. **Port re-identification** per the procedure in §3 below.
@@ -50,12 +64,26 @@ beyond the recorded session.
 
 ## 4. Image-set overlap check (blocking)
 
-Before flashing, cross-check the `flash_args` set against
-`firmware/partitions/vdog_8mb_two_ota.csv` — nvs 0x9000–0xEFFF, otadata
-0xF000–0x10FFF, phy_init 0x11000–0x11FFF, app0 0x20000, app1 0x320000:
+Before flashing, cross-check the ACTUAL four-image set of §2.1 (re-measured
+at the Part B tip) against `firmware/partitions/vdog_8mb_two_ota.csv` — nvs
+0x9000–0xEFFF, otadata 0xF000–0x10FFF, phy_init 0x11000–0x11FFF, app0
+0x20000, app1 0x320000. At the Part A verification the built
+`partitions.bin` was parsed entry-by-entry and matches the CSV exactly. The
+build also emits `flash_args` with the same offsets
+(`0x0 bootloader/…`, `0x8000 partition_table/…`, `0xf000
+ota_data_initial.bin`, `0x20000` app), but its relative paths are the
+IDF-style names — the ACTUAL files PlatformIO flashes are the four
+top-level `.bin` files of §2.1:
 
-- **No written image may overlap nvs or phy_init.**
-- A `flash_args`-vs-CSV overlap is a **BLOCKING escalation — do not flash,
+- **No written image may overlap nvs or phy_init.** Non-overlap proof at
+  the Part A verification (offset + length vs the CSV ranges):
+  `bootloader.bin` 0x0 + 22944 B ends 0x59A0 < 0x8000 (partition table);
+  `partitions.bin` 0x8000 + 3072 B ends 0x8C00 < 0x9000 (nvs start);
+  `ota_data_initial.bin` 0xF000 + 8192 B ends exactly 0x11000 — fills only
+  otadata (0xF000–0x10FFF) and never touches phy_init
+  (0x11000–0x11FFF); `firmware.bin` 0x20000 + 216704 B ends 0x54E40,
+  inside app0 (0x20000–0x31FFFF).
+- An image-set-vs-CSV overlap is a **BLOCKING escalation — do not flash,
   report instead.**
 - Record the actual esptool command line (PlatformIO verbose upload) here.
 
@@ -75,7 +103,7 @@ Owner physical presence is required for the BOOT-button drill.
 | Step | Command / observation | Result | Status |
 | --- | --- | --- | --- |
 | B1 attach + port record (§3) | `ls /dev/cu.*` before/after | PENDING | PENDING |
-| B2 `flash_args` extract + overlap check + verbose esptool record | build at Part B tip | PENDING | PENDING |
+| B2 actual-image-set extract (§2.1 four top-level `.bin` files + offsets, re-measured at the Part B tip; `flash_args` read as offset manifest only — its IDF-style paths are not the flashed files) + overlap check (§4) + verbose esptool record | build at Part B tip | PENDING | PENDING |
 | B2 upload | `pio run -d firmware -e vdog_xiao_sense_proto -t upload --upload-port <recorded path>` | PENDING | PENDING |
 | B3 boot capture — `vdog_mem_format_detected` matches baseline + photos (tags honest) | `pio device monitor` | PENDING | PENDING |
 | B3 boot capture — `vdog_identity_format` sanitized only | `pio device monitor` | PENDING | PENDING |
