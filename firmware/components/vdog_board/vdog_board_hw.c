@@ -85,7 +85,10 @@ int vdog_mem_read_detected(vdog_mem_detected_t *det)
         return VDOG_ERR_INVALID_ARG;
     }
 
-    flash = esp_flash_get_default_handle();
+    /* IDF v6.1 exposes the default chip pointer directly (esp_flash.h:
+     * extern esp_flash_t *esp_flash_default_chip); the getter used by older
+     * SDKs is not part of this pinned framework's public headers. */
+    flash = esp_flash_default_chip;
     if (flash != NULL && esp_flash_get_size(flash, &size) == ESP_OK) {
         det->flash_size_bytes = size;
         det->flash_size_src = VDOG_MEM_SOURCE_MEASURED;
@@ -121,7 +124,10 @@ void vdog_identity_read_esp(vdog_identity_t *id)
         return;
     }
     esp_chip_info(&info); /* read-only chip identity */
-    if (info.model == ESP_CHIP_MODEL_ESP32S3) {
+    /* Enum spelling in this pinned framework is esp_chip_model_t::
+     * CHIP_ESP32S3 (the ESP_CHIP_MODEL_* alias set is not present in
+     * esp_chip_info.h of IDF v6.1). */
+    if (info.model == CHIP_ESP32S3) {
         strcpy(id->chip_model, "esp32s3");
     } else {
         strcpy(id->chip_model, "unknown");

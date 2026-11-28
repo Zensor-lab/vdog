@@ -190,6 +190,13 @@ def check(core_dir):
 def _scons_main():
     global _SCONS_ENV
 
+    # F6 (1.1 carry-over, plan 1.2 A7) — INTENTIONAL variant of
+    # gen_build_meta.py's module-level SCons import: this script is
+    # DUAL-mode (SCons extra script AND the documented CLI below, which the
+    # tools/firmware harness imports as a module), so the SCons-only names
+    # stay deferred into this entry point; a module-level Import("env")
+    # would raise outside a build and break CLI mode. Do not "align" this
+    # with gen_build_meta.py; see the matching note in check_board_config.py.
     Import("env")  # injected into module globals by SCons
     _SCONS_ENV = env
 
