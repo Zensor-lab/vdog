@@ -132,9 +132,13 @@ checks `firmware-build`, `firmware-host-tests`, `firmware-package-tests` and
 `contracts-validation`). The hosted workflows have run for real and
 their results were verified live on 2026-11-28 (PRs #3–#7, six `main` runs,
 peeled tags, digested pre-release assets and a packaged-installer check), so
-hosted CI-T01–T14 are recorded as verified — with Windows `install.ps1`
-(`pwsh`) and CI-T15 explicitly not; see
-[validation](docs/validation.md) section 5 for the per-check evidence.
+the live-gated CI-T criteria are recorded as live-verified — with the
+matrix's own limits kept explicit: CI-T07 (integrity) and CI-T10 (immutable
+tag) rest on host-level fixture/fake-adapter evidence corroborated by the
+live record, CI-T09 (clean-host setup) is PARTIAL (macOS wrapper end-to-end
+only; no Linux `install.sh` run, Windows `pwsh` never executed), and CI-T15
+(device install) is deferred UNVERIFIED; see
+[validation](docs/validation.md) section 5 for the per-criterion evidence.
 
 ## Documentation
 
